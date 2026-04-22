@@ -40,7 +40,23 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
 
   const menuDropdownRef = useRef();
 
-  const item = findItemInCollection(collection, tab.uid);
+  const specialTabs = [
+    'collection-overview',
+    'collection-settings',
+    'folder-settings',
+    'variables',
+    'collection-runner',
+    'environment-settings',
+    'global-environment-settings',
+    'preferences',
+    'workspaceOverview',
+    'workspaceEnvironments',
+    'workspaceGit',
+    'openapi-sync',
+    'openapi-spec'
+  ];
+  const isSpecialTab = specialTabs.includes(tab.type);
+  const item = isSpecialTab ? null : findItemInCollection(collection, tab.uid);
 
   const method = useMemo(() => {
     if (!item) return;
@@ -154,21 +170,6 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     event.preventDefault();
     setShowConfirmFolderClose(true);
   };
-
-  const specialTabs = [
-    'collection-overview',
-    'collection-settings',
-    'folder-settings',
-    'variables',
-    'collection-runner',
-    'environment-settings',
-    'global-environment-settings',
-    'preferences',
-    'workspaceOverview',
-    'workspaceEnvironments',
-    'openapi-sync',
-    'openapi-spec'
-  ];
 
   const hasDraft = tab.type === 'collection-settings' && collection?.draft;
   const hasFolderDraft = tab.type === 'folder-settings' && folder?.draft;
@@ -445,6 +446,8 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
         ) : tab.type === 'workspaceOverview' ? (
           <SpecialTab handleCloseClick={null} type={tab.type} />
         ) : tab.type === 'workspaceEnvironments' ? (
+          <SpecialTab handleCloseClick={null} type={tab.type} />
+        ) : tab.type === 'workspaceGit' ? (
           <SpecialTab handleCloseClick={null} type={tab.type} />
         ) : (
           <SpecialTab handleCloseClick={handleCloseClick} handleDoubleClick={() => dispatch(makeTabPermanent({ uid: tab.uid }))} type={tab.type} />

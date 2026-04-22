@@ -76,6 +76,7 @@ const { REQUEST_TYPES } = require('../utils/constants');
 const { cancelOAuth2AuthorizationRequest, isOauth2AuthorizationRequestInProgress } = require('../utils/oauth2-protocol-handler');
 const { findUniqueFolderName } = require('../utils/collection-import');
 const { saveSpecAndUpdateMetadata, cleanupSpecFilesForCollection } = require('./openapi-sync');
+const { isPathInsideDirectory } = require('../utils/workspace-config');
 
 const environmentSecretsStore = new EnvironmentSecretsStore();
 const collectionSecurityStore = new CollectionSecurityStore();
@@ -164,6 +165,14 @@ const validatePathIsInsideCollection = (filePath) => {
   }
 };
 
+const isWorkspaceCollectionPathAllowed = (workspacePath, collectionPath) => {
+  if (!workspacePath || workspacePath === 'default') {
+    return true;
+  }
+
+  return isPathInsideDirectory(workspacePath, collectionPath);
+};
+
 const registerRendererEventHandlers = (mainWindow, watcher) => {
   // create collection
   ipcMain.handle(
@@ -173,6 +182,11 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         const format = options.format || DEFAULT_COLLECTION_FORMAT;
         collectionFolderName = sanitizeName(collectionFolderName);
         const dirPath = path.join(collectionLocation, collectionFolderName);
+
+        if (!isWorkspaceCollectionPathAllowed(options.workspaceId, dirPath)) {
+          throw new Error('Workspace collections must be created inside the workspace folder.');
+        }
+
         if (fs.existsSync(dirPath)) {
           const files = fs.readdirSync(dirPath);
 
@@ -1068,14 +1082,23 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     return results;
   });
 
-  ipcMain.handle('renderer:open-collection', async () => {
+  ipcMain.handle('renderer:open-collection', async (event, options = {}) => {
     if (watcher && mainWindow) {
-      await openCollectionDialog(mainWindow, watcher);
+      await openCollectionDialog(mainWindow, watcher, {
+        workspacePath: options.workspaceId
+      });
     }
   });
 
   ipcMain.handle('renderer:open-multiple-collections', async (e, collectionPaths, options = {}) => {
     if (watcher && mainWindow) {
+      if (options.workspacePath) {
+        const outsideCollection = collectionPaths.find((collectionPath) => !isWorkspaceCollectionPathAllowed(options.workspacePath, collectionPath));
+        if (outsideCollection) {
+          throw new Error('Workspace collections must be inside the workspace folder.');
+        }
+      }
+
       await openCollectionsByPathname(mainWindow, watcher, collectionPaths);
       if (options.workspacePath) {
         const { setCollectionWorkspace } = require('../store/process-env');

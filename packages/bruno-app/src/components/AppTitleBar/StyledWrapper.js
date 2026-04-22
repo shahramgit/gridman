@@ -26,6 +26,7 @@ const Wrapper = styled.div`
 
   /* Remove drag region from interactive elements */
   .workspace-name-container,
+  .titlebar-git-button,
   .dropdown-item,
   .home-button,
   .dropdown,
@@ -75,6 +76,94 @@ const Wrapper = styled.div`
       flex-shrink: 0;
       color: ${(props) => props.theme.sidebar.muted};
       transition: transform 0.2s ease;
+    }
+  }
+
+  .titlebar-git-button {
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: 4px;
+    padding: 0 8px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: ${(props) => props.theme.sidebar.color};
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    transition: background 0.15s ease, border-color 0.15s ease;
+
+    &:hover,
+    &[aria-expanded='true'] {
+      background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
+      border-color: ${(props) => props.theme.border.border1};
+    }
+
+    &.is-loading {
+      opacity: 0.7;
+    }
+
+    &.has-conflicts {
+      color: ${(props) => props.theme.colors.text.danger};
+    }
+
+    &.not-repo {
+      color: ${(props) => props.theme.colors.text.muted};
+    }
+
+    .git-branch {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      max-width: 90px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .git-pill,
+    .git-sync-indicator,
+    .git-behind-indicator {
+      min-width: 18px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1px;
+      padding: 0 5px;
+      border-radius: 9px;
+      font-size: 11px;
+      line-height: 1;
+      background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
+      color: ${(props) => props.theme.sidebar.muted};
+    }
+
+    .git-sync-indicator {
+      background: ${(props) => props.theme.colors.text.green};
+      color: #fff;
+      animation: git-pulse-up 1.6s ease-in-out infinite;
+    }
+
+    .git-behind-indicator {
+      background: ${(props) => props.theme.colors.text.orange};
+      color: #fff;
+    }
+  }
+
+  @keyframes git-pulse-up {
+    0% {
+      box-shadow: 0 0 0 0 rgba(53, 154, 90, 0.45);
+      transform: translateY(0);
+    }
+    50% {
+      box-shadow: 0 0 0 4px rgba(53, 154, 90, 0);
+      transform: translateY(-1px);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(53, 154, 90, 0);
+      transform: translateY(0);
     }
   }
 

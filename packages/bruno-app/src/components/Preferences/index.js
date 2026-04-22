@@ -10,7 +10,8 @@ import {
   IconKeyboard,
   IconZoomQuestion,
   IconSquareLetterB,
-  IconDatabase
+  IconDatabase,
+  IconStar
 } from '@tabler/icons';
 
 import Support from './Support';
@@ -20,6 +21,7 @@ import Proxy from './ProxySettings';
 import Display from './Display';
 import Keybindings from './Keybindings';
 import Beta from './Beta';
+import Features from './Features';
 
 import StyledWrapper from './StyledWrapper';
 import Cache from './Cache/index';
@@ -71,6 +73,10 @@ const Preferences = () => {
       case 'cache': {
         return <Cache />;
       }
+
+      case 'features': {
+        return <Features />;
+      }
     }
   };
 
@@ -101,6 +107,10 @@ const Preferences = () => {
           <div className={getTabClassname('cache')} role="tab" onClick={() => setTab('cache')}>
             <IconDatabase size={16} strokeWidth={1.5} />
             Cache
+          </div>
+          <div className={getTabClassname('features')} role="tab" onClick={() => setTab('features')}>
+            <IconStar size={16} strokeWidth={1.5} />
+            Features
           </div>
           <div className={getTabClassname('support')} role="tab" onClick={() => setTab('support')}>
             <IconZoomQuestion size={16} strokeWidth={1.5} />

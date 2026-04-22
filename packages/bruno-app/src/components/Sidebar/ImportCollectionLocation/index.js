@@ -2,7 +2,6 @@ import React, { useRef, useEffect, useState, forwardRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
-import get from 'lodash/get';
 import path from 'utils/common/path';
 import { IconCaretDown } from '@tabler/icons';
 import { browseDirectory } from 'providers/ReduxStore/slices/collections/actions';
@@ -113,13 +112,9 @@ const ImportCollectionLocation = ({ onClose, handleSubmit, rawData, format, sour
   const showCheckForSpecUpdatesOption = isOpenAPISyncEnabled && (isOpenApiFromUrl || isOpenApiFromFile);
 
   const { workspaces, activeWorkspaceUid } = useSelector((state) => state.workspaces);
-  const preferences = useSelector((state) => state.app.preferences);
   const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid);
-  const isDefaultWorkspace = !activeWorkspace || activeWorkspace.type === 'default';
 
-  const defaultLocation = isDefaultWorkspace
-    ? get(preferences, 'general.defaultLocation', '')
-    : (activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '');
+  const defaultLocation = activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '';
 
   const collectionName = getCollectionName(format, rawData);
 

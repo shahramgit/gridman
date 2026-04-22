@@ -24,6 +24,7 @@ const {
   reorderWorkspaceCollections,
   getWorkspaceCollections,
   normalizeCollectionEntry,
+  isPathInsideDirectory,
   validateWorkspacePath,
   validateWorkspaceDirectory,
   getWorkspaceUid
@@ -32,6 +33,19 @@ const {
 const { isValidCollectionDirectory } = require('../utils/filesystem');
 
 const DEFAULT_WORKSPACE_NAME = 'My Workspace';
+
+const getUniqueCollectionTargetPath = (collectionsDir, collectionName) => {
+  const sanitizedName = sanitizeName(collectionName || 'collection') || 'collection';
+  let targetPath = path.join(collectionsDir, sanitizedName);
+  let counter = 1;
+
+  while (fs.existsSync(targetPath)) {
+    targetPath = path.join(collectionsDir, `${sanitizedName}-${counter}`);
+    counter++;
+  }
+
+  return targetPath;
+};
 
 const prepareWorkspaceConfigForClient = (workspaceConfig, workspacePath, isDefault) => {
   const collections = workspaceConfig.collections || [];
@@ -534,6 +548,70 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
       mainWindow.webContents.send('main:workspace-config-updated', workspacePath, workspaceUid, configForClient);
 
       return updatedCollections;
+    } catch (error) {
+      throw error;
+    }
+  });
+
+  ipcMain.handle('renderer:move-workspace-collections-inside', async (event, { workspacePath, collectionPaths = [] }) => {
+    try {
+      validateWorkspacePath(workspacePath);
+
+      if (!Array.isArray(collectionPaths) || collectionPaths.length === 0) {
+        return [];
+      }
+
+      const collectionsDir = path.join(workspacePath, 'collections');
+      if (!fs.existsSync(collectionsDir)) {
+        await createDirectory(collectionsDir);
+      }
+
+      const workspaceConfig = readWorkspaceConfig(workspacePath);
+      const movedCollections = [];
+
+      for (const collectionPath of collectionPaths) {
+        const absoluteCollectionPath = path.resolve(collectionPath);
+
+        if (!fs.existsSync(absoluteCollectionPath)) {
+          throw new Error(`Collection path does not exist: ${absoluteCollectionPath}`);
+        }
+
+        if (isPathInsideDirectory(workspacePath, absoluteCollectionPath)) {
+          continue;
+        }
+
+        const collectionEntry = (workspaceConfig.collections || []).find((collection) => {
+          const configuredPath = collection.path
+            ? (path.isAbsolute(collection.path) ? collection.path : path.resolve(workspacePath, collection.path))
+            : null;
+          return configuredPath && path.normalize(configuredPath) === path.normalize(absoluteCollectionPath);
+        });
+
+        const targetPath = getUniqueCollectionTargetPath(collectionsDir, collectionEntry?.name || path.basename(absoluteCollectionPath));
+        await fsExtra.move(absoluteCollectionPath, targetPath, { overwrite: false });
+
+        movedCollections.push({
+          from: absoluteCollectionPath,
+          to: targetPath,
+          name: collectionEntry?.name || path.basename(targetPath)
+        });
+
+        if (collectionEntry) {
+          collectionEntry.path = path.relative(workspacePath, targetPath).replace(/\\/g, '/');
+        }
+      }
+
+      if (movedCollections.length > 0) {
+        await writeWorkspaceConfig(workspacePath, workspaceConfig);
+      }
+
+      const workspaceUid = getWorkspaceUid(workspacePath);
+      const isDefault = workspaceUid === 'default';
+      const updatedConfig = readWorkspaceConfig(workspacePath);
+      const configForClient = prepareWorkspaceConfigForClient(updatedConfig, workspacePath, isDefault);
+      mainWindow.webContents.send('main:workspace-config-updated', workspacePath, workspaceUid, configForClient);
+
+      return movedCollections;
     } catch (error) {
       throw error;
     }

@@ -1,5 +1,27 @@
 import React from 'react';
-import { IconCheck, IconChevronDown, IconFolder, IconHome, IconPin, IconPinned, IconPlus, IconDownload, IconSettings, IconMinus, IconSquare, IconX, IconCopy } from '@tabler/icons';
+import {
+  IconArrowDown,
+  IconArrowUp,
+  IconBrandGit,
+  IconCheck,
+  IconChevronDown,
+  IconFolder,
+  IconGitBranch,
+  IconGitCommit,
+  IconGitFork,
+  IconHome,
+  IconPin,
+  IconPinned,
+  IconPlus,
+  IconDownload,
+  IconRefresh,
+  IconSettings,
+  IconMinus,
+  IconSquare,
+  IconUpload,
+  IconX,
+  IconCopy
+} from '@tabler/icons';
 import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useDispatch, useSelector } from 'react-redux';
@@ -8,7 +30,7 @@ import { savePreferences, showManageWorkspacePage, toggleSidebarCollapse } from 
 import { closeConsole, openConsole } from 'providers/ReduxStore/slices/logs';
 import { createWorkspaceWithUniqueName, openWorkspaceDialog, switchWorkspace } from 'providers/ReduxStore/slices/workspaces/actions';
 import { sortWorkspaces, toggleWorkspacePin } from 'utils/workspaces';
-import { focusTab } from 'providers/ReduxStore/slices/tabs';
+import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import get from 'lodash/get';
 
 import Bruno from 'components/Bruno';
@@ -17,6 +39,7 @@ import ActionIcon from 'ui/ActionIcon';
 import IconSidebarToggle from 'components/Icons/IconSidebarToggle';
 import CreateWorkspace from 'components/WorkspaceSidebar/CreateWorkspace';
 import ImportWorkspace from 'components/WorkspaceSidebar/ImportWorkspace';
+import CloneGitRepository from 'components/Sidebar/CloneGitRespository';
 
 import IconBottombarToggle from 'components/Icons/IconBottombarToggle/index';
 import AppMenu from './AppMenu';
@@ -24,6 +47,7 @@ import StyledWrapper from './StyledWrapper';
 import ResponseLayoutToggle from 'components/ResponsePane/ResponseLayoutToggle';
 import { isMacOS, isWindowsOS, isLinuxOS } from 'utils/common/platform';
 import classNames from 'classnames';
+import { uuid } from 'utils/common';
 
 const getOsClass = () => {
   if (isMacOS()) return 'os-mac';
@@ -37,6 +61,11 @@ export const getWorkspaceDisplayName = (name) => {
   if (!name) return 'Untitled Workspace';
   return name;
 };
+
+const getWorkspaceGitPayload = (workspace) => ({
+  workspacePath: workspace?.pathname,
+  collectionPaths: (workspace?.collections || []).map((collection) => collection.path).filter(Boolean)
+});
 
 const AppTitleBar = () => {
   const dispatch = useDispatch();
@@ -120,6 +149,11 @@ const AppTitleBar = () => {
 
   const [createWorkspaceModalOpen, setCreateWorkspaceModalOpen] = useState(false);
   const [importWorkspaceModalOpen, setImportWorkspaceModalOpen] = useState(false);
+  const [cloneGitWorkspaceModalOpen, setCloneGitWorkspaceModalOpen] = useState(false);
+  const [workspaceGitData, setWorkspaceGitData] = useState(null);
+  const [workspaceGitLoading, setWorkspaceGitLoading] = useState(false);
+  const [workspaceGitOperation, setWorkspaceGitOperation] = useState(null);
+  const showGitWorkspaceFeature = get(preferences, 'features.gitWorkspace', get(preferences, 'features.git', true));
 
   const WorkspaceName = forwardRef((props, ref) => {
     return (
@@ -136,6 +170,110 @@ const AppTitleBar = () => {
       dispatch(focusTab({ uid: `${scratchCollectionUid}-overview` }));
     }
   };
+
+  const refreshWorkspaceGitStatus = useCallback(async ({ silent = false, fetchRemote = false } = {}) => {
+    if (!showGitWorkspaceFeature || !activeWorkspace?.pathname) {
+      setWorkspaceGitData(null);
+      return;
+    }
+
+    if (!silent) {
+      setWorkspaceGitLoading(true);
+    }
+
+    try {
+      const result = await window.ipcRenderer.invoke('renderer:get-workspace-git-data', {
+        ...getWorkspaceGitPayload(activeWorkspace),
+        fetchRemote
+      });
+      setWorkspaceGitData(result);
+      if (fetchRemote && !silent && result?.isGitRepository && result?.remotes?.length) {
+        toast.success('Git status refreshed from remote');
+      }
+    } catch (error) {
+      if (!silent) {
+        toast.error(error?.message || 'Failed to load workspace Git status');
+      }
+    } finally {
+      if (!silent) {
+        setWorkspaceGitLoading(false);
+      }
+    }
+  }, [activeWorkspace?.pathname, showGitWorkspaceFeature]);
+
+  useEffect(() => {
+    refreshWorkspaceGitStatus({ silent: true });
+
+    if (!showGitWorkspaceFeature || !activeWorkspace?.pathname) {
+      return;
+    }
+
+    const intervalId = setInterval(() => {
+      refreshWorkspaceGitStatus({ silent: true });
+    }, 30000);
+
+    return () => clearInterval(intervalId);
+  }, [activeWorkspace?.pathname, refreshWorkspaceGitStatus, showGitWorkspaceFeature]);
+
+  const handleOpenWorkspaceGit = useCallback(() => {
+    const scratchCollectionUid = activeWorkspace?.scratchCollectionUid;
+    if (!scratchCollectionUid) return;
+
+    const tabUid = `${scratchCollectionUid}-git`;
+    dispatch(addTab({
+      uid: tabUid,
+      collectionUid: scratchCollectionUid,
+      type: 'workspaceGit'
+    }));
+    dispatch(focusTab({ uid: tabUid }));
+  }, [activeWorkspace?.scratchCollectionUid, dispatch]);
+
+  const runWorkspaceGitOperation = useCallback(async (label, invokeName, payload = {}) => {
+    if (!workspaceGitData?.gitRootPath) {
+      handleOpenWorkspaceGit();
+      return;
+    }
+
+    const currentBranch = workspaceGitData.currentGitBranch || workspaceGitData.defaultGitBranch || workspaceGitData.status?.current || 'main';
+    const remote = workspaceGitData.remotes?.find((item) => item.name === 'origin')?.name || workspaceGitData.remotes?.[0]?.name || 'origin';
+
+    setWorkspaceGitOperation(label);
+    try {
+      await window.ipcRenderer.invoke(invokeName, {
+        gitRootPath: workspaceGitData.gitRootPath,
+        processUid: uuid(),
+        remote,
+        remoteBranch: currentBranch,
+        strategy: '--no-rebase',
+        ...payload
+      });
+      toast.success(`${label} completed`);
+      await refreshWorkspaceGitStatus({ silent: true });
+    } catch (error) {
+      toast.error(error?.message || `${label} failed`);
+      await refreshWorkspaceGitStatus({ silent: true });
+    } finally {
+      setWorkspaceGitOperation(null);
+    }
+  }, [handleOpenWorkspaceGit, refreshWorkspaceGitStatus, workspaceGitData]);
+
+  const initializeWorkspaceGit = useCallback(async () => {
+    if (!activeWorkspace?.pathname) return;
+
+    setWorkspaceGitOperation('Initialize Git');
+    try {
+      const result = await window.ipcRenderer.invoke('renderer:init-workspace-git', {
+        ...getWorkspaceGitPayload(activeWorkspace)
+      });
+      setWorkspaceGitData(result);
+      toast.success('Git initialized for this workspace');
+      handleOpenWorkspaceGit();
+    } catch (error) {
+      toast.error(error?.message || 'Failed to initialize Git');
+    } finally {
+      setWorkspaceGitOperation(null);
+    }
+  }, [activeWorkspace?.pathname, handleOpenWorkspaceGit]);
 
   const handleWorkspaceSwitch = (workspaceUid) => {
     dispatch(switchWorkspace(workspaceUid));
@@ -171,6 +309,10 @@ const AppTitleBar = () => {
 
   const handleImportWorkspace = () => {
     setImportWorkspaceModalOpen(true);
+  };
+
+  const handleCloneGitWorkspace = () => {
+    setCloneGitWorkspaceModalOpen(true);
   };
 
   const handlePinWorkspace = useCallback((workspaceUid, e) => {
@@ -236,6 +378,14 @@ const AppTitleBar = () => {
         label: 'Open workspace',
         onClick: handleOpenWorkspace
       },
+      ...(showGitWorkspaceFeature
+        ? [{
+            id: 'clone-git-workspace',
+            leftSection: IconBrandGit,
+            label: 'Clone Git workspace',
+            onClick: handleCloneGitWorkspace
+          }]
+        : []),
       {
         id: 'import-workspace',
         leftSection: IconDownload,
@@ -251,7 +401,116 @@ const AppTitleBar = () => {
     );
 
     return items;
-  }, [sortedWorkspaces, activeWorkspaceUid, preferences, handlePinWorkspace, handleCreateWorkspace]);
+  }, [sortedWorkspaces, activeWorkspaceUid, preferences, handlePinWorkspace, handleCreateWorkspace, showGitWorkspaceFeature]);
+
+  const workspaceGitSummary = useMemo(() => {
+    const changedFiles = workspaceGitData?.changedFiles || {};
+    const changeCount = (changedFiles.staged?.length || 0) + (changedFiles.unstaged?.length || 0) + (changedFiles.conflicted?.length || 0);
+    const ahead = workspaceGitData?.aheadBehind?.ahead || workspaceGitData?.status?.ahead || 0;
+    const behind = workspaceGitData?.aheadBehind?.behind || workspaceGitData?.status?.behind || 0;
+    const hasRemote = Boolean(workspaceGitData?.remotes?.length);
+    const hasConflicts = Boolean(workspaceGitData?.mergeInProgress || changedFiles.conflicted?.length);
+    const hasCommits = Boolean(workspaceGitData?.hasCommits);
+
+    return {
+      changeCount,
+      ahead,
+      behind,
+      hasRemote,
+      hasCommits,
+      hasConflicts,
+      isGitRepository: Boolean(workspaceGitData?.isGitRepository)
+    };
+  }, [workspaceGitData]);
+
+  const workspaceGitMenuItems = useMemo(() => {
+    if (!workspaceGitSummary.isGitRepository) {
+      return [
+        {
+          id: 'init-workspace-git',
+          leftSection: IconGitFork,
+          label: workspaceGitOperation === 'Initialize Git' ? 'Initializing...' : 'Initialize Git',
+          onClick: initializeWorkspaceGit
+        },
+        {
+          id: 'open-workspace-git',
+          leftSection: IconBrandGit,
+          label: 'Open Git tab',
+          onClick: handleOpenWorkspaceGit
+        },
+        {
+          id: 'refresh-workspace-git',
+          leftSection: IconRefresh,
+          label: 'Refresh status',
+          onClick: () => refreshWorkspaceGitStatus({ fetchRemote: true })
+        }
+      ];
+    }
+
+    return [
+      {
+        id: 'open-workspace-git',
+        leftSection: IconBrandGit,
+        label: 'View changes in Git tab',
+        onClick: handleOpenWorkspaceGit
+      },
+      {
+        id: 'refresh-workspace-git',
+        leftSection: IconRefresh,
+        label: 'Refresh status',
+        onClick: () => refreshWorkspaceGitStatus({ fetchRemote: true })
+      },
+      { type: 'divider', id: 'workspace-git-actions-divider' },
+      {
+        id: 'sync-workspace-git',
+        leftSection: IconUpload,
+        label: !workspaceGitSummary.hasRemote
+          ? 'Sync committed (set origin first)'
+          : !workspaceGitSummary.hasCommits
+              ? 'Sync committed (commit first)'
+              : workspaceGitOperation === 'Sync committed'
+                ? 'Syncing committed changes...'
+                : 'Sync committed',
+        disabled: !workspaceGitSummary.hasRemote || !workspaceGitSummary.hasCommits,
+        onClick: () => runWorkspaceGitOperation('Sync committed', 'renderer:sync-workspace-git')
+      },
+      {
+        id: 'sync-full-workspace-git',
+        leftSection: IconGitCommit,
+        label: 'Sync Full (use Git tab)',
+        onClick: handleOpenWorkspaceGit
+      },
+      {
+        id: 'pull-workspace-git',
+        leftSection: IconArrowDown,
+        label: !workspaceGitSummary.hasRemote ? 'Pull (set origin first)' : workspaceGitOperation === 'Pull' ? 'Pulling...' : 'Pull',
+        disabled: !workspaceGitSummary.hasRemote,
+        onClick: () => runWorkspaceGitOperation('Pull', 'renderer:pull-workspace-git')
+      },
+      {
+        id: 'push-workspace-git',
+        leftSection: IconArrowUp,
+        label: !workspaceGitSummary.hasRemote
+          ? 'Push (set origin first)'
+          : !workspaceGitSummary.hasCommits
+              ? 'Push (commit first)'
+              : workspaceGitOperation === 'Push'
+                ? 'Pushing...'
+                : 'Push',
+        disabled: !workspaceGitSummary.hasRemote || !workspaceGitSummary.hasCommits,
+        onClick: () => runWorkspaceGitOperation('Push', 'renderer:push-workspace-git')
+      }
+    ];
+  }, [
+    handleOpenWorkspaceGit,
+    initializeWorkspaceGit,
+    refreshWorkspaceGitStatus,
+    runWorkspaceGitOperation,
+    workspaceGitOperation,
+    workspaceGitSummary.hasCommits,
+    workspaceGitSummary.hasRemote,
+    workspaceGitSummary.isGitRepository
+  ]);
 
   return (
     <StyledWrapper className={`app-titlebar ${osClass} ${isFullScreen ? 'fullscreen' : ''}`}>
@@ -260,6 +519,13 @@ const AppTitleBar = () => {
       )}
       {importWorkspaceModalOpen && (
         <ImportWorkspace onClose={() => setImportWorkspaceModalOpen(false)} />
+      )}
+      {cloneGitWorkspaceModalOpen && (
+        <CloneGitRepository
+          mode="workspace"
+          onClose={() => setCloneGitWorkspaceModalOpen(false)}
+          onFinish={() => setCloneGitWorkspaceModalOpen(false)}
+        />
       )}
 
       <div className="titlebar-content">
@@ -279,6 +545,53 @@ const AppTitleBar = () => {
           >
             <WorkspaceName />
           </MenuDropdown>
+
+          {showGitWorkspaceFeature && activeWorkspace?.pathname && (
+            <MenuDropdown
+              data-testid="workspace-git-menu"
+              items={workspaceGitMenuItems}
+              placement="bottom-start"
+            >
+              <button
+                className={classNames('titlebar-git-button', {
+                  'is-loading': workspaceGitLoading || Boolean(workspaceGitOperation),
+                  'has-unpushed': workspaceGitSummary.ahead > 0,
+                  'has-conflicts': workspaceGitSummary.hasConflicts,
+                  'not-repo': workspaceGitData && !workspaceGitSummary.isGitRepository
+                })}
+                title={
+                  workspaceGitData && !workspaceGitSummary.isGitRepository
+                    ? 'Initialize workspace Git'
+                    : `${workspaceGitSummary.changeCount} changes, ${workspaceGitSummary.ahead} ahead, ${workspaceGitSummary.behind} behind`
+                }
+              >
+                <IconBrandGit size={14} stroke={1.5} />
+                {workspaceGitSummary.isGitRepository ? (
+                  <>
+                    <span className="git-branch">
+                      <IconGitBranch size={12} stroke={1.5} />
+                      {workspaceGitData?.currentGitBranch || 'main'}
+                    </span>
+                    {workspaceGitSummary.changeCount > 0 && <span className="git-pill">{workspaceGitSummary.changeCount}</span>}
+                    {workspaceGitSummary.ahead > 0 && (
+                      <span className="git-sync-indicator">
+                        <IconArrowUp size={11} stroke={2} />
+                        {workspaceGitSummary.ahead}
+                      </span>
+                    )}
+                    {workspaceGitSummary.behind > 0 && (
+                      <span className="git-behind-indicator">
+                        <IconArrowDown size={11} stroke={2} />
+                        {workspaceGitSummary.behind}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span>Git</span>
+                )}
+              </button>
+            </MenuDropdown>
+          )}
         </div>
 
         {/* Center section: Bruno logo + text */}

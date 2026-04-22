@@ -68,6 +68,12 @@ const defaultPreferences = {
     sslSession: {
       enabled: false
     }
+  },
+  features: {
+    apiSpec: true,
+    gitWorkspace: true,
+    fileExplorer: true,
+    brunoJson: false
   }
 };
 
@@ -135,6 +141,12 @@ const preferencesSchema = Yup.object().shape({
     sslSession: Yup.object({
       enabled: Yup.boolean()
     })
+  }).optional(),
+  features: Yup.object({
+    apiSpec: Yup.boolean(),
+    gitWorkspace: Yup.boolean(),
+    fileExplorer: Yup.boolean(),
+    brunoJson: Yup.boolean()
   }).optional()
 });
 

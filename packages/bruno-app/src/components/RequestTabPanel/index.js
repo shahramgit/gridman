@@ -36,6 +36,7 @@ import useKeybinding from 'hooks/useKeybinding';
 import { ScopedPersistenceProvider } from 'hooks/usePersistedState/PersistedScopeProvider';
 import ResponseExample from 'components/ResponseExample';
 import WorkspaceOverview from 'components/WorkspaceHome/WorkspaceOverview';
+import WorkspaceGit from 'components/WorkspaceHome/WorkspaceGit';
 import Preferences from 'components/Preferences';
 import EnvironmentSettings from 'components/Environments/EnvironmentSettings';
 import GlobalEnvironmentSettings from 'components/Environments/GlobalEnvironmentSettings';
@@ -209,6 +210,10 @@ const RequestTabPanel = () => {
 
   if (focusedTab.type === 'workspaceEnvironments') {
     return <GlobalEnvironmentSettings />;
+  }
+
+  if (focusedTab.type === 'workspaceGit') {
+    return activeWorkspace ? <WorkspaceGit workspace={activeWorkspace} /> : null;
   }
 
   if (!focusedTab.uid || !focusedTab.collectionUid) {

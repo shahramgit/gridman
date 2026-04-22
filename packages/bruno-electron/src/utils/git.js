@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 const { parseRequest } = require('@usebruno/filestore');
+const { DEFAULT_GITIGNORE } = require('./filesystem');
 
 let collectionPathToGitRootPathMap = new Map();
 
@@ -73,6 +74,38 @@ const getCollectionGitRootPath = (collectionPath) => {
   return gitRootPath;
 };
 
+const getWorkspaceGitRootPath = (workspacePath) => {
+  if (!workspacePath) {
+    return null;
+  }
+
+  const resolvedWorkspacePath = path.resolve(workspacePath);
+  const gitPath = path.join(resolvedWorkspacePath, '.git');
+
+  try {
+    return fs.existsSync(gitPath) ? resolvedWorkspacePath : null;
+  } catch (err) {
+    console.error('Error finding workspace .git path:', err);
+    return null;
+  }
+};
+
+const getExternalCollectionPaths = (workspacePath, collectionPaths = []) => {
+  const normalizedWorkspacePath = path.resolve(workspacePath);
+
+  return collectionPaths
+    .filter(Boolean)
+    .map((collectionPath) => path.resolve(collectionPath))
+    .filter((collectionPath) => {
+      const relativePath = path.relative(normalizedWorkspacePath, collectionPath);
+      return relativePath.startsWith('..') || path.isAbsolute(relativePath);
+    });
+};
+
+const getWorkspaceGitTargetPath = ({ workspacePath }) => {
+  return workspacePath;
+};
+
 const getCollectionGitRepoUrl = async (gitRootPath) => {
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
@@ -91,6 +124,70 @@ const initGit = async (gitRootPath) => {
   await git.init();
   // Create and checkout main branch -> This is specific for use with Bruno
   return await git.raw(['branch', '-M', 'main']);
+};
+
+const ensureWorkspaceGitFiles = async (workspacePath) => {
+  const gitignorePath = path.join(workspacePath, '.gitignore');
+  const readmePath = path.join(workspacePath, 'README.md');
+
+  if (!fs.existsSync(gitignorePath)) {
+    await fs.promises.writeFile(gitignorePath, `${DEFAULT_GITIGNORE}\n`, 'utf8');
+  }
+
+  if (!fs.existsSync(readmePath)) {
+    const workspaceName = path.basename(workspacePath);
+    const readme = [
+      `# ${workspaceName}`,
+      '',
+      'Bruno workspace tracked with Git.',
+      '',
+      'Keep collections, environments, API specs, and workspace files in this repository.',
+      ''
+    ].join('\n');
+    await fs.promises.writeFile(readmePath, readme, 'utf8');
+  }
+};
+
+const normalizeWorkspaceGitInput = (input) => {
+  if (typeof input === 'string') {
+    return { workspacePath: input, collectionPaths: [], preferCollectionParent: false, fetchRemote: false, remote: 'origin' };
+  }
+
+  return {
+    workspacePath: input?.workspacePath,
+    collectionPaths: input?.collectionPaths || [],
+    preferCollectionParent: Boolean(input?.preferCollectionParent),
+    fetchRemote: Boolean(input?.fetchRemote),
+    remote: input?.remote || 'origin'
+  };
+};
+
+const initWorkspaceGit = async (input) => {
+  const { workspacePath, collectionPaths, preferCollectionParent } = normalizeWorkspaceGitInput(input);
+
+  if (!workspacePath) {
+    throw new Error('Workspace path is required');
+  }
+  if (!fs.existsSync(workspacePath)) {
+    throw new Error(`Workspace path does not exist: ${workspacePath}`);
+  }
+
+  const gitTargetPath = getWorkspaceGitTargetPath({ workspacePath, collectionPaths, preferCollectionParent });
+
+  if (!fs.existsSync(gitTargetPath)) {
+    throw new Error(`Git target path does not exist: ${gitTargetPath}`);
+  }
+
+  const existingGitRootPath = getWorkspaceGitRootPath(gitTargetPath);
+  if (existingGitRootPath) {
+    await ensureWorkspaceGitFiles(existingGitRootPath);
+    return getWorkspaceGitData({ workspacePath, collectionPaths, preferCollectionParent });
+  }
+
+  await ensureWorkspaceGitFiles(gitTargetPath);
+  await initGit(gitTargetPath);
+  collectionPathToGitRootPathMap.delete(gitTargetPath);
+  return getWorkspaceGitData({ workspacePath, collectionPaths, preferCollectionParent });
 };
 
 const stageChanges = async (gitRootPath, files) => {
@@ -749,6 +846,145 @@ const fetchChanges = (gitRootPath, remote = 'origin') => {
   });
 };
 
+const getGitStatus = (gitRootPath) => {
+  return new Promise((resolve, reject) => {
+    const git = getSimpleGitInstanceForPath(gitRootPath);
+    git.status((err, status) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve(status);
+    });
+  });
+};
+
+const hasGitCommits = (gitRootPath) => {
+  return new Promise((resolve) => {
+    const git = getSimpleGitInstanceForPath(gitRootPath);
+    git.raw(['rev-parse', '--verify', 'HEAD'], (err) => {
+      resolve(!err);
+    });
+  });
+};
+
+const getWorkspaceGitStatusForClient = (status = {}) => ({
+  current: status.current || '',
+  tracking: status.tracking || null,
+  ahead: Number(status.ahead || 0),
+  behind: Number(status.behind || 0),
+  created: Array.isArray(status.created) ? status.created : [],
+  deleted: Array.isArray(status.deleted) ? status.deleted : [],
+  modified: Array.isArray(status.modified) ? status.modified : [],
+  not_added: Array.isArray(status.not_added) ? status.not_added : [],
+  renamed: Array.isArray(status.renamed)
+    ? status.renamed.map((file) => ({
+        from: file.from,
+        to: file.to
+      }))
+    : []
+});
+
+const getRemotesForClient = (remotes = []) => {
+  if (!Array.isArray(remotes)) {
+    return [];
+  }
+
+  return remotes.map((remote) => ({
+    name: remote.name,
+    refs: {
+      fetch: remote.refs?.fetch || '',
+      push: remote.refs?.push || ''
+    }
+  }));
+};
+
+const getAheadBehindForClient = (aheadBehind = {}) => ({
+  ahead: Number(aheadBehind.ahead || 0),
+  behind: Number(aheadBehind.behind || 0),
+  aheadCommits: Array.isArray(aheadBehind.aheadCommits) ? aheadBehind.aheadCommits : [],
+  behindCommits: Array.isArray(aheadBehind.behindCommits) ? aheadBehind.behindCommits : []
+});
+
+const getWorkspaceGitData = async (input) => {
+  const { workspacePath, collectionPaths, preferCollectionParent, fetchRemote, remote } = normalizeWorkspaceGitInput(input);
+  const gitTargetPath = getWorkspaceGitTargetPath({ workspacePath, collectionPaths, preferCollectionParent });
+  const outsideCollections = getExternalCollectionPaths(workspacePath, collectionPaths).map((collectionPath) => ({
+    path: collectionPath,
+    name: path.basename(collectionPath)
+  }));
+  const gitRootPath = getWorkspaceGitRootPath(gitTargetPath);
+  if (!gitRootPath) {
+    return {
+      isGitRepository: false,
+      gitRootPath: null,
+      gitTargetPath,
+      outsideCollections
+    };
+  }
+
+  const remotes = await fetchRemotes(gitRootPath).catch(() => []);
+  const remoteNames = remotes.map((item) => item.name).filter(Boolean);
+  const remoteToFetch = remoteNames.includes(remote) ? remote : remoteNames[0];
+
+  if (fetchRemote && remoteToFetch) {
+    await fetchChanges(gitRootPath, remoteToFetch);
+  }
+
+  const [status, remotesForClient, branches, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits] = await Promise.all([
+    getGitStatus(gitRootPath),
+    Promise.resolve(remotes),
+    getCollectionGitBranches(gitRootPath).catch(() => []),
+    getCurrentGitBranch(gitRootPath).catch(() => ''),
+    getDefaultGitBranch(gitRootPath).catch(() => ''),
+    getAheadBehindCount(gitRootPath).catch(() => ({ ahead: 0, behind: 0, aheadCommits: [], behindCommits: [] })),
+    hasGitCommits(gitRootPath)
+  ]);
+
+  const changedFiles = await getChangedFilesInCollectionGit(gitRootPath, gitRootPath);
+  const mergeInProgress = fs.existsSync(path.join(gitRootPath, '.git', 'MERGE_HEAD'));
+
+  return {
+    isGitRepository: true,
+    gitRootPath,
+    gitTargetPath,
+    status: getWorkspaceGitStatusForClient(status),
+    changedFiles,
+    remotes: getRemotesForClient(remotesForClient),
+    branches,
+    currentGitBranch: currentGitBranch || defaultGitBranch || 'main',
+    defaultGitBranch: defaultGitBranch || 'main',
+    hasCommits,
+    aheadBehind: getAheadBehindForClient(aheadBehind),
+    outsideCollections,
+    mergeInProgress
+  };
+};
+
+const syncGitChanges = async (win, { gitRootPath, processUid, remote = 'origin', remoteBranch, strategy = '--no-rebase' }) => {
+  await fetchChanges(gitRootPath, remote);
+  const status = await getGitStatus(gitRootPath);
+  const branch = remoteBranch || status.current;
+  const result = {
+    fetched: true,
+    pulled: false,
+    pushed: false
+  };
+
+  if (status.behind > 0) {
+    await pullGitChanges(win, { gitRootPath, processUid, remote, remoteBranch: branch, strategy });
+    result.pulled = true;
+  }
+
+  const nextStatus = await getGitStatus(gitRootPath);
+  if (!nextStatus.tracking || nextStatus.ahead > 0) {
+    await pushGitChanges(win, { gitRootPath, processUid, remote, remoteBranch: branch });
+    result.pushed = true;
+  }
+
+  return result;
+};
+
 const fetchRemoteBranches = ({ gitRootPath, remote }) => {
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
@@ -778,6 +1014,25 @@ const addRemote = ({ gitRootPath, remoteName, remoteUrl }) => {
       reject(err);
     }
   });
+};
+
+const upsertRemote = async ({ gitRootPath, remoteName = 'origin', remoteUrl }) => {
+  if (!remoteUrl?.trim()) {
+    throw new Error('Remote URL is required');
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  const existingRemotes = await fetchRemotes(gitRootPath).catch(() => []);
+  const remoteExists = existingRemotes.some((remote) => remote.name === remoteName);
+
+  if (remoteExists) {
+    await git.raw(['remote', 'set-url', remoteName, remoteUrl.trim()]);
+  } else {
+    await git.addRemote(remoteName, remoteUrl.trim());
+  }
+
+  const remotes = await fetchRemotes(gitRootPath);
+  return getRemotesForClient(remotes);
 };
 
 const removeRemote = ({ gitRootPath, remoteName }) => {
@@ -1019,6 +1274,32 @@ const continueMerge = async (gitRootPath, conflictedFiles, commitMessage) => {
       await fsPromises.writeFile(mergeMsgPath, commitMessage, 'utf8');
 
       // Step 4: Call git merge --continue
+      exec('git -c core.editor=: merge --continue', { cwd: gitRootPath }, (err, stdout) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(stdout);
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+};
+
+const continueResolvedMerge = async (gitRootPath, conflictedFilePaths, commitMessage) => {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const fsPromises = require('fs/promises');
+      const fullPaths = conflictedFilePaths.map((filePath) => path.join(gitRootPath, filePath));
+
+      await stageChanges(gitRootPath, fullPaths);
+
+      if (commitMessage) {
+        const mergeMsgPath = path.join(gitRootPath, '.git', 'MERGE_MSG');
+        await fsPromises.writeFile(mergeMsgPath, commitMessage, 'utf8');
+      }
+
       exec('git -c core.editor=: merge --continue', { cwd: gitRootPath }, (err, stdout) => {
         if (err) {
           reject(err);
@@ -1762,7 +2043,11 @@ const getGitGraph = async (gitRootPath, branchName, limit = 50) => {
 
 module.exports = {
   getCollectionGitRootPath,
+  getWorkspaceGitRootPath,
   getCollectionGitRepoUrl,
+  getWorkspaceGitData,
+  initWorkspaceGit,
+  getGitStatus,
   stageChanges,
   unstageChanges,
   discardChanges,
@@ -1784,17 +2069,20 @@ module.exports = {
   getRenamedFileDiff,
   cloneGitRepository,
   fetchChanges,
+  syncGitChanges,
   fetchRemotes,
   fetchRemoteBranches,
   checkoutRemoteGitBranch,
   getGitVersion,
   addRemote,
+  upsertRemote,
   removeRemote,
   getAheadBehindCount,
   getAheadCount,
   getBehindCount,
   abortConflictResolution,
   continueMerge,
+  continueResolvedMerge,
   getCommitFiles,
   getCommitFileDiff,
   getCommitCompareFiles,

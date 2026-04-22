@@ -92,6 +92,25 @@ import { saveGlobalEnvironment } from 'providers/ReduxStore/slices/global-enviro
 import { getTabToFocusForCurrentWorkspace } from 'providers/ReduxStore/slices/workspaces/getTabToFocusForCurrentWorkspace';
 import { clearPersistedScope } from 'hooks/usePersistedState/PersistedScopeProvider';
 
+const isPathInsideDirectory = (parentPath, childPath) => {
+  if (!parentPath || !childPath) {
+    return false;
+  }
+
+  const relativePath = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+};
+
+const assertWorkspaceCollectionLocation = (workspace, collectionLocation) => {
+  if (!workspace?.pathname || !collectionLocation) {
+    return;
+  }
+
+  if (!isPathInsideDirectory(workspace.pathname, collectionLocation)) {
+    throw new Error('Workspace collections must be inside the workspace folder.');
+  }
+};
+
 // generate a unique names
 const generateUniqueName = (originalName, existingItems, isFolder) => {
   // Extract base name by removing any existing " (number)" suffix
@@ -2659,6 +2678,10 @@ export const createCollection = (collectionName, collectionFolderName, collectio
     }
   }
 
+  if (options.workspaceId && options.workspaceId !== 'default') {
+    assertWorkspaceCollectionLocation({ pathname: options.workspaceId }, collectionLocation);
+  }
+
   return new Promise((resolve, reject) => {
     ipcRenderer
       .invoke('renderer:create-collection', collectionName, collectionFolderName, collectionLocation, options)
@@ -2742,13 +2765,15 @@ export const importCollection = (collection, collectionLocation, options = {}) =
       const activeWorkspace = state.workspaces.workspaces.find((w) => w.uid === state.workspaces.activeWorkspaceUid);
       const isMultiple = Array.isArray(collection);
 
+      assertWorkspaceCollectionLocation(activeWorkspace, collectionLocation);
+
       const result = await ipcRenderer.invoke('renderer:import-collection', collection, collectionLocation, {
         format: options.format || DEFAULT_COLLECTION_FORMAT,
         rawOpenAPISpec: options.rawOpenAPISpec
       });
       const importedPaths = result.success.items;
 
-      if (importedPaths.length > 0 && activeWorkspace && activeWorkspace.pathname && activeWorkspace.type !== 'default') {
+      if (importedPaths.length > 0 && activeWorkspace && activeWorkspace.pathname) {
         for (const importedItem of importedPaths) {
           const workspaceCollection = {
             name: importedItem.name,
@@ -2770,9 +2795,11 @@ export const importCollectionFromZip = (zipFilePath, collectionLocation) => asyn
   const state = getState();
   const activeWorkspace = state.workspaces.workspaces.find((w) => w.uid === state.workspaces.activeWorkspaceUid);
 
+  assertWorkspaceCollectionLocation(activeWorkspace, collectionLocation);
+
   const collectionPath = await ipcRenderer.invoke('renderer:import-collection-zip', zipFilePath, collectionLocation);
 
-  if (activeWorkspace && activeWorkspace.pathname && activeWorkspace.type !== 'default') {
+  if (activeWorkspace && activeWorkspace.pathname) {
     const collectionName = path.basename(collectionPath);
     await ipcRenderer.invoke('renderer:add-collection-to-workspace', activeWorkspace.pathname, {
       name: collectionName,

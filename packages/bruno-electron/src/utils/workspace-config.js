@@ -147,6 +147,15 @@ const getNormalizedAbsoluteCollectionPath = (workspacePath, collection) => {
   return path.normalize(resolved);
 };
 
+const isPathInsideDirectory = (parentPath, childPath) => {
+  if (!parentPath || !childPath) {
+    return false;
+  }
+
+  const relativePath = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+};
+
 const normalizeCollectionEntry = (workspacePath, collection) => {
   const relativePath = makeRelativePath(workspacePath, collection.path);
 
@@ -328,6 +337,14 @@ const updateWorkspaceDocs = async (workspacePath, docs) => {
 const addCollectionToWorkspace = async (workspacePath, collection) => {
   if (!isValidCollectionEntry(collection)) {
     throw new Error('Invalid collection: name and path are required');
+  }
+
+  const absoluteCollectionPath = path.isAbsolute(collection.path)
+    ? collection.path
+    : path.resolve(workspacePath, collection.path);
+
+  if (!isPathInsideDirectory(workspacePath, absoluteCollectionPath)) {
+    throw new Error('Workspace collections must be inside the workspace folder. Move this collection inside the workspace before adding it.');
   }
 
   return withLock(getWorkspaceLockKey(workspacePath), async () => {
@@ -576,6 +593,7 @@ module.exports = {
   getWorkspaceApiSpecs,
   addApiSpecToWorkspace,
   removeApiSpecFromWorkspace,
+  isPathInsideDirectory,
   generateYamlContent,
   getWorkspaceUid,
   writeWorkspaceFileAtomic,

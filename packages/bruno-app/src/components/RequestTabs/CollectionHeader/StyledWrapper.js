@@ -65,6 +65,26 @@ const StyledWrapper = styled.div`
     }
   }
 
+  .workspace-git-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 26px;
+    padding: 0 8px;
+    border: 1px solid ${(props) => props.theme.border.border1};
+    border-radius: 4px;
+    background: ${(props) => props.theme.sidebar.collection.item.bg};
+    color: ${(props) => props.theme.text};
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    line-height: 1;
+
+    &:hover {
+      background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
+    }
+  }
+
   .workspace-rename-container {
     display: flex;
     align-items: center;

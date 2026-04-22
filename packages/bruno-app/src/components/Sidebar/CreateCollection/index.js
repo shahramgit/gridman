@@ -16,7 +16,6 @@ import { multiLineMsg } from 'utils/common';
 import { formatIpcError } from 'utils/common/error';
 import { DEFAULT_COLLECTION_FORMAT } from 'utils/common/constants';
 import StyledWrapper from './StyledWrapper';
-import get from 'lodash/get';
 import Button from 'ui/Button';
 
 const CreateCollection = ({ onClose, defaultLocation: propDefaultLocation, initialCollectionName = '' }) => {
@@ -26,14 +25,11 @@ const CreateCollection = ({ onClose, defaultLocation: propDefaultLocation, initi
   const workspaceUid = useSelector((state) => state.workspaces?.activeWorkspaceUid);
   const [isEditing, toggleEditing] = useState(false);
   const [showFileFormat, setShowFileFormat] = useState(false);
-  const preferences = useSelector((state) => state.app.preferences);
 
   const dropdownTippyRef = useRef();
   const onDropdownCreate = (ref) => (dropdownTippyRef.current = ref);
   const activeWorkspace = workspaces.find((w) => w.uid === workspaceUid);
-  const isDefaultWorkspace = activeWorkspace?.type === 'default';
-
-  const defaultLocation = isDefaultWorkspace ? get(preferences, 'general.defaultLocation', '') : (activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '');
+  const defaultLocation = activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '';
 
   const formik = useFormik({
     enableReinitialize: true,

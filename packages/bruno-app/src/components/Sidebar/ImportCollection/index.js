@@ -15,7 +15,7 @@ const IMPORT_TABS = {
   URL: 'url'
 };
 
-const ImportCollection = ({ onClose, handleSubmit }) => {
+const ImportCollection = ({ onClose, handleSubmit, showGit = true }) => {
   const { theme } = useTheme();
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
@@ -49,14 +49,16 @@ const ImportCollection = ({ onClose, handleSubmit }) => {
               <IconFileImport size={18} strokeWidth={1.5} className="mr-2" />
               File
             </div>
-            <div
-              className={getTabClassname(IMPORT_TABS.GITHUB)}
-              onClick={handleTabSelect(IMPORT_TABS.GITHUB)}
-              data-testid="github-tab"
-            >
-              <IconBrandGit size={18} strokeWidth={1.5} className="mr-2" />
-              Git Repository
-            </div>
+            {showGit && (
+              <div
+                className={getTabClassname(IMPORT_TABS.GITHUB)}
+                onClick={handleTabSelect(IMPORT_TABS.GITHUB)}
+                data-testid="github-tab"
+              >
+                <IconBrandGit size={18} strokeWidth={1.5} className="mr-2" />
+                Git Repository
+              </div>
+            )}
             <div
               className={getTabClassname(IMPORT_TABS.URL)}
               onClick={handleTabSelect(IMPORT_TABS.URL)}
@@ -101,7 +103,7 @@ const ImportCollection = ({ onClose, handleSubmit }) => {
             setErrorMessage={setErrorMessage}
           />
         )}
-        {tab === IMPORT_TABS.GITHUB && (
+        {showGit && tab === IMPORT_TABS.GITHUB && (
           <GitHubTab
             handleSubmit={handleSubmit}
             setErrorMessage={setErrorMessage}

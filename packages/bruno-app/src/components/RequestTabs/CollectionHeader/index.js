@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import get from 'lodash/get';
 import {
   IconCategory,
   IconBox,
@@ -12,7 +13,8 @@ import {
   IconX,
   IconCheck,
   IconFolder,
-  IconUpload
+  IconUpload,
+  IconBrandGit
 } from '@tabler/icons';
 import OpenAPISyncIcon from 'components/Icons/OpenAPISync';
 import { switchWorkspace, renameWorkspaceAction, exportWorkspaceAction, confirmWorkspaceCreation, cancelWorkspaceCreation } from 'providers/ReduxStore/slices/workspaces/actions';
@@ -43,11 +45,13 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
   const activeWorkspaceUid = useSelector((state) => state.workspaces.activeWorkspaceUid);
   const collections = useSelector((state) => state.collections.collections);
   const tabs = useSelector((state) => state.tabs.tabs);
+  const preferences = useSelector((state) => state.app.preferences);
 
   // Get the current active workspace
   const currentWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid);
   const gitRootPath = collection?.git?.gitRootPath;
   const isOpenAPISyncEnabled = useBetaFeature(BETA_FEATURES.OPENAPI_SYNC);
+  const showGitWorkspaceFeature = get(preferences, 'features.gitWorkspace', true);
 
   // Workspace rename state
   const [isRenamingWorkspace, setIsRenamingWorkspace] = useState(false);
@@ -272,6 +276,18 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
       });
   };
 
+  const handleOpenWorkspaceGit = () => {
+    if (!currentWorkspace?.scratchCollectionUid) return;
+    switcherRef.current?.hide();
+    workspaceActionsRef.current?.hide();
+    dispatch(addTab({
+      uid: `${currentWorkspace.scratchCollectionUid}-git`,
+      collectionUid: currentWorkspace.scratchCollectionUid,
+      type: 'workspaceGit'
+    }));
+    dispatch(focusTab({ uid: `${currentWorkspace.scratchCollectionUid}-git` }));
+  };
+
   const validateWorkspaceName = (name) => {
     const trimmed = name?.trim();
     if (!trimmed) {
@@ -491,6 +507,14 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
                       <span className="dropdown-tab-count">{workspaceTabCount}</span>
                     )}
                   </div>
+                  {showGitWorkspaceFeature && (
+                    <div className="dropdown-item" onClick={handleOpenWorkspaceGit}>
+                      <div className="dropdown-icon">
+                        <IconBrandGit size={16} strokeWidth={1.5} />
+                      </div>
+                      <span className="dropdown-label">Git</span>
+                    </div>
+                  )}
                 </>
               )}
 
@@ -522,6 +546,13 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
                 </>
               )}
             </Dropdown>
+          )}
+
+          {isScratchCollection && showGitWorkspaceFeature && (
+            <button className="workspace-git-button" onClick={handleOpenWorkspaceGit} title="Workspace Git">
+              <IconBrandGit size={15} strokeWidth={1.5} />
+              <span>Git</span>
+            </button>
           )}
 
           {/* Workspace actions dropdown */}

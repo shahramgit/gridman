@@ -18,7 +18,6 @@ import { processBrunoCollection } from 'utils/importers/bruno-collection';
 import { wsdlToBruno } from '@usebruno/converters';
 import StyledWrapper from './StyledWrapper';
 import toast from 'react-hot-toast';
-import get from 'lodash/get';
 
 const STATUS = {
   LOADING: 'loading',
@@ -130,12 +129,8 @@ export const BulkImportCollectionLocation = ({
   const dropdownTippyRef = useRef();
 
   const { workspaces, activeWorkspaceUid } = useSelector((state) => state.workspaces);
-  const preferences = useSelector((state) => state.app.preferences);
   const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid);
-  const isDefaultWorkspace = !activeWorkspace || activeWorkspace.type === 'default';
-  const defaultLocation = isDefaultWorkspace
-    ? get(preferences, 'general.defaultLocation', '')
-    : (activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '');
+  const defaultLocation = activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '';
 
   const [status, setStatus] = useState({});
   const [errorMessages, setErrorMessages] = useState({});

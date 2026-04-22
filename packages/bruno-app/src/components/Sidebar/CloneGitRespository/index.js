@@ -9,6 +9,7 @@ import {
   scanForBrunoFiles
 } from 'providers/ReduxStore/slices/collections/actions';
 import { removeGitOperationProgress } from 'providers/ReduxStore/slices/app';
+import { openWorkspacePath } from 'providers/ReduxStore/slices/workspaces/actions';
 import Modal from 'components/Modal';
 import path from 'utils/common/path';
 import Portal from 'components/Portal';
@@ -17,24 +18,21 @@ import { uuid } from 'utils/common/index';
 import StyledWrapper from './StyledWrapper';
 import { getRepoNameFromUrl } from 'utils/git';
 import GitNotFoundModal from 'components/Git/GitNotFoundModal/index';
-import get from 'lodash/get';
 
-const CloneGitRepository = ({ onClose, onFinish, collectionRepositoryUrl = null }) => {
+const CloneGitRepository = ({ onClose, onFinish, collectionRepositoryUrl = null, mode = 'collection' }) => {
   const [collectionPaths, setCollectionPaths] = useState([]);
   const [selectedCollectionPaths, setSelectedCollectionPaths] = useState([]);
   const [processUid, setProcessUid] = useState(uuid());
   const [steps, setSteps] = useState([]);
   const [view, setView] = useState('form');
+  const isWorkspaceMode = mode === 'workspace';
 
   const progressData = useSelector((state) => state.app.gitOperationProgress[processUid]);
   const { gitVersion } = useSelector((state) => state.app);
   const { workspaces, activeWorkspaceUid } = useSelector((state) => state.workspaces);
-  const preferences = useSelector((state) => state.app.preferences);
   const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid);
-  const isDefaultWorkspace = !activeWorkspace || activeWorkspace.type === 'default';
-  const defaultLocation = isDefaultWorkspace
-    ? get(preferences, 'general.defaultLocation', '')
-    : (activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '');
+  const defaultLocation = activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '';
+  const workspaceDefaultLocation = activeWorkspace?.pathname || '';
   const inputRef = useRef();
   const dispatch = useDispatch();
 
@@ -106,11 +104,30 @@ const CloneGitRepository = ({ onClose, onFinish, collectionRepositoryUrl = null 
     );
   };
 
+  const openWorkspaceInProgress = () => {
+    setSteps((prev) => [
+      ...prev,
+      {
+        step: 'open-workspace',
+        title: 'Opening workspace',
+        completed: false
+      }
+    ]);
+  };
+
+  const openWorkspaceFinished = () => {
+    setSteps((prev) =>
+      prev.map((step) =>
+        step.step === 'open-workspace' ? { ...step, title: 'Workspace opened', completed: true, info: '' } : step
+      )
+    );
+  };
+
   const formik = useFormik({
     enableReinitialize: true,
     initialValues: {
       repositoryUrl: collectionRepositoryUrl || '',
-      collectionLocation: defaultLocation
+      collectionLocation: isWorkspaceMode ? workspaceDefaultLocation : defaultLocation
     },
     validationSchema: Yup.object({
       repositoryUrl: Yup.string().required('Repository URL is required'),
@@ -129,6 +146,13 @@ const CloneGitRepository = ({ onClose, onFinish, collectionRepositoryUrl = null 
 
         cloneFinished();
         dispatch(removeGitOperationProgress(processUid));
+
+        if (isWorkspaceMode) {
+          openWorkspaceInProgress();
+          await dispatch(openWorkspacePath(targetPath));
+          openWorkspaceFinished();
+          return;
+        }
 
         scanInProgress();
         const foundCollectionPaths = await dispatch(scanForBrunoFiles(targetPath));
@@ -188,7 +212,10 @@ const CloneGitRepository = ({ onClose, onFinish, collectionRepositoryUrl = null 
         onClose();
         break;
       case 'Open':
-        if (collectionPaths.length > 0 && selectedCollectionPaths.length > 0) {
+        if (isWorkspaceMode) {
+          onClose();
+          onFinish();
+        } else if (collectionPaths.length > 0 && selectedCollectionPaths.length > 0) {
           dispatch(openMultipleCollections(selectedCollectionPaths));
           onClose();
           onFinish();
@@ -202,7 +229,7 @@ const CloneGitRepository = ({ onClose, onFinish, collectionRepositoryUrl = null 
   const getConfirmText = () =>
     !steps.length
       ? 'Clone'
-      : steps.some((step) => !step.completed || step.error || (isScanCompleted() && !collectionPaths?.length))
+      : steps.some((step) => !step.completed || step.error || (!isWorkspaceMode && isScanCompleted() && !collectionPaths?.length))
         ? 'Close'
         : 'Open';
 
@@ -220,7 +247,7 @@ const CloneGitRepository = ({ onClose, onFinish, collectionRepositoryUrl = null 
     <Portal id="clone-repository-portal">
       <Modal
         size="md"
-        title="Clone Git Repository"
+        title={isWorkspaceMode ? 'Clone Git Workspace' : 'Clone Git Repository'}
         confirmText={getConfirmText()}
         handleConfirm={handleConfirm}
         handleCancel={onClose}
@@ -272,7 +299,7 @@ const CloneGitRepository = ({ onClose, onFinish, collectionRepositoryUrl = null 
                   <div className="text-red-500">{formik.errors.repositoryUrl}</div>
                 )}
                 <label htmlFor="collection-location" className="block font-semibold mt-3">
-                  Location
+                  {isWorkspaceMode ? 'Workspace Location' : 'Location'}
                 </label>
                 <input
                   id="collection-location"
@@ -329,7 +356,7 @@ const CloneGitRepository = ({ onClose, onFinish, collectionRepositoryUrl = null 
                   </ul>
                 </div>
               )}
-              {isScanCompleted() && (
+              {!isWorkspaceMode && isScanCompleted() && (
                 <div className="mt-4 mb-4">
                   {collectionPaths.length === 0 && (
                     <div className="flex">

@@ -230,6 +230,27 @@ export const openWorkspaceDialog = () => {
   };
 };
 
+export const openWorkspacePath = (workspacePath) => {
+  return async (dispatch) => {
+    try {
+      const result = await ipcRenderer.invoke('renderer:open-workspace', workspacePath);
+      const { workspaceConfig, workspaceUid } = result;
+
+      dispatch(createWorkspace({
+        uid: workspaceUid,
+        pathname: workspacePath,
+        ...workspaceConfig
+      }));
+
+      await dispatch(switchWorkspace(workspaceUid));
+
+      return result;
+    } catch (error) {
+      throw error;
+    }
+  };
+};
+
 export const removeCollectionFromWorkspaceAction = (workspaceUid, collectionPath, options = {}) => {
   return async (dispatch, getState) => {
     try {

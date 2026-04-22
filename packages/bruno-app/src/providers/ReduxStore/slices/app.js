@@ -50,6 +50,12 @@ const initialState = {
       sslSession: {
         enabled: false
       }
+    },
+    features: {
+      apiSpec: true,
+      gitWorkspace: true,
+      fileExplorer: true,
+      brunoJson: false
     }
   },
   generateCode: {

@@ -3,6 +3,7 @@ const path = require('path');
 const { dialog, ipcMain } = require('electron');
 const Yup = require('yup');
 const { isDirectory, getCollectionStats, normalizeAndResolvePath } = require('../utils/filesystem');
+const { isPathInsideDirectory } = require('../utils/workspace-config');
 const { generateUidBasedOnHash } = require('../utils/common');
 const { transformBrunoConfigAfterRead } = require('../utils/transformBrunoConfig');
 const { parseCollection } = require('@usebruno/filestore');
@@ -81,7 +82,7 @@ const getCollectionConfigFile = async (pathname) => {
   return config;
 };
 
-const openCollectionDialog = async (win, watcher) => {
+const openCollectionDialog = async (win, watcher, options = {}) => {
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     properties: ['openDirectory', 'createDirectory', 'multiSelections']
   });
@@ -92,6 +93,12 @@ const openCollectionDialog = async (win, watcher) => {
       const resolvedPath = path.resolve(filePath);
 
       if (isDirectory(resolvedPath)) {
+        if (options.workspacePath && options.workspacePath !== 'default' && !isPathInsideDirectory(options.workspacePath, resolvedPath)) {
+          acc.invalidPaths.push(resolvedPath);
+          console.error(`[ERROR] Collection must be inside workspace: "${resolvedPath}"`);
+          return acc;
+        }
+
         // Open each valid collection in parallel
         acc.openCollectionPromises.push(openCollection(win, watcher, resolvedPath).catch((err) => {
           console.error(`[ERROR] Failed to open collection at "${resolvedPath}":`, err.message);
@@ -111,7 +118,7 @@ const openCollectionDialog = async (win, watcher) => {
 
     // Notify about any invalid paths
     if (invalidPaths.length > 0) {
-      win.webContents.send('main:display-error', `Some selected folders could not be opened: ${invalidPaths.join(', ')}`);
+      win.webContents.send('main:display-error', `Some selected folders could not be opened. Workspace collections must be inside the workspace folder: ${invalidPaths.join(', ')}`);
     }
   }
 };

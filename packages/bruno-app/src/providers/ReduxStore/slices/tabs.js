@@ -32,6 +32,7 @@ export const tabsSlice = createSlice({
         'preferences',
         'workspaceOverview',
         'workspaceEnvironments',
+        'workspaceGit',
         'openapi-sync',
         'openapi-spec'
       ];
@@ -269,7 +270,7 @@ export const tabsSlice = createSlice({
       const activeTab = find(state.tabs, (t) => t.uid === state.activeTabUid);
       const tabUids = action.payload.tabUids || [];
 
-      const nonClosableTypes = ['workspaceOverview', 'workspaceEnvironments'];
+      const nonClosableTypes = ['workspaceOverview', 'workspaceEnvironments', 'workspaceGit'];
 
       // Push closed tabs onto the recently closed stack (LIFO)
       // Exclude transient requests — they have no persisted file and can't be reopened

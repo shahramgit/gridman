@@ -25,6 +25,7 @@ const SIDEBAR_SECTIONS = [
 const Sidebar = () => {
   const leftSidebarWidth = useSelector((state) => state.app.leftSidebarWidth);
   const sidebarCollapsed = useSelector((state) => state.app.sidebarCollapsed);
+  const showApiSpecFeature = useSelector((state) => state.app.preferences?.features?.apiSpec ?? true);
   const [asideWidth, setAsideWidth] = useState(leftSidebarWidth);
   const lastWidthRef = useRef(leftSidebarWidth);
 
@@ -97,7 +98,7 @@ const Sidebar = () => {
               <div className="flex flex-col flex-grow sidebar-sections-container" style={{ minHeight: 0, overflow: 'hidden' }}>
                 <div className="sidebar-sections flex flex-col flex-1">
                   <SidebarContent
-                    sections={SIDEBAR_SECTIONS}
+                    sections={showApiSpecFeature ? SIDEBAR_SECTIONS : SIDEBAR_SECTIONS.filter((section) => section.id !== 'api-specs')}
                   />
                 </div>
               </div>

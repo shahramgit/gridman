@@ -66,6 +66,15 @@ const registerFilesystemIpc = (mainWindow) => {
       throw error;
     }
   });
+
+  ipcMain.handle('open-file', async () => {
+    return null;
+  });
+
+  ipcMain.handle('renderer:log-renderer-error', async (_, payload) => {
+    console.error('Renderer error boundary:', payload);
+    return null;
+  });
 };
 
 module.exports = registerFilesystemIpc;
