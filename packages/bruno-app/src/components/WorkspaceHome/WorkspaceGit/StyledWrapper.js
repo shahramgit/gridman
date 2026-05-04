@@ -91,6 +91,69 @@ const StyledWrapper = styled.div`
     color: ${(props) => props.theme.colors.text.muted};
   }
 
+  .auth-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .auth-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 4px 8px;
+    border: 1px solid ${(props) => props.theme.border.border1};
+    border-radius: ${(props) => props.theme.border.radius.sm};
+    background: ${(props) => props.theme.tabs.secondary.active.bg};
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .auth-provider {
+    min-width: 0;
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .auth-detail {
+    display: grid;
+    grid-template-columns: 118px minmax(0, 1fr);
+    gap: 8px;
+    font-size: 13px;
+  }
+
+  .remote-value {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .remote-link,
+  .remote-text {
+    min-width: 0;
+    font: inherit;
+  }
+
+  .remote-link {
+    border: none;
+    padding: 0;
+    background: transparent;
+    color: ${(props) => props.theme.colors.link};
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .remote-link:hover {
+    text-decoration: underline;
+  }
+
   .file-row {
     display: grid;
     grid-template-columns: 32px 1fr auto;
@@ -131,6 +194,14 @@ const StyledWrapper = styled.div`
 
   .output-box {
     max-height: 140px;
+  }
+
+  .success-output {
+    border-color: ${(props) => props.theme.colors.text.green || props.theme.border.border1};
+  }
+
+  .error-output {
+    border-color: ${(props) => props.theme.colors.text.red || props.theme.border.border1};
   }
 
   .textbox {

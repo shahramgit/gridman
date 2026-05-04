@@ -12,6 +12,16 @@ import Button from 'ui/Button';
 import CollectionsList from './CollectionsList';
 import WorkspaceDocs from '../WorkspaceDocs';
 import StyledWrapper from './StyledWrapper';
+import path from 'utils/common/path';
+
+const isPathInsideDirectory = (parentPath, childPath) => {
+  if (!parentPath || !childPath) {
+    return false;
+  }
+
+  const relativePath = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+};
 
 const WorkspaceOverview = ({ workspace }) => {
   const dispatch = useDispatch();
@@ -25,6 +35,9 @@ const WorkspaceOverview = ({ workspace }) => {
   const [gitRepositoryUrl, setGitRepositoryUrl] = useState(null);
 
   const workspaceCollectionsCount = workspace?.collections?.length || 0;
+  const outsideCollections = (workspace?.collections || []).filter((collection) => {
+    return collection?.path && workspace?.pathname && !isPathInsideDirectory(workspace.pathname, collection.path);
+  });
 
   const workspaceEnvironmentsCount = globalEnvironments?.length || 0;
 
@@ -90,6 +103,27 @@ const WorkspaceOverview = ({ workspace }) => {
   const handleCloseGitModal = () => {
     setShowCloneGitModal(false);
     setGitRepositoryUrl(null);
+  };
+
+  const handleMoveCollectionsInsideWorkspace = async () => {
+    if (!workspace?.pathname || outsideCollections.length === 0) {
+      return;
+    }
+
+    try {
+      const { ipcRenderer } = window;
+      const movedCollections = await ipcRenderer.invoke('renderer:move-workspace-collections-inside', {
+        workspacePath: workspace.pathname,
+        collectionPaths: outsideCollections.map((collection) => collection.path)
+      });
+
+      if (movedCollections?.length) {
+        toast.success('Collections moved into workspace');
+      }
+    } catch (error) {
+      console.error('Failed to move collections into workspace:', error);
+      toast.error(error?.message || 'Failed to move collections into workspace');
+    }
   };
 
   return (
@@ -170,6 +204,29 @@ const WorkspaceOverview = ({ workspace }) => {
               </Button>
             </div>
           </div>
+
+          {outsideCollections.length > 0 && (
+            <div className="layout-warning">
+              <div className="section-title">Workspace Layout</div>
+              <p className="warning-copy">
+                Some collections are still stored outside this workspace folder. New collections in this workspace must be
+                created under <code>{path.join(workspace.pathname, 'collections')}</code>.
+              </p>
+              <div className="outside-list">
+                {outsideCollections.map((collection) => (
+                  <div key={collection.path} className="outside-row">{collection.path}</div>
+                ))}
+              </div>
+              <Button
+                color="primary"
+                size="sm"
+                className="mt-3"
+                onClick={handleMoveCollectionsInsideWorkspace}
+              >
+                Move inside workspace
+              </Button>
+            </div>
+          )}
 
           <div className="collections-section">
             <div className="section-title">Collections</div>

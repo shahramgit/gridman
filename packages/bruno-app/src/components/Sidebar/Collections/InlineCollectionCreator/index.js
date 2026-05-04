@@ -1,7 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { IconCheck, IconX, IconSettings } from '@tabler/icons';
-import get from 'lodash/get';
 import path from 'utils/common/path';
 import toast from 'react-hot-toast';
 import { createCollection } from 'providers/ReduxStore/slices/collections/actions';
@@ -19,15 +18,10 @@ const InlineCollectionCreator = ({ onComplete, onCancel, onOpenAdvanced }) => {
   const openingAdvancedRef = useRef(false);
   const clickedOutsideRef = useRef(false);
 
-  const preferences = useSelector((state) => state.app.preferences);
   const workspaces = useSelector((state) => state.workspaces?.workspaces || []);
   const activeWorkspaceUid = useSelector((state) => state.workspaces?.activeWorkspaceUid);
   const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid);
-  const isDefaultWorkspace = activeWorkspace?.type === 'default';
-
-  const defaultLocation = isDefaultWorkspace
-    ? get(preferences, 'general.defaultLocation', '')
-    : (activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '');
+  const defaultLocation = activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '';
 
   useEffect(() => {
     const focusAndSelect = (value) => {
@@ -80,7 +74,7 @@ const InlineCollectionCreator = ({ onComplete, onCancel, onOpenAdvanced }) => {
     }
 
     if (!defaultLocation) {
-      toast.error('Please set a default location in Preferences > General');
+      toast.error('Workspace collection location is not available');
       onCancel();
       return;
     }

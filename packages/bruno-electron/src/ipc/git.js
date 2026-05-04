@@ -16,7 +16,9 @@ const {
   continueResolvedMerge,
   getStagedFileDiff,
   getUnstagedFileDiff,
-  upsertRemote
+  upsertRemote,
+  getGitAuthDiagnostics,
+  testGitAuthentication
 } = require('../utils/git');
 const { createDirectory, removeDirectory } = require('../utils/filesystem');
 
@@ -46,6 +48,14 @@ const registerGitIpc = (mainWindow) => {
 
   ipcMain.handle('renderer:set-workspace-git-remote', async (event, { gitRootPath, remoteName = 'origin', remoteUrl }) => {
     return upsertRemote({ gitRootPath, remoteName, remoteUrl });
+  });
+
+  ipcMain.handle('renderer:get-workspace-git-auth-diagnostics', async (event, { gitRootPath, remote = 'origin', remoteUrl = '' }) => {
+    return getGitAuthDiagnostics({ gitRootPath, remote, remoteUrl });
+  });
+
+  ipcMain.handle('renderer:test-workspace-git-auth', async (event, { gitRootPath, remote = 'origin', remoteUrl = '' }) => {
+    return testGitAuthentication({ gitRootPath, remote, remoteUrl });
   });
 
   ipcMain.handle('renderer:stage-workspace-git-files', async (event, { gitRootPath, files }) => {

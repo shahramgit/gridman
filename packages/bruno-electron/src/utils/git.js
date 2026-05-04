@@ -1,7 +1,8 @@
 const simpleGit = require('simple-git');
 const fs = require('fs');
 const path = require('path');
-const { exec } = require('child_process');
+const os = require('os');
+const { exec, execFile } = require('child_process');
 const { parseRequest } = require('@usebruno/filestore');
 const { DEFAULT_GITIGNORE } = require('./filesystem');
 
@@ -90,6 +91,218 @@ const getWorkspaceGitRootPath = (workspacePath) => {
   }
 };
 
+const runGitCommand = (args, options = {}) => {
+  return new Promise((resolve) => {
+    execFile('git', args, {
+      cwd: options.cwd,
+      timeout: options.timeout || 15000,
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_ASKPASS: 'echo',
+        SSH_ASKPASS: 'echo',
+        ...options.env
+      }
+    }, (error, stdout = '', stderr = '') => {
+      const timedOut = error?.signal === 'SIGTERM' && !stderr && !stdout;
+      resolve({
+        ok: !error,
+        code: error?.code ?? 0,
+        signal: error?.signal || null,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        message: timedOut ? 'Git command timed out before completing.' : (stderr || stdout || error?.message || '').trim()
+      });
+    });
+  });
+};
+
+const detectRemoteProtocol = (remoteUrl = '') => {
+  const value = remoteUrl.trim();
+
+  if (!value) return 'none';
+  if (/^https?:\/\//i.test(value)) return 'https';
+  if (/^ssh:\/\//i.test(value) || /^(?:[^@]+@)?[^:]+:.+/.test(value)) return 'ssh';
+  if (/^file:\/\//i.test(value) || path.isAbsolute(value)) return 'file';
+
+  return 'unknown';
+};
+
+const getRemoteHost = (remoteUrl = '') => {
+  const value = remoteUrl.trim();
+
+  if (!value) return '';
+
+  try {
+    if (/^https?:\/\//i.test(value) || /^ssh:\/\//i.test(value)) {
+      return new URL(value).hostname;
+    }
+  } catch (_) {
+  }
+
+  const scpStyleMatch = value.match(/^(?:[^@]+@)?([^:]+):.+$/);
+  return scpStyleMatch?.[1] || '';
+};
+
+const detectGitProvider = (remoteUrl = '') => {
+  const host = getRemoteHost(remoteUrl).toLowerCase();
+
+  if (!host) return { id: 'unknown', name: 'Unknown provider', host: '' };
+  if (host.includes('github.com')) return { id: 'github', name: 'GitHub', host };
+  if (host.includes('gitlab.com')) return { id: 'gitlab', name: 'GitLab', host };
+  if (host.includes('bitbucket.org')) return { id: 'bitbucket', name: 'Bitbucket', host };
+  if (host.includes('azure.com') || host.includes('visualstudio.com')) return { id: 'azure', name: 'Azure DevOps', host };
+
+  return { id: 'custom', name: host, host };
+};
+
+const getProviderHelpLinks = (providerId) => {
+  const links = {
+    github: {
+      https: 'https://docs.github.com/en/get-started/getting-started-with-git/caching-your-github-credentials-in-git',
+      token: 'https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens',
+      ssh: 'https://docs.github.com/en/authentication/connecting-to-github-with-ssh'
+    },
+    gitlab: {
+      https: 'https://docs.gitlab.com/user/profile/personal_access_tokens/',
+      token: 'https://docs.gitlab.com/user/profile/personal_access_tokens/',
+      ssh: 'https://docs.gitlab.com/user/ssh/'
+    },
+    bitbucket: {
+      https: 'https://support.atlassian.com/bitbucket-cloud/docs/using-app-passwords/',
+      token: 'https://support.atlassian.com/bitbucket-cloud/docs/using-app-passwords/',
+      ssh: 'https://support.atlassian.com/bitbucket-cloud/docs/set-up-personal-ssh-keys-on-macos/'
+    },
+    azure: {
+      https: 'https://learn.microsoft.com/en-us/azure/devops/repos/git/auth-overview',
+      token: 'https://learn.microsoft.com/en-us/azure/devops/repos/git/auth-overview',
+      ssh: 'https://learn.microsoft.com/en-us/azure/devops/repos/git/use-ssh-keys-to-authenticate'
+    }
+  };
+
+  return links[providerId] || {
+    https: 'https://git-scm.com/book/en/v2/Git-Tools-Credential-Storage',
+    token: 'https://git-scm.com/book/en/v2/Git-Tools-Credential-Storage',
+    ssh: 'https://git-scm.com/book/en/v2/Git-on-the-Server-Setting-Up-the-Server'
+  };
+};
+
+const getCredentialHelper = async (gitRootPath) => {
+  const [local, global, system] = await Promise.all([
+    runGitCommand(['config', '--local', '--get-all', 'credential.helper'], { cwd: gitRootPath }),
+    runGitCommand(['config', '--global', '--get-all', 'credential.helper'], { cwd: gitRootPath }),
+    runGitCommand(['config', '--system', '--get-all', 'credential.helper'], { cwd: gitRootPath })
+  ]);
+
+  const value = local.stdout || global.stdout || system.stdout || '';
+  const scope = local.stdout ? 'local' : global.stdout ? 'global' : system.stdout ? 'system' : 'none';
+
+  return {
+    configured: Boolean(value),
+    value,
+    scope
+  };
+};
+
+const getSshKeyStatus = () => {
+  const sshDir = path.join(os.homedir(), '.ssh');
+  const keyNames = ['id_ed25519', 'id_rsa', 'id_ecdsa', 'id_dsa'];
+
+  const keys = keyNames
+    .map((name) => ({
+      name,
+      privateKeyPath: path.join(sshDir, name),
+      publicKeyPath: path.join(sshDir, `${name}.pub`)
+    }))
+    .filter((key) => fs.existsSync(key.privateKeyPath) || fs.existsSync(key.publicKeyPath))
+    .map((key) => ({
+      name: key.name,
+      hasPrivateKey: fs.existsSync(key.privateKeyPath),
+      hasPublicKey: fs.existsSync(key.publicKeyPath),
+      publicKeyPath: key.publicKeyPath
+    }));
+
+  return {
+    sshDir,
+    hasSshDir: fs.existsSync(sshDir),
+    hasKeys: keys.some((key) => key.hasPrivateKey),
+    keys
+  };
+};
+
+const classifyAuthError = (message = '') => {
+  const lower = message.toLowerCase();
+
+  if (lower.includes('authentication failed') || lower.includes('could not read username') || lower.includes('terminal prompts disabled')) {
+    return 'https-auth-required';
+  }
+  if (lower.includes('permission denied') && lower.includes('publickey')) {
+    return 'ssh-key-required';
+  }
+  if (lower.includes('host key verification failed')) {
+    return 'ssh-host-key';
+  }
+  if (lower.includes('repository not found') || lower.includes('not found')) {
+    return 'not-found-or-no-access';
+  }
+  if (lower.includes('could not resolve hostname') || lower.includes('could not resolve host') || lower.includes('name or service not known')) {
+    return 'network-or-dns';
+  }
+  if (lower.includes('timed out')) {
+    return 'timeout';
+  }
+
+  return 'unknown';
+};
+
+const getGitAuthDiagnostics = async ({ gitRootPath, remote = 'origin', remoteUrl = '' }) => {
+  const remotes = gitRootPath ? await fetchRemotes(gitRootPath).catch(() => []) : [];
+  const selectedRemote = remotes.find((item) => item.name === remote) || remotes[0];
+  const url = remoteUrl || selectedRemote?.refs?.fetch || '';
+  const protocol = detectRemoteProtocol(url);
+  const provider = detectGitProvider(url);
+
+  const [credentialHelper, ssh] = await Promise.all([
+    gitRootPath ? getCredentialHelper(gitRootPath) : Promise.resolve({ configured: false, value: '', scope: 'none' }),
+    Promise.resolve(getSshKeyStatus())
+  ]);
+
+  return {
+    remote,
+    remoteUrl: url,
+    protocol,
+    provider,
+    credentialHelper,
+    ssh,
+    helpLinks: getProviderHelpLinks(provider.id)
+  };
+};
+
+const testGitAuthentication = async ({ gitRootPath, remote = 'origin', remoteUrl = '' }) => {
+  const diagnostics = await getGitAuthDiagnostics({ gitRootPath, remote, remoteUrl });
+
+  if (!diagnostics.remoteUrl) {
+    return {
+      ...diagnostics,
+      ok: false,
+      errorType: 'no-remote',
+      message: 'Remote URL is not configured.'
+    };
+  }
+
+  const result = await runGitCommand(['ls-remote', '--heads', diagnostics.remoteUrl], {
+    cwd: gitRootPath,
+    timeout: 20000
+  });
+
+  return {
+    ...diagnostics,
+    ok: result.ok,
+    errorType: result.ok ? null : classifyAuthError(result.message),
+    message: result.ok ? 'Connection test succeeded.' : (result.message || 'Connection test failed.')
+  };
+};
+
 const getExternalCollectionPaths = (workspacePath, collectionPaths = []) => {
   const normalizedWorkspacePath = path.resolve(workspacePath);
 
@@ -129,8 +342,25 @@ const initGit = async (gitRootPath) => {
 const ensureWorkspaceGitFiles = async (workspacePath) => {
   const gitignorePath = path.join(workspacePath, '.gitignore');
   const readmePath = path.join(workspacePath, 'README.md');
+  const defaultGitignoreLines = `${DEFAULT_GITIGNORE}\n`
+    .split('\n')
+    .map((line) => line.trimEnd());
 
-  if (!fs.existsSync(gitignorePath)) {
+  if (fs.existsSync(gitignorePath)) {
+    const currentGitignore = await fs.promises.readFile(gitignorePath, 'utf8');
+    const currentLines = currentGitignore.split('\n').map((line) => line.trimEnd());
+    const missingLines = defaultGitignoreLines.filter((line) => !currentLines.includes(line));
+
+    if (missingLines.length) {
+      const nextContent = [
+        currentGitignore.trimEnd(),
+        currentGitignore.trim().length ? '' : null,
+        ...missingLines
+      ].filter((line) => line !== null).join('\n');
+
+      await fs.promises.writeFile(gitignorePath, `${nextContent}\n`, 'utf8');
+    }
+  } else {
     await fs.promises.writeFile(gitignorePath, `${DEFAULT_GITIGNORE}\n`, 'utf8');
   }
 
@@ -141,7 +371,8 @@ const ensureWorkspaceGitFiles = async (workspacePath) => {
       '',
       'Bruno workspace tracked with Git.',
       '',
-      'Keep collections, environments, API specs, and workspace files in this repository.',
+      'Keep collections, API specs, and workspace files in this repository.',
+      'Environment files are ignored by default because they may contain secrets.',
       ''
     ].join('\n');
     await fs.promises.writeFile(readmePath, readme, 'utf8');
@@ -931,14 +1162,15 @@ const getWorkspaceGitData = async (input) => {
     await fetchChanges(gitRootPath, remoteToFetch);
   }
 
-  const [status, remotesForClient, branches, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits] = await Promise.all([
+  const [status, remotesForClient, branches, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits, auth] = await Promise.all([
     getGitStatus(gitRootPath),
     Promise.resolve(remotes),
     getCollectionGitBranches(gitRootPath).catch(() => []),
     getCurrentGitBranch(gitRootPath).catch(() => ''),
     getDefaultGitBranch(gitRootPath).catch(() => ''),
     getAheadBehindCount(gitRootPath).catch(() => ({ ahead: 0, behind: 0, aheadCommits: [], behindCommits: [] })),
-    hasGitCommits(gitRootPath)
+    hasGitCommits(gitRootPath),
+    getGitAuthDiagnostics({ gitRootPath, remote: remoteToFetch || remote }).catch(() => null)
   ]);
 
   const changedFiles = await getChangedFilesInCollectionGit(gitRootPath, gitRootPath);
@@ -956,6 +1188,7 @@ const getWorkspaceGitData = async (input) => {
     defaultGitBranch: defaultGitBranch || 'main',
     hasCommits,
     aheadBehind: getAheadBehindForClient(aheadBehind),
+    auth,
     outsideCollections,
     mergeInProgress
   };
@@ -2077,6 +2310,8 @@ module.exports = {
   addRemote,
   upsertRemote,
   removeRemote,
+  getGitAuthDiagnostics,
+  testGitAuthentication,
   getAheadBehindCount,
   getAheadCount,
   getBehindCount,

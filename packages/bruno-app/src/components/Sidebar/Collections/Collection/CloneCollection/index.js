@@ -13,22 +13,16 @@ import PathDisplay from 'components/PathDisplay';
 import { useState } from 'react';
 import { IconArrowBackUp, IconEdit } from '@tabler/icons';
 import { findCollectionByUid } from 'utils/collections/index';
-import get from 'lodash/get';
 
 const CloneCollection = ({ onClose, collectionUid }) => {
   const inputRef = useRef();
   const dispatch = useDispatch();
   const [isEditing, toggleEditing] = useState(false);
   const collection = useSelector((state) => findCollectionByUid(state.collections.collections, collectionUid));
-  const preferences = useSelector((state) => state.app.preferences);
   const workspaces = useSelector((state) => state.workspaces?.workspaces || []);
   const workspaceUid = useSelector((state) => state.workspaces?.activeWorkspaceUid);
   const activeWorkspace = workspaces.find((w) => w.uid === workspaceUid);
-  const isDefaultWorkspace = activeWorkspace?.type === 'default';
-
-  const defaultLocation = isDefaultWorkspace
-    ? get(preferences, 'general.defaultLocation', '')
-    : (activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '');
+  const defaultLocation = activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '';
   const { name } = collection;
 
   const formik = useFormik({

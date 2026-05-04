@@ -86,6 +86,36 @@ const StyledWrapper = styled.div`
     flex-direction: column;
     overflow: hidden;
   }
+
+  .layout-warning {
+    margin-bottom: 16px;
+    padding: 12px;
+    border: 1px solid ${(props) => props.theme.workspace.border};
+    border-radius: ${(props) => props.theme.border.radius.base};
+    background: ${(props) => props.theme.colors.background || 'transparent'};
+  }
+
+  .warning-copy {
+    margin: 0 0 8px;
+    font-size: ${(props) => props.theme.font.size.sm};
+    color: ${(props) => props.theme.colors.text.muted};
+    line-height: 1.5;
+  }
+
+  .outside-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .outside-row {
+    padding: 8px 10px;
+    border-radius: ${(props) => props.theme.border.radius.base};
+    background: ${(props) => props.theme.workspace.item?.hover || 'rgba(0, 0, 0, 0.03)'};
+    font-size: ${(props) => props.theme.font.size.xs};
+    color: ${(props) => props.theme.text};
+    word-break: break-all;
+  }
 `;
 
 export default StyledWrapper;

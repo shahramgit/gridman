@@ -13,7 +13,10 @@ import {
   IconGitFork,
   IconTerminal,
   IconCopy,
-  IconCloudUpload
+  IconCloudUpload,
+  IconExternalLink,
+  IconKey,
+  IconEdit
 } from '@tabler/icons';
 
 import Button from 'ui/Button';
@@ -22,6 +25,80 @@ import { uuid } from 'utils/common';
 
 const DEFAULT_REMOTE = 'origin';
 const DEFAULT_PULL_STRATEGY = '--no-rebase';
+
+const getBrowserRemoteUrl = (value = '') => {
+  const remoteValue = value.trim();
+
+  if (!remoteValue) {
+    return '';
+  }
+
+  if (/^https?:\/\//i.test(remoteValue)) {
+    return remoteValue.replace(/\.git$/i, '');
+  }
+
+  const sshUrlMatch = remoteValue.match(/^ssh:\/\/(?:[^@]+@)?([^/:]+)(?::\d+)?\/(.+)$/i);
+  if (sshUrlMatch) {
+    return `https://${sshUrlMatch[1]}/${sshUrlMatch[2].replace(/\.git$/i, '')}`;
+  }
+
+  const scpStyleMatch = remoteValue.match(/^(?:[^@]+@)?([^:]+):(.+)$/i);
+  if (scpStyleMatch) {
+    return `https://${scpStyleMatch[1]}/${scpStyleMatch[2].replace(/\.git$/i, '')}`;
+  }
+
+  return '';
+};
+
+const getAuthModeLabel = (protocol) => {
+  if (protocol === 'https') return 'HTTPS';
+  if (protocol === 'ssh') return 'SSH';
+  if (protocol === 'file') return 'Local path';
+  return 'Not configured';
+};
+
+const getAuthSummary = (auth) => {
+  if (!auth?.remoteUrl) {
+    return 'Set a remote URL first. HTTPS is the easiest option for most users.';
+  }
+
+  if (auth.protocol === 'https') {
+    return auth.credentialHelper?.configured
+      ? 'Bruno will use your system Git credential manager for tokens or app passwords.'
+      : 'HTTPS works best with Git Credential Manager so credentials are stored in the OS keychain.';
+  }
+
+  if (auth.protocol === 'ssh') {
+    return auth.ssh?.hasKeys
+      ? 'Bruno will use your existing SSH key through Git and ssh-agent.'
+      : 'SSH needs a local key and the public key must be added to your Git provider.';
+  }
+
+  return 'Bruno delegates authentication to Git on this machine.';
+};
+
+const getAuthCommands = (auth) => {
+  if (!auth?.remoteUrl) {
+    return ['git remote add origin <url>'];
+  }
+
+  if (auth.protocol === 'https') {
+    return [
+      'git config --global credential.helper manager',
+      `git ls-remote ${auth.remoteUrl}`
+    ];
+  }
+
+  if (auth.protocol === 'ssh') {
+    return [
+      'ssh-keygen -t ed25519 -C "you@example.com"',
+      'ssh-add ~/.ssh/id_ed25519',
+      `git ls-remote ${auth.remoteUrl}`
+    ];
+  }
+
+  return [`git ls-remote ${auth.remoteUrl}`];
+};
 
 const getWorkspaceGitPayload = (workspace) => ({
   workspacePath: workspace?.pathname,
@@ -38,7 +115,10 @@ const WorkspaceGit = ({ workspace }) => {
   const [diff, setDiff] = useState('');
   const [output, setOutput] = useState('');
   const [remoteUrlInput, setRemoteUrlInput] = useState('');
+  const [editingRemote, setEditingRemote] = useState(false);
   const [repairingCollections, setRepairingCollections] = useState(false);
+  const [authDiagnostics, setAuthDiagnostics] = useState(null);
+  const [authTestResult, setAuthTestResult] = useState(null);
 
   const gitRootPath = gitData?.gitRootPath;
   const currentBranch = gitData?.currentGitBranch || gitData?.status?.current || '';
@@ -51,6 +131,9 @@ const WorkspaceGit = ({ workspace }) => {
   const hasConflicts = gitData?.mergeInProgress || conflicted.length > 0;
   const outsideCollections = gitData?.outsideCollections || [];
   const hasCommits = Boolean(gitData?.hasCommits);
+  const browserRemoteUrl = getBrowserRemoteUrl(remoteUrl);
+  const auth = authDiagnostics || gitData?.auth;
+  const authCommands = useMemo(() => getAuthCommands(auth), [auth]);
 
   const refresh = useCallback(async ({ fetchRemote = false } = {}) => {
     if (!workspace?.pathname) return;
@@ -65,6 +148,7 @@ const WorkspaceGit = ({ workspace }) => {
         remote
       });
       setGitData(result);
+      setAuthDiagnostics(result?.auth || null);
       if (fetchRemote && result?.isGitRepository && result?.remotes?.length) {
         setOutput('Status refreshed from remote.');
       }
@@ -228,6 +312,65 @@ const WorkspaceGit = ({ workspace }) => {
       remoteUrl: nextRemoteUrl
     });
     setRemoteUrlInput('');
+    setEditingRemote(false);
+    setAuthTestResult(null);
+    toast.success('Origin changed. Test the connection before syncing.');
+  };
+
+  const startEditingRemote = () => {
+    setRemoteUrlInput(remoteUrl || '');
+    setEditingRemote(true);
+    setAuthTestResult(null);
+  };
+
+  const cancelEditingRemote = () => {
+    setRemoteUrlInput('');
+    setEditingRemote(false);
+  };
+
+  const refreshAuthDiagnostics = async () => {
+    if (!gitRootPath) return;
+    setOperation('Check authentication');
+    setAuthTestResult(null);
+    try {
+      const result = await window.ipcRenderer.invoke('renderer:get-workspace-git-auth-diagnostics', {
+        gitRootPath,
+        remote,
+        remoteUrl
+      });
+      setAuthDiagnostics(result);
+      toast.success('Authentication settings refreshed');
+    } catch (error) {
+      toast.error(error?.message || 'Failed to check authentication settings');
+    } finally {
+      setOperation(null);
+    }
+  };
+
+  const testAuthentication = async () => {
+    if (!gitRootPath) return;
+    setOperation('Test connection');
+    setAuthTestResult(null);
+    try {
+      const result = await window.ipcRenderer.invoke('renderer:test-workspace-git-auth', {
+        gitRootPath,
+        remote,
+        remoteUrl
+      });
+      setAuthDiagnostics(result);
+      setAuthTestResult(result);
+      if (result.ok) {
+        toast.success('Git connection succeeded');
+      } else {
+        toast.error(result.message || 'Git connection failed');
+      }
+    } catch (error) {
+      const result = { ok: false, message: error?.message || String(error) };
+      setAuthTestResult(result);
+      toast.error(result.message);
+    } finally {
+      setOperation(null);
+    }
   };
 
   const copyCommand = async (command) => {
@@ -237,6 +380,14 @@ const WorkspaceGit = ({ workspace }) => {
     } catch (error) {
       toast.error('Failed to copy command');
     }
+  };
+
+  const openRemoteUrl = () => {
+    if (!browserRemoteUrl) {
+      return;
+    }
+
+    window?.ipcRenderer?.openExternal(browserRemoteUrl);
   };
 
   const selectFile = async (file, stagedDiff = false) => {
@@ -339,7 +490,7 @@ const WorkspaceGit = ({ workspace }) => {
             <h3>Start tracking this workspace</h3>
             <p className="text-muted">
               Initialize Git in this workspace folder. Bruno will create the usual safe defaults, including a `.gitignore`
-              for secrets, dependencies, and OS files.
+              for secrets, Bruno environment files, dependencies, and OS files.
             </p>
             <div className="flex flex-wrap gap-2 mt-4">
               <Button
@@ -420,7 +571,24 @@ const WorkspaceGit = ({ workspace }) => {
               <span className="meta-label">Branch</span>
               <span className="flex items-center gap-1"><IconGitBranch size={14} />{currentBranch || 'unknown'}</span>
               <span className="meta-label">Remote</span>
-              <span className="truncate" title={remoteUrl}>{remoteUrl || 'not configured'}</span>
+              <span className="remote-value">
+                {remoteUrl ? (
+                  <>
+                    {browserRemoteUrl ? (
+                      <button className="remote-link truncate" title={remoteUrl} onClick={openRemoteUrl}>
+                        {remoteUrl}
+                      </button>
+                    ) : (
+                      <span className="truncate remote-text" title={remoteUrl}>{remoteUrl}</span>
+                    )}
+                    <button className="copy-command" onClick={() => copyCommand(remoteUrl)} title="Copy remote URL">
+                      <IconCopy size={14} strokeWidth={1.5} />
+                    </button>
+                  </>
+                ) : (
+                  <span className="truncate remote-text">not configured</span>
+                )}
+              </span>
               <span className="meta-label">Sync</span>
               <span><IconArrowUp size={13} className="inline" /> {gitData?.aheadBehind?.ahead || 0} <IconArrowDown size={13} className="inline ml-2" /> {gitData?.aheadBehind?.behind || 0}</span>
               <span className="meta-label">Changes</span>
@@ -500,6 +668,113 @@ const WorkspaceGit = ({ workspace }) => {
             </div>
           )}
 
+          {remoteUrl && (
+            <div className="panel">
+              <div className="section-title">Origin</div>
+              {!editingRemote ? (
+                <>
+                  <p className="text-sm text-muted mb-2">
+                    Change origin when this workspace should sync with a different Git repository.
+                  </p>
+                  <Button
+                    size="sm"
+                    color="light"
+                    icon={<IconEdit size={14} />}
+                    onClick={startEditingRemote}
+                  >
+                    Change origin
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-muted mb-2">
+                    Changing origin only changes where this workspace syncs. It does not move files or rewrite local commits.
+                    Pulling from an unrelated remote may fail.
+                  </p>
+                  <div className="remote-form">
+                    <input
+                      className="textbox"
+                      value={remoteUrlInput}
+                      onChange={(event) => setRemoteUrlInput(event.target.value)}
+                      placeholder="https://github.com/org/repo.git"
+                    />
+                    <Button
+                      size="sm"
+                      color="primary"
+                      icon={<IconCloudUpload size={14} />}
+                      disabled={!remoteUrlInput.trim() || remoteUrlInput.trim() === remoteUrl}
+                      loading={operation === 'Set remote'}
+                      onClick={setRemote}
+                    >
+                      Save origin
+                    </Button>
+                  </div>
+                  <div className="flex gap-2 mt-2">
+                    <Button size="sm" color="light" onClick={cancelEditingRemote}>Cancel</Button>
+                    <Button size="sm" color="light" icon={<IconCopy size={14} />} onClick={() => copyCommand(`git remote set-url origin ${remoteUrlInput || '<url>'}`)}>
+                      Copy command
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          <div className="panel">
+            <div className="section-title">Authentication</div>
+            <div className="auth-summary">
+              <div className="auth-chip">
+                <IconKey size={14} strokeWidth={1.5} />
+                <span>{getAuthModeLabel(auth?.protocol)}</span>
+              </div>
+              <div className="auth-provider">{auth?.provider?.name || 'No provider detected'}</div>
+            </div>
+            <p className="text-sm text-muted mt-2">{getAuthSummary(auth)}</p>
+
+            {auth?.protocol === 'https' && (
+              <div className="auth-detail mt-3">
+                <span className="meta-label">Credential helper</span>
+                <span>{auth.credentialHelper?.configured ? `${auth.credentialHelper.value} (${auth.credentialHelper.scope})` : 'not configured'}</span>
+              </div>
+            )}
+
+            {auth?.protocol === 'ssh' && (
+              <div className="auth-detail mt-3">
+                <span className="meta-label">SSH keys</span>
+                <span>{auth.ssh?.hasKeys ? auth.ssh.keys.map((key) => key.name).join(', ') : 'no common SSH key found'}</span>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2 mt-3">
+              <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={operation === 'Check authentication'} onClick={refreshAuthDiagnostics}>Check setup</Button>
+              <Button size="sm" color="primary" icon={<IconKey size={14} />} disabled={!remoteUrl} loading={operation === 'Test connection'} onClick={testAuthentication}>Test connection</Button>
+              {auth?.helpLinks?.https && (
+                <Button size="sm" color="light" icon={<IconExternalLink size={14} />} onClick={() => window?.ipcRenderer?.openExternal(auth.protocol === 'ssh' ? auth.helpLinks.ssh : auth.helpLinks.https)}>
+                  Open setup guide
+                </Button>
+              )}
+            </div>
+
+            {authTestResult && (
+              <pre className={`output-box mt-3 ${authTestResult.ok ? 'success-output' : 'error-output'}`}>
+                {authTestResult.message}
+              </pre>
+            )}
+
+            <div className="commands-list mt-3">
+              {authCommands.map((command) => (
+                <div className="command-row" key={command}>
+                  <div>
+                    <code>{command}</code>
+                  </div>
+                  <button className="copy-command" onClick={() => copyCommand(command)} title="Copy command">
+                    <IconCopy size={14} strokeWidth={1.5} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="panel">
             <div className="section-title">Actions</div>
             <div className="flex flex-wrap gap-2">
@@ -517,6 +792,7 @@ const WorkspaceGit = ({ workspace }) => {
               <div><strong>Push</strong> uploads committed local changes.</div>
               <div><strong>Sync committed</strong> fetches, pulls if behind, then pushes committed local changes.</div>
               <div><strong>Sync Full</strong> stages local changes, commits them with the message below, then runs Sync committed.</div>
+              <div><strong>Environment files</strong> are ignored by default because they may contain secrets.</div>
             </div>
             {output && <pre className="output-box mt-3">{output}</pre>}
           </div>
