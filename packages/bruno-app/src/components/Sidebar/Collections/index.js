@@ -15,18 +15,28 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
 
   const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid) || workspaces.find((w) => w.type === 'default');
 
-  const workspaceCollections = useMemo(() => {
-    if (!activeWorkspace) return [];
+  // Build the sidebar list in workspace.yml order while keeping Git scoped to the workspace.
+  const sidebarEntries = useMemo(() => {
+    if (!activeWorkspace?.collections?.length) return [];
 
-    return collections.filter((c) => {
-      if (isScratchCollection(c, workspaces)) {
-        return false;
+    const loadedByPath = new Map();
+    for (const c of collections) {
+      if (isScratchCollection(c, workspaces)) continue;
+      if (c.pathname) loadedByPath.set(normalizePath(c.pathname), c);
+    }
+
+    const entries = [];
+    for (const wc of activeWorkspace.collections) {
+      if (!wc.path) continue;
+      const loaded = loadedByPath.get(normalizePath(wc.path));
+      if (loaded) {
+        entries.push({ collection: loaded, key: loaded.uid });
       }
-      return activeWorkspace.collections?.some((wc) => normalizePath(wc.path) === normalizePath(c.pathname));
-    });
+    }
+    return entries;
   }, [activeWorkspace, collections, workspaces]);
 
-  if (!workspaceCollections || !workspaceCollections.length) {
+  if (!sidebarEntries.length) {
     return (
       <StyledWrapper>
         {isCreatingCollection && (
@@ -55,13 +65,9 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
             onOpenAdvanced={onOpenAdvancedCreate}
           />
         )}
-        {workspaceCollections && workspaceCollections.length
-          ? workspaceCollections.map((c) => {
-              return (
-                <Collection searchText={searchText} collection={c} key={c.uid} />
-              );
-            })
-          : null}
+        {sidebarEntries.map((entry) => (
+          <Collection searchText={searchText} collection={entry.collection} key={entry.key} />
+        ))}
       </div>
     </StyledWrapper>
   );

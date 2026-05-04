@@ -304,7 +304,8 @@ const loadWorkspaceCollectionsForSwitch = async (dispatch, workspace) => {
   };
 
   try {
-    await dispatch(loadWorkspaceCollections(workspace.uid));
+    const shouldRefreshCollections = workspace.collections?.some((collection) => collection.notFoundLocally);
+    await dispatch(loadWorkspaceCollections(workspace.uid, shouldRefreshCollections));
     const updatedWorkspace = await dispatch((_, getState) => getState().workspaces.workspaces.find((w) => w.uid === workspace.uid));
 
     if (updatedWorkspace?.collections?.length > 0) {
@@ -313,6 +314,7 @@ const loadWorkspaceCollectionsForSwitch = async (dispatch, workspace) => {
       );
 
       const collectionPaths = updatedWorkspace.collections
+        .filter((wc) => !wc.notFoundLocally)
         .map((wc) => wc.path)
         .filter((p) => p && !alreadyOpenCollections.includes(normalizePath(p)));
 
@@ -552,6 +554,7 @@ export const workspaceConfigUpdatedEvent = (workspacePath, workspaceUid, workspa
 
         if (workspace?.collections?.length > 0) {
           const newCollectionPaths = workspace.collections
+            .filter((workspaceCollection) => !workspaceCollection.notFoundLocally)
             .map((workspaceCollection) => workspaceCollection.path)
             .filter((collectionPath) => collectionPath && !openCollections.includes(normalizePath(collectionPath)));
 

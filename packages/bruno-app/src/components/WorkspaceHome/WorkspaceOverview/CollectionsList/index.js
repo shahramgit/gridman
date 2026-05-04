@@ -1,6 +1,14 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import { IconBox, IconTrash, IconEdit, IconShare, IconDots, IconX, IconFolder } from '@tabler/icons';
+import {
+  IconBox,
+  IconTrash,
+  IconEdit,
+  IconShare,
+  IconDots,
+  IconX,
+  IconFolder
+} from '@tabler/icons';
 import { addTab } from 'providers/ReduxStore/slices/tabs';
 import { mountCollection, showInFolder } from 'providers/ReduxStore/slices/collections/actions';
 import { getRevealInFolderLabel } from 'utils/common/platform';
@@ -37,54 +45,14 @@ const CollectionsList = ({ workspace }) => {
     });
 
     return filteredCollections.map((wc) => {
-      const loadedCollection = collections.find(
+      return collections.find(
         (c) => normalizePath(c.pathname) === normalizePath(wc.path)
       );
-
-      if (loadedCollection) {
-        return {
-          ...loadedCollection,
-          isGitBacked: !!wc.remote,
-          gitRemoteUrl: wc.remote
-        };
-      }
-
-      return {
-        uid: `unloaded-${wc.path}`,
-        name: wc.name,
-        pathname: wc.path,
-        items: [],
-        environments: [],
-        isGitBacked: !!wc.remote,
-        isLoaded: false,
-        gitRemoteUrl: wc.remote,
-        git: { gitRootPath: null },
-        brunoConfig: {},
-        root: {
-          request: {
-            headers: [],
-            auth: { mode: 'none' },
-            vars: { req: [], res: [] },
-            script: { req: '', res: '' },
-            tests: ''
-          },
-          docs: ''
-        }
-      };
-    });
+    }).filter(Boolean);
   }, [workspace.collections, workspace.scratchTempDirectory, collections]);
 
   const handleOpenCollectionClick = (collection, event) => {
     if (event.target.closest('.collection-menu')) {
-      return;
-    }
-
-    if (collection.isLoaded === false) {
-      if (collection.isGitBacked) {
-        toast.error(`Collection "${collection.name}" needs to be cloned first`);
-      } else {
-        toast.error(`Collection "${collection.name}" does not exist on disk`);
-      }
       return;
     }
 
@@ -107,20 +75,12 @@ const CollectionsList = ({ workspace }) => {
 
   const handleRenameCollection = (collection) => {
     dropdownRefs.current[collection.uid]?.hide();
-    if (collection.isLoaded === false) {
-      toast.error('Cannot rename collections that are not cloned yet');
-      return;
-    }
     setSelectedCollectionUid(collection.uid);
     setRenameCollectionModalOpen(true);
   };
 
   const handleShareCollection = (collection) => {
     dropdownRefs.current[collection.uid]?.hide();
-    if (collection.isLoaded === false) {
-      toast.error('Please clone this collection first before sharing it');
-      return;
-    }
 
     dispatch(
       mountCollection({
@@ -136,20 +96,12 @@ const CollectionsList = ({ workspace }) => {
 
   const handleRemoveCollection = (collection) => {
     dropdownRefs.current[collection.uid]?.hide();
-    if (collection.isLoaded === false) {
-      toast.error('Cannot remove collections that are not loaded');
-      return;
-    }
     setSelectedCollectionUid(collection.uid);
     setRemoveCollectionModalOpen(true);
   };
 
   const handleDeleteCollection = (collection) => {
     dropdownRefs.current[collection.uid]?.hide();
-    if (collection.isLoaded === false) {
-      toast.error('Cannot delete collections that are not loaded');
-      return;
-    }
     setSelectedCollectionUid(collection.uid);
     setDeleteCollectionModalOpen(true);
   };
