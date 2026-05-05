@@ -67,6 +67,14 @@ const getWorkspaceGitPayload = (workspace) => ({
   collectionPaths: (workspace?.collections || []).map((collection) => collection.path).filter(Boolean)
 });
 
+const getIpcErrorMessage = (error, fallback) => {
+  const message = error?.message || String(error || '') || fallback;
+  return message
+    .replace(/^Error invoking remote method '[^']+':\s*/i, '')
+    .replace(/^Error:\s*/i, '')
+    || fallback;
+};
+
 const AppTitleBar = () => {
   const dispatch = useDispatch();
   const [isFullScreen, setIsFullScreen] = useState(false);
@@ -269,7 +277,7 @@ const AppTitleBar = () => {
       toast.success('Git initialized for this workspace');
       handleOpenWorkspaceGit();
     } catch (error) {
-      toast.error(error?.message || 'Failed to initialize Git');
+      toast.error(getIpcErrorMessage(error, 'Failed to initialize Git'));
     } finally {
       setWorkspaceGitOperation(null);
     }

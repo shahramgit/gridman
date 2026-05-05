@@ -2,17 +2,71 @@ const simpleGit = require('simple-git');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { exec, execFile } = require('child_process');
+const { execFile, spawnSync } = require('child_process');
 const { parseRequest } = require('@usebruno/filestore');
 const { DEFAULT_GITIGNORE } = require('./filesystem');
 
 let collectionPathToGitRootPathMap = new Map();
+let gitBinaryPath;
 
 const simpleGitInstances = new Map();
 
+const getGitInstallHelpMessage = () => {
+  if (process.platform === 'win32') {
+    return 'Git was not found on this Windows machine. Install Git for Windows from https://git-scm.com/download/win, keep "Git from the command line" enabled during setup, then close and reopen Bruno.';
+  }
+
+  return 'Git was not found on this machine. Install Git and restart Bruno.';
+};
+
+const resolveGitBinaryPath = () => {
+  if (gitBinaryPath) {
+    return gitBinaryPath;
+  }
+
+  const pathResult = spawnSync('git', ['--version'], { encoding: 'utf8' });
+  if (!pathResult.error) {
+    gitBinaryPath = 'git';
+    return gitBinaryPath;
+  }
+
+  if (process.platform === 'win32') {
+    const candidates = [
+      process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'cmd', 'git.exe'),
+      process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'git.exe'),
+      process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Git', 'cmd', 'git.exe'),
+      process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Git', 'bin', 'git.exe'),
+      process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'Git', 'cmd', 'git.exe'),
+      process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'Git', 'bin', 'git.exe')
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        gitBinaryPath = candidate;
+        return gitBinaryPath;
+      }
+    }
+  }
+
+  return null;
+};
+
+const ensureGitAvailable = () => {
+  const binary = resolveGitBinaryPath();
+  if (!binary) {
+    throw new Error(getGitInstallHelpMessage());
+  }
+  return binary;
+};
+
 const getGitVersion = () => {
   return new Promise((resolve, reject) => {
-    exec('git --version', (error, stdout, stderr) => {
+    const binary = resolveGitBinaryPath();
+    if (!binary) {
+      return resolve(null);
+    }
+
+    execFile(binary, ['--version'], (error, stdout, stderr) => {
       if (error) {
         return resolve(null);
       }
@@ -23,10 +77,15 @@ const getGitVersion = () => {
 };
 
 const getSimpleGitInstanceForPath = (gitRootPath) => {
-  let git = simpleGitInstances.get(gitRootPath);
+  const binary = ensureGitAvailable();
+  const key = `${binary}:${gitRootPath}`;
+  let git = simpleGitInstances.get(key);
   if (!git) {
-    git = simpleGit(gitRootPath);
-    simpleGitInstances.set(gitRootPath, git);
+    git = simpleGit({
+      baseDir: gitRootPath,
+      binary
+    });
+    simpleGitInstances.set(key, git);
   }
   return git;
 };
@@ -93,7 +152,19 @@ const getWorkspaceGitRootPath = (workspacePath) => {
 
 const runGitCommand = (args, options = {}) => {
   return new Promise((resolve) => {
-    execFile('git', args, {
+    const binary = resolveGitBinaryPath();
+    if (!binary) {
+      return resolve({
+        ok: false,
+        code: 'ENOENT',
+        signal: null,
+        stdout: '',
+        stderr: '',
+        message: getGitInstallHelpMessage()
+      });
+    }
+
+    execFile(binary, args, {
       cwd: options.cwd,
       timeout: options.timeout || 15000,
       env: {
@@ -598,7 +669,7 @@ const getStagedFileDiff = async (gitRootPath, filePath) => {
 
 const getRenamedFileDiff = async (gitRootPath, file) => {
   return new Promise((resolve, reject) => {
-    const git = simpleGit(gitRootPath);
+    const git = getSimpleGitInstanceForPath(gitRootPath);
     git.diff(['--staged', '--', file.from, file.to], (err, stagedChanges) => {
       if (err) {
         reject(err);
@@ -1153,6 +1224,7 @@ const getWorkspaceGitData = async (input) => {
       outsideCollections
     };
   }
+  ensureGitAvailable();
 
   const remotes = await fetchRemotes(gitRootPath).catch(() => []);
   const remoteNames = remotes.map((item) => item.name).filter(Boolean);
@@ -1507,7 +1579,7 @@ const continueMerge = async (gitRootPath, conflictedFiles, commitMessage) => {
       await fsPromises.writeFile(mergeMsgPath, commitMessage, 'utf8');
 
       // Step 4: Call git merge --continue
-      exec('git -c core.editor=: merge --continue', { cwd: gitRootPath }, (err, stdout) => {
+      execFile(ensureGitAvailable(), ['-c', 'core.editor=:', 'merge', '--continue'], { cwd: gitRootPath }, (err, stdout) => {
         if (err) {
           reject(err);
           return;
@@ -1533,7 +1605,7 @@ const continueResolvedMerge = async (gitRootPath, conflictedFilePaths, commitMes
         await fsPromises.writeFile(mergeMsgPath, commitMessage, 'utf8');
       }
 
-      exec('git -c core.editor=: merge --continue', { cwd: gitRootPath }, (err, stdout) => {
+      execFile(ensureGitAvailable(), ['-c', 'core.editor=:', 'merge', '--continue'], { cwd: gitRootPath }, (err, stdout) => {
         if (err) {
           reject(err);
           return;

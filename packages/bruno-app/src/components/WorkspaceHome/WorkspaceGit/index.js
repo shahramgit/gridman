@@ -26,6 +26,14 @@ import { uuid } from 'utils/common';
 const DEFAULT_REMOTE = 'origin';
 const DEFAULT_PULL_STRATEGY = '--no-rebase';
 
+const getIpcErrorMessage = (error, fallback) => {
+  const message = error?.message || String(error || '') || fallback;
+  return message
+    .replace(/^Error invoking remote method '[^']+':\s*/i, '')
+    .replace(/^Error:\s*/i, '')
+    || fallback;
+};
+
 const getBrowserRemoteUrl = (value = '') => {
   const remoteValue = value.trim();
 
@@ -268,8 +276,9 @@ const WorkspaceGit = ({ workspace }) => {
       setGitData(result);
       toast.success('Git initialized for this workspace');
     } catch (error) {
-      setOutput(error?.message || String(error));
-      toast.error(error?.message || 'Failed to initialize Git');
+      const message = getIpcErrorMessage(error, 'Failed to initialize Git');
+      setOutput(message);
+      toast.error(message);
     } finally {
       setOperation(null);
     }
