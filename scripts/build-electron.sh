@@ -9,13 +9,26 @@ rm -rf packages/bruno-electron/web
 # Create a new web directory
 mkdir packages/bruno-electron/web
 
+# Build the renderer that Electron loads in production.
+npm run build:web
+
+if [ ! -f packages/bruno-app/dist/index.html ]; then
+  echo "Renderer build did not create packages/bruno-app/dist/index.html"
+  exit 1
+fi
+
 # Copy build
 cp -r packages/bruno-app/dist/* packages/bruno-electron/web
 
+if [ ! -f packages/bruno-electron/web/index.html ]; then
+  echo "Electron package is missing packages/bruno-electron/web/index.html"
+  exit 1
+fi
+
 
 # Update static paths
-sed -i'' -e 's@/static/@static/@g' packages/bruno-electron/web/**.html
-sed -i'' -e 's@/static/font@../../static/font@g' packages/bruno-electron/web/static/css/**.**.css
+find packages/bruno-electron/web -maxdepth 1 -name '*.html' -type f -exec perl -pi -e 's@/static/@static/@g' {} +
+find packages/bruno-electron/web/static/css -name '*.css' -type f -exec perl -pi -e 's@/static/font@../../static/font@g' {} +
 
 # Remove sourcemaps
 find packages/bruno-electron/web -name '*.map' -type f -delete

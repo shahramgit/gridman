@@ -32,6 +32,13 @@ async function copyFolderIfExists(srcPath, destPath) {
   }
 }
 
+async function assertFileExists(filePath, message) {
+  const exists = await fs.pathExists(filePath);
+  if (!exists) {
+    throw new Error(message || `${filePath} does not exist.`);
+  }
+}
+
 async function removeSourceMapFiles(directory) {
   try {
     const files = await fs.readdir(directory);
@@ -78,8 +85,20 @@ async function main() {
     await fs.ensureDir('packages/bruno-electron/web');
     console.log('The directory has been created successfully!');
 
+    // Build the renderer that Electron loads in production.
+    console.log('Building the renderer');
+    await execCommandWithOutput('npm run build:web');
+    await assertFileExists(
+      'packages/bruno-app/dist/index.html',
+      'Renderer build did not create packages/bruno-app/dist/index.html.'
+    );
+
     // Copy build
     await copyFolderIfExists('packages/bruno-app/dist', 'packages/bruno-electron/web');
+    await assertFileExists(
+      'packages/bruno-electron/web/index.html',
+      'Electron package is missing packages/bruno-electron/web/index.html.'
+    );
 
     // Update static paths
     const files = await fs.readdir('packages/bruno-electron/web');
