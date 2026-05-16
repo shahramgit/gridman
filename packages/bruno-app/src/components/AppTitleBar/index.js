@@ -67,6 +67,14 @@ const getWorkspaceGitPayload = (workspace) => ({
   collectionPaths: (workspace?.collections || []).map((collection) => collection.path).filter(Boolean)
 });
 
+const getRemoteWorkspaceLabel = (workspace) => {
+  if (!workspace?.remoteWorkspaceName || workspace.remoteWorkspaceName === workspace.name) {
+    return '';
+  }
+
+  return `remote: ${workspace.remoteWorkspaceName}`;
+};
+
 const getIpcErrorMessage = (error, fallback) => {
   const message = error?.message || String(error || '') || fallback;
   return message
@@ -164,9 +172,11 @@ const AppTitleBar = () => {
   const showGitWorkspaceFeature = get(preferences, 'features.gitWorkspace', get(preferences, 'features.git', true));
 
   const WorkspaceName = forwardRef((props, ref) => {
+    const remoteWorkspaceLabel = getRemoteWorkspaceLabel(activeWorkspace);
     return (
       <div ref={ref} className="workspace-name-container" {...props}>
         <span data-testid="workspace-name" className={classNames('workspace-name', { 'italic text-muted': !activeWorkspace?.name })}>{getWorkspaceDisplayName(activeWorkspace?.name)}</span>
+        {remoteWorkspaceLabel && <span className="workspace-remote-name">({remoteWorkspaceLabel})</span>}
         <IconChevronDown size={14} stroke={1.5} className="chevron-icon" />
       </div>
     );
@@ -247,7 +257,7 @@ const AppTitleBar = () => {
 
     setWorkspaceGitOperation(label);
     try {
-      await window.ipcRenderer.invoke(invokeName, {
+      const result = await window.ipcRenderer.invoke(invokeName, {
         gitRootPath: workspaceGitData.gitRootPath,
         processUid: uuid(),
         remote,
@@ -255,7 +265,12 @@ const AppTitleBar = () => {
         strategy: '--no-rebase',
         ...payload
       });
-      toast.success(`${label} completed`);
+      if (result?.mergeInProgress) {
+        toast.error('Merge conflicts need to be resolved in the Git tab');
+        handleOpenWorkspaceGit();
+      } else {
+        toast.success(`${label} completed`);
+      }
       await refreshWorkspaceGitStatus({ silent: true });
     } catch (error) {
       toast.error(error?.message || `${label} failed`);
@@ -355,16 +370,14 @@ const AppTitleBar = () => {
         className: `workspace-item ${isActive ? 'active' : ''}`,
         rightSection: (
           <div className="workspace-actions">
-            {workspace.type !== 'default' && (
-              <ActionIcon
-                className={`pin-btn ${isPinned ? 'pinned' : ''}`}
-                onClick={(e) => handlePinWorkspace(workspace.uid, e)}
-                label={isPinned ? 'Unpin workspace' : 'Pin workspace'}
-                size="sm"
-              >
-                {isPinned ? <IconPinned size={14} stroke={1.5} /> : <IconPin size={14} stroke={1.5} />}
-              </ActionIcon>
-            )}
+            <ActionIcon
+              className={`pin-btn ${isPinned ? 'pinned' : ''}`}
+              onClick={(e) => handlePinWorkspace(workspace.uid, e)}
+              label={isPinned ? 'Unpin workspace' : 'Pin workspace'}
+              size="sm"
+            >
+              {isPinned ? <IconPinned size={14} stroke={1.5} /> : <IconPin size={14} stroke={1.5} />}
+            </ActionIcon>
             {isActive && <IconCheck size={16} stroke={1.5} className="check-icon" />}
           </div>
         )
@@ -602,10 +615,10 @@ const AppTitleBar = () => {
           )}
         </div>
 
-        {/* Center section: Bruno logo + text */}
+        {/* Center section: Gridman branding */}
         <div className="titlebar-center">
-          <Bruno width={18} />
-          <span className="bruno-text">Bruno</span>
+          <Bruno width={28} variant="wire" />
+          <span className="bruno-text">Gridman</span>
         </div>
 
         {/* Right section: Action buttons */}

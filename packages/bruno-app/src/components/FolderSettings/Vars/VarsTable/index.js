@@ -4,6 +4,7 @@ import { useTheme } from 'providers/Theme';
 import { saveFolderRoot } from 'providers/ReduxStore/slices/collections/actions';
 import { updateTableColumnWidths } from 'providers/ReduxStore/slices/tabs';
 import MultiLineEditor from 'components/MultiLineEditor';
+import SingleLineEditor from 'components/SingleLineEditor';
 import InfoTip from 'components/InfoTip';
 import EditableTable from 'components/EditableTable';
 import StyledWrapper from './StyledWrapper';
@@ -62,6 +63,7 @@ const VarsTable = ({ folder, collection, vars, varType, initialScroll = 0 }) => 
         </div>
       ),
       placeholder: varType === 'request' ? 'Value' : 'Expr',
+      width: '35%',
       render: ({ value, onChange }) => (
         <MultiLineEditor
           value={value || ''}
@@ -73,12 +75,30 @@ const VarsTable = ({ folder, collection, vars, varType, initialScroll = 0 }) => 
           placeholder={!value ? (varType === 'request' ? 'Value' : 'Expr') : ''}
         />
       )
+    },
+    {
+      key: 'description',
+      name: 'Description',
+      placeholder: 'Description',
+      width: '25%',
+      render: ({ value, onChange }) => (
+        <SingleLineEditor
+          value={value || ''}
+          theme={storedTheme}
+          onSave={onSave}
+          onChange={onChange}
+          collection={collection}
+          item={folder}
+          placeholder={!value ? 'Description' : ''}
+        />
+      )
     }
   ];
 
   const defaultRow = {
     name: '',
     value: '',
+    description: '',
     ...(varType === 'response' ? { local: false } : {})
   };
 

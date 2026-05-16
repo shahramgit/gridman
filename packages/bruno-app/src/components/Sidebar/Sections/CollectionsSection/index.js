@@ -252,7 +252,7 @@ const CollectionsSection = () => {
     {
       id: 'open',
       leftSection: IconFolder,
-      label: 'Open collection',
+      label: 'Import collection',
       onClick: () => {
         handleOpenCollection();
       }

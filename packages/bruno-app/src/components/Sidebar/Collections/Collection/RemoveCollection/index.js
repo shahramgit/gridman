@@ -2,7 +2,6 @@ import React, { useMemo } from 'react';
 import toast from 'react-hot-toast';
 import Modal from 'components/Modal';
 import { useDispatch, useSelector } from 'react-redux';
-import { IconAlertCircle } from '@tabler/icons';
 import { removeCollection } from 'providers/ReduxStore/slices/collections/actions';
 import { findCollectionByUid, flattenItems, isItemARequest, hasRequestChanges } from 'utils/collections/index';
 import filter from 'lodash/filter';
@@ -54,13 +53,13 @@ const RemoveCollection = ({ onClose, collectionUid }) => {
         handleConfirm={onConfirm}
         handleCancel={onClose}
       >
-        <p className="mb-4">Are you sure you want to close following collection in Bruno?</p>
+        <p className="mb-4">Are you sure you want to delete the following collection from this workspace?</p>
         <div className="collection-info-card">
           <div className="collection-name">{collection.name}</div>
           <div className="collection-path">{collection.pathname}</div>
         </div>
         <p className="mt-4 text-muted text-sm">
-          It will still be available in the filesystem at the above location and can be re-opened later.
+          Gridman will delete the collection folder from disk. If this workspace uses Git, Git will record the deletion.
         </p>
       </Modal>
     </StyledWrapper>

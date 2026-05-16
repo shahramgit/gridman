@@ -4,7 +4,7 @@ const { getPreferences, savePreferences } = require('../store/preferences');
 const { getGitVersion } = require('../utils/git');
 const { globalEnvironmentsStore } = require('../store/global-environments');
 const { getCachedSystemProxy, fetchSystemProxy } = require('../store/system-proxy');
-const { resolveDefaultLocation } = require('../utils/default-location');
+const { isLegacyDefaultLocation, resolveDefaultLocation } = require('../utils/default-location');
 const onboardUser = require('../app/onboarding');
 const LastOpenedCollections = require('../store/last-opened-collections');
 const WindowStateStore = require('../store/window-state');
@@ -22,7 +22,11 @@ const registerPreferencesIpc = (mainWindow) => {
     const preferences = getPreferences();
 
     // Set the default location if it hasn't been set by the user
-    if (!preferences.general?.defaultLocation || !fs.existsSync(preferences.general.defaultLocation)) {
+    if (
+      !preferences.general?.defaultLocation
+      || isLegacyDefaultLocation(preferences.general.defaultLocation)
+      || !fs.existsSync(preferences.general.defaultLocation)
+    ) {
       preferences.general ??= {};
       preferences.general.defaultLocation = resolveDefaultLocation();
       await savePreferences(preferences);

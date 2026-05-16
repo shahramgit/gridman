@@ -72,6 +72,15 @@ const Wrapper = styled.div`
       max-width: 180px;
     }
 
+    .workspace-remote-name {
+      font-size: 12px;
+      color: ${(props) => props.theme.sidebar.muted};
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 160px;
+    }
+
     .chevron-icon {
       flex-shrink: 0;
       color: ${(props) => props.theme.sidebar.muted};
@@ -174,14 +183,27 @@ const Wrapper = styled.div`
     transform: translateX(-50%);
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    height: 30px;
     pointer-events: none;
 
+    img {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      object-fit: cover;
+      transform: scale(1.12);
+      background: ${(props) => props.theme.mode === 'dark' ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)'};
+      border: 1px solid ${(props) => props.theme.mode === 'dark' ? 'rgba(255, 255, 255, 0.16)' : 'rgba(0, 0, 0, 0.12)'};
+      border-radius: 7px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16);
+    }
+
     .bruno-text {
-      font-size: 13px;
-      font-weight: 600;
+      font-size: 14px;
+      font-weight: 700;
       color: ${(props) => props.theme.text};
-      letter-spacing: 0.5px;
+      letter-spacing: 0;
     }
   }
 

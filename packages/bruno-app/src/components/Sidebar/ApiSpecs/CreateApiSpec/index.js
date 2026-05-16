@@ -31,11 +31,9 @@ const CreateApiSpec = ({ onClose }) => {
   const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid);
   const [defaultApiSpecLocation, setDefaultApiSpecLocation] = React.useState('');
 
-  const isDefaultWorkspace = !activeWorkspace || activeWorkspace.type === 'default';
-
   React.useEffect(() => {
     const getDefaultLocation = async () => {
-      if (activeWorkspace && activeWorkspace.pathname && activeWorkspace.type !== 'default') {
+      if (activeWorkspace?.pathname) {
         try {
           const { ipcRenderer } = window;
           const apiSpecPath = await ipcRenderer.invoke('renderer:ensure-apispec-folder', activeWorkspace.pathname);
@@ -200,7 +198,7 @@ const CreateApiSpec = ({ onClose }) => {
                 checked={formik.values.importFrom === 'collection'}
               />
               <label htmlFor="collection" className="ml-1 cursor-pointer select-none">
-                From Bruno Collection
+                From Gridman Collection
               </label>
             </div>
             {formik.touched.importFrom && formik.errors.importFrom ? (
@@ -315,11 +313,9 @@ const CreateApiSpec = ({ onClose }) => {
               <span className="text-link cursor-pointer hover:underline" onClick={browse}>
                 Browse
               </span>
-              {!isDefaultWorkspace && (
-                <span className="text-xs opacity-60 ml-2">
-                  (defaults to workspace's apispec folder)
-                </span>
-              )}
+              <span className="text-xs opacity-60 ml-2">
+                (defaults to workspace's apispec folder)
+              </span>
             </div>
           </div>
         </form>

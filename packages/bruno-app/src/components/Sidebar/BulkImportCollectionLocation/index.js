@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
 import path from 'utils/common/path';
-import { browseDirectory, importCollection } from 'providers/ReduxStore/slices/collections/actions';
+import { importCollection } from 'providers/ReduxStore/slices/collections/actions';
 import Modal from 'components/Modal';
 import { isElectron } from 'utils/common/platform';
 import { IconX, IconLoader2, IconCheck, IconCaretDown } from '@tabler/icons';
@@ -56,7 +56,7 @@ const getCollectionName = (format, rawData) => {
       // Fallback to root name property
       return rawData.name || 'Insomnia Collection';
     case 'bruno':
-      return rawData.name || 'Bruno Collection';
+      return rawData.name || 'Gridman Collection';
     case 'wsdl':
       return 'WSDL Collection';
     default:
@@ -421,19 +421,6 @@ export const BulkImportCollectionLocation = ({
     }
   });
 
-  const browse = () => {
-    dispatch(browseDirectory())
-      .then((dirPath) => {
-        if (typeof dirPath === 'string' && dirPath.length > 0) {
-          formik.setFieldValue('collectionLocation', dirPath);
-        }
-      })
-      .catch((error) => {
-        formik.setFieldValue('collectionLocation', '');
-        console.error(error);
-      });
-  };
-
   useEffect(() => {
     if (!isElectron()) {
       return () => { };
@@ -732,32 +719,17 @@ export const BulkImportCollectionLocation = ({
 
                 <div className="flex items-start flex-col relative">
                   <div className="font-semibold mb-2">Location</div>
-                  <input
+                  <div
                     id="collection-location"
-                    type="text"
-                    placeholder="Select a location to save the collection"
-                    name="collectionLocation"
-                    className="block textbox w-full cursor-pointer"
-                    autoComplete="off"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    spellCheck="false"
-                    value={formik.values.collectionLocation || ''}
-                    onClick={browse}
-                    onChange={(e) => {
-                      formik.setFieldValue('collectionLocation', e.target.value);
-                    }}
-                  />
+                    className="block textbox w-full bg-gray-50 dark:bg-gray-800 text-muted"
+                  >
+                    {defaultLocation || 'No active workspace'}
+                  </div>
                   {formik.touched.collectionLocation && formik.errors.collectionLocation ? (
                     <div className="text-red-500 mt-1">
                       {formik.errors.collectionLocation}
                     </div>
                   ) : null}
-                  <div className="mt-1">
-                    <span className="text-link cursor-pointer hover:underline" onClick={browse}>
-                      Browse
-                    </span>
-                  </div>
                 </div>
 
                 <div className="mt-4">
@@ -769,7 +741,7 @@ export const BulkImportCollectionLocation = ({
                         <strong>OpenCollection (YAML):</strong> Industry-standard YAML format (.yml files)
                       </p>
                       <p className="mt-1">
-                        <strong>BRU:</strong> Bruno's native file format (.bru files)
+                        <strong>BRU:</strong> Gridman's native file format (.bru files)
                       </p>
                     </Help>
                   </label>

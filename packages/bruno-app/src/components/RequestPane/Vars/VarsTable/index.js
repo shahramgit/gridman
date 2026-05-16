@@ -5,6 +5,7 @@ import { moveVar, setRequestVars } from 'providers/ReduxStore/slices/collections
 import { sendRequest, saveRequest } from 'providers/ReduxStore/slices/collections/actions';
 import { updateTableColumnWidths } from 'providers/ReduxStore/slices/tabs';
 import MultiLineEditor from 'components/MultiLineEditor';
+import SingleLineEditor from 'components/SingleLineEditor';
 import InfoTip from 'components/InfoTip';
 import EditableTable from 'components/EditableTable';
 import StyledWrapper from './StyledWrapper';
@@ -72,6 +73,7 @@ const VarsTable = ({ item, collection, vars, varType, initialScroll = 0 }) => {
         </div>
       ),
       placeholder: varType === 'request' ? 'Value' : 'Expr',
+      width: '35%',
       render: ({ value, onChange }) => (
         <MultiLineEditor
           value={value || ''}
@@ -84,12 +86,31 @@ const VarsTable = ({ item, collection, vars, varType, initialScroll = 0 }) => {
           placeholder={!value ? (varType === 'request' ? 'Value' : 'Expr') : ''}
         />
       )
+    },
+    {
+      key: 'description',
+      name: 'Description',
+      placeholder: 'Description',
+      width: '30%',
+      render: ({ value, onChange }) => (
+        <SingleLineEditor
+          value={value || ''}
+          theme={storedTheme}
+          onSave={onSave}
+          onChange={onChange}
+          onRun={handleRun}
+          collection={collection}
+          item={item}
+          placeholder={!value ? 'Description' : ''}
+        />
+      )
     }
   ];
 
   const defaultRow = {
     name: '',
     value: '',
+    description: '',
     ...(varType === 'response' ? { local: false } : {})
   };
 

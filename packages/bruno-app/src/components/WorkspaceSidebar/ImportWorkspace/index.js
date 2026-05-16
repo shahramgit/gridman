@@ -194,7 +194,7 @@ const ImportWorkspace = ({ onClose }) => {
                   </button>
                 </p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Supports exported Bruno workspace zip files
+                  Supports exported Gridman and Bruno workspace zip files
                 </p>
               </div>
             </div>

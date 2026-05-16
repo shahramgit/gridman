@@ -243,10 +243,6 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
 
   const handleCloseWorkspaceClick = () => {
     workspaceActionsRef.current?.hide();
-    if (currentWorkspace?.type === 'default') {
-      toast.error('Cannot close the default workspace');
-      return;
-    }
     setCloseWorkspaceModalOpen(true);
   };
 
@@ -396,8 +392,7 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
     setWorkspaceNameError('');
     const tempUid = tempWorkspaceUidRef.current;
     tempWorkspaceUidRef.current = null;
-    // Clean up the temp workspace (cancelWorkspaceCreation only switches to default
-    // if the temp workspace was still active, so this is safe after modal success too)
+    // Clean up the temp workspace after modal success.
     if (tempUid) {
       dispatch(cancelWorkspaceCreation(tempUid));
     }
@@ -406,7 +401,6 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
   // Check if workspace actions should be shown
   const showWorkspaceActions = isScratchCollection
     && currentWorkspace
-    && currentWorkspace.type !== 'default'
     && !isRenamingWorkspace;
 
   const handleDisplayIconClick = (e) => {

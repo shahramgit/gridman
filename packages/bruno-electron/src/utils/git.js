@@ -5,6 +5,7 @@ const os = require('os');
 const { execFile, spawnSync } = require('child_process');
 const { parseRequest } = require('@usebruno/filestore');
 const { DEFAULT_GITIGNORE } = require('./filesystem');
+const { readWorkspaceConfig, resolveAndFilterWorkspaceCollections, getWorkspaceUid } = require('./workspace-config');
 
 let collectionPathToGitRootPathMap = new Map();
 let gitBinaryPath;
@@ -13,10 +14,10 @@ const simpleGitInstances = new Map();
 
 const getGitInstallHelpMessage = () => {
   if (process.platform === 'win32') {
-    return 'Git was not found on this Windows machine. Install Git for Windows from https://git-scm.com/download/win, keep "Git from the command line" enabled during setup, then close and reopen Bruno.';
+    return 'Git was not found on this Windows machine. Install Git for Windows from https://git-scm.com/download/win, keep "Git from the command line" enabled during setup, then close and reopen Gridman.';
   }
 
-  return 'Git was not found on this machine. Install Git and restart Bruno.';
+  return 'Git was not found on this machine. Install Git and restart Gridman.';
 };
 
 const resolveGitBinaryPath = () => {
@@ -90,6 +91,52 @@ const getSimpleGitInstanceForPath = (gitRootPath) => {
   return git;
 };
 
+const normalizeGitPath = (filePath = '') => filePath.replace(/\\/g, '/');
+
+const isProtectedWorkspaceGitPath = (filePath = '') => {
+  const normalizedPath = normalizeGitPath(filePath);
+
+  return normalizedPath === '.env'
+    || normalizedPath.startsWith('.env.')
+    || normalizedPath.startsWith('environments/')
+    || normalizedPath.includes('/environments/');
+};
+
+const stringifyGitErrorPart = (value) => {
+  if (!value) return '';
+  if (Array.isArray(value)) {
+    return value.map(stringifyGitErrorPart).filter(Boolean).join('\n');
+  }
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'object') {
+    return [
+      stringifyGitErrorPart(value.stderr),
+      stringifyGitErrorPart(value.stdout),
+      stringifyGitErrorPart(value.all),
+      stringifyGitErrorPart(value.errors),
+      stringifyGitErrorPart(value.output)
+    ].filter(Boolean).join('\n');
+  }
+  return String(value).trim();
+};
+
+const getGitErrorMessage = (err, fallback = 'Git command failed') => {
+  const parts = [
+    stringifyGitErrorPart(err?.message),
+    stringifyGitErrorPart(err?.git),
+    stringifyGitErrorPart(err?.task?.commands)
+  ].filter(Boolean);
+
+  const uniqueParts = [...new Set(parts)];
+  return uniqueParts.join('\n').trim() || fallback;
+};
+
+const createGitError = (err, fallback) => {
+  const error = new Error(getGitErrorMessage(err, fallback));
+  error.cause = err;
+  return error;
+};
+
 const handleGitOutput = ({ win, processUid, sendStdout = false }) => (command, stdout, stderr) => {
   const sendProgressUpdate = (data) => {
     win.webContents.send('main:update-git-operation-progress', {
@@ -102,6 +149,31 @@ const handleGitOutput = ({ win, processUid, sendStdout = false }) => (command, s
 
   if (sendStdout) {
     stdout.on('data', sendProgressUpdate);
+  }
+};
+
+const notifyWorkspaceConfigUpdated = (win, workspacePath) => {
+  if (!win || win.isDestroyed?.()) {
+    return;
+  }
+
+  try {
+    const workspaceConfig = readWorkspaceConfig(workspacePath);
+    const workspaceUid = getWorkspaceUid(workspacePath);
+    win.webContents.send('main:workspace-config-updated', workspacePath, workspaceUid, {
+      ...workspaceConfig,
+      name: path.basename(workspacePath),
+      remoteWorkspaceName: workspaceConfig.name,
+      collections: resolveAndFilterWorkspaceCollections(workspacePath, workspaceConfig.collections)
+    });
+  } catch (error) {
+    const message = error?.message || '';
+    if (message.includes('unresolved Git conflicts')) {
+      win.webContents.send('main:workspace-config-conflicted', workspacePath, getWorkspaceUid(workspacePath));
+      return;
+    }
+
+    console.error('Error refreshing workspace config after Git operation:', error);
   }
 };
 
@@ -374,18 +446,6 @@ const testGitAuthentication = async ({ gitRootPath, remote = 'origin', remoteUrl
   };
 };
 
-const getExternalCollectionPaths = (workspacePath, collectionPaths = []) => {
-  const normalizedWorkspacePath = path.resolve(workspacePath);
-
-  return collectionPaths
-    .filter(Boolean)
-    .map((collectionPath) => path.resolve(collectionPath))
-    .filter((collectionPath) => {
-      const relativePath = path.relative(normalizedWorkspacePath, collectionPath);
-      return relativePath.startsWith('..') || path.isAbsolute(relativePath);
-    });
-};
-
 const getWorkspaceGitTargetPath = ({ workspacePath }) => {
   return workspacePath;
 };
@@ -412,7 +472,6 @@ const initGit = async (gitRootPath) => {
 
 const ensureWorkspaceGitFiles = async (workspacePath) => {
   const gitignorePath = path.join(workspacePath, '.gitignore');
-  const readmePath = path.join(workspacePath, 'README.md');
   const defaultGitignoreLines = `${DEFAULT_GITIGNORE}\n`
     .split('\n')
     .map((line) => line.trimEnd());
@@ -433,20 +492,6 @@ const ensureWorkspaceGitFiles = async (workspacePath) => {
     }
   } else {
     await fs.promises.writeFile(gitignorePath, `${DEFAULT_GITIGNORE}\n`, 'utf8');
-  }
-
-  if (!fs.existsSync(readmePath)) {
-    const workspaceName = path.basename(workspacePath);
-    const readme = [
-      `# ${workspaceName}`,
-      '',
-      'Bruno workspace tracked with Git.',
-      '',
-      'Keep collections, API specs, and workspace files in this repository.',
-      'Environment files are ignored by default because they may contain secrets.',
-      ''
-    ].join('\n');
-    await fs.promises.writeFile(readmePath, readme, 'utf8');
   }
 };
 
@@ -505,6 +550,49 @@ const stageChanges = async (gitRootPath, files) => {
   });
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isGitIndexLockError = (error) => {
+  const message = getGitErrorMessage(error);
+  return message.includes('index.lock') || message.includes('Another git process seems to be running');
+};
+
+const runGitRawWithIndexLockRetry = async (git, args, attempts = 6) => {
+  let lastError;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await git.raw(args);
+    } catch (error) {
+      lastError = error;
+      if (!isGitIndexLockError(error) || attempt === attempts - 1) {
+        throw error;
+      }
+      await sleep(500);
+    }
+  }
+
+  throw lastError;
+};
+
+const stageRelativeFiles = async (gitRootPath, files) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  const pathspecPath = path.join(gitRootPath, '.git', `bruno-pathspec-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+  try {
+    fs.writeFileSync(pathspecPath, `${files.join('\0')}\0`, 'utf8');
+    await runGitRawWithIndexLockRetry(git, [
+      'add',
+      '--all',
+      '--pathspec-from-file',
+      pathspecPath,
+      '--pathspec-file-nul'
+    ]);
+  } finally {
+    fs.rmSync(pathspecPath, { force: true });
+  }
+};
+
 const unstageChanges = async (gitRootPath, files) => {
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
@@ -543,6 +631,16 @@ const unstageChanges = async (gitRootPath, files) => {
       });
     });
   });
+};
+
+const resolveConflictFile = async (gitRootPath, filePath, side) => {
+  if (side !== 'ours' && side !== 'theirs') {
+    throw new Error('Invalid conflict resolution side');
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  await git.raw(['checkout', `--${side}`, '--', filePath]);
+  return stageChanges(gitRootPath, [path.join(gitRootPath, filePath)]);
 };
 
 const discardChanges = async (gitRootPath, filePaths) => {
@@ -1007,9 +1105,28 @@ const pullGitChanges = async (win, data) => {
   if (strategy !== '--no-rebase' && strategy !== '--ff-only') {
     throw new Error('Invalid strategy');
   }
-  return new Promise((resolve, reject) => {
-    const git = getSimpleGitInstanceForPath(gitRootPath);
-    git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true })).pull(remote, remoteBranch, [strategy], (err, res) => {
+
+  const getMergeConflictResult = (err) => {
+    const mergeInProgress = fs.existsSync(path.join(gitRootPath, '.git', 'MERGE_HEAD'));
+    const message = getGitErrorMessage(err, 'Merge conflicts need to be resolved before sync can continue.');
+
+    if (
+      mergeInProgress
+      || message.includes('CONFLICT')
+      || message.includes('Automatic merge failed')
+      || message.includes('unresolved conflict')
+    ) {
+      return {
+        mergeInProgress: true,
+        message
+      };
+    }
+
+    return null;
+  };
+
+  const pull = (git, args) => new Promise((resolve, reject) => {
+    git.raw(['-c', 'core.quotePath=false', 'pull', remote, remoteBranch, ...args], (err, res) => {
       if (err) {
         reject(err);
       } else {
@@ -1017,6 +1134,142 @@ const pullGitChanges = async (win, data) => {
       }
     });
   });
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true }));
+
+  let allowUnrelatedHistories = false;
+  const safetyCommitFiles = [];
+  const protectedBackupFiles = [];
+  const localBackupFiles = [];
+  let protectedBackupPath = '';
+  let localBackupPath = '';
+  const initialSafetyCommit = await saveLocalWorkspaceFilesBeforePull(gitRootPath);
+
+  if (initialSafetyCommit.skippedFiles.length) {
+    throw new Error([
+      'Git pull would overwrite local files that Gridman will not auto-commit.',
+      'Move, delete, or manually commit these files before pulling:',
+      ...initialSafetyCommit.skippedFiles
+    ].join('\n'));
+  }
+
+  if (initialSafetyCommit.committed) {
+    safetyCommitFiles.push(...initialSafetyCommit.files);
+  }
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const args = allowUnrelatedHistories ? [strategy, '--allow-unrelated-histories'] : [strategy];
+      const result = await pull(git, args);
+      notifyWorkspaceConfigUpdated(win, gitRootPath);
+      return safetyCommitFiles.length || protectedBackupFiles.length || localBackupFiles.length
+        ? {
+            ...result,
+            safetyCommitCreated: Boolean(safetyCommitFiles.length),
+            safetyCommitFiles,
+            protectedFilesBackedUp: Boolean(protectedBackupFiles.length),
+            protectedBackupFiles,
+            protectedBackupPath,
+            localFilesBackedUp: Boolean(localBackupFiles.length),
+            localBackupFiles,
+            localBackupPath
+          }
+        : result;
+    } catch (err) {
+      const message = getGitErrorMessage(err);
+
+      if (strategy === '--no-rebase' && message.includes('refusing to merge unrelated histories') && !allowUnrelatedHistories) {
+        allowUnrelatedHistories = true;
+        continue;
+      }
+
+      const overwriteFiles = extractUntrackedOverwriteFiles(message);
+      if (strategy === '--no-rebase' && overwriteFiles.length) {
+        const protectedBackup = backupFilesBeforePull(gitRootPath, overwriteFiles, {
+          protectedOnly: true
+        });
+        const overwriteFilesToCommit = overwriteFiles
+          .map(normalizeGitPath)
+          .filter((filePath) => {
+            if (!filePath || isProtectedWorkspaceGitPath(filePath)) {
+              return false;
+            }
+
+            const absolutePath = path.resolve(gitRootPath, filePath);
+            const relativeToRoot = path.relative(gitRootPath, absolutePath);
+            const isInsideGitRoot = relativeToRoot && !relativeToRoot.startsWith('..') && !path.isAbsolute(relativeToRoot);
+            return isInsideGitRoot && fs.existsSync(absolutePath);
+          });
+        const safetyCommit = await saveLocalWorkspaceFilesBeforePull(gitRootPath, overwriteFilesToCommit);
+
+        if (protectedBackup.skippedFiles.length) {
+          throw new Error([
+            'Git pull would overwrite protected local files that Gridman could not back up.',
+            'Move, delete, or manually commit these files before pulling:',
+            ...protectedBackup.skippedFiles
+          ].join('\n'));
+        }
+
+        if (safetyCommit.skippedFiles.length) {
+          throw new Error([
+            'Git pull would overwrite local files that Gridman will not auto-commit.',
+            'Move, delete, or manually commit these files before pulling:',
+            ...safetyCommit.skippedFiles
+          ].join('\n'));
+        }
+
+        const localBackup = safetyCommit.committed
+          ? { files: [], skippedFiles: [], backupPath: '' }
+          : backupFilesBeforePull(gitRootPath, overwriteFiles, {
+              protectedOnly: false,
+              excludeProtected: true
+            });
+
+        if (localBackup.skippedFiles.length) {
+          throw new Error([
+            'Git pull would overwrite local files that Gridman could not commit or back up.',
+            'Move, delete, or manually commit these files before pulling:',
+            ...localBackup.skippedFiles
+          ].join('\n'));
+        }
+
+        if (!safetyCommit.committed && !protectedBackup.files.length && !localBackup.files.length) {
+          throw createGitError(err, 'Git pull would overwrite local files, and Gridman could not create a safety commit.');
+        }
+
+        safetyCommitFiles.push(...safetyCommit.files);
+        protectedBackupFiles.push(...protectedBackup.files);
+        localBackupFiles.push(...localBackup.files);
+        protectedBackupPath = protectedBackup.backupPath || protectedBackupPath;
+        localBackupPath = localBackup.backupPath || localBackupPath;
+        allowUnrelatedHistories = true;
+        continue;
+      }
+
+      const conflictResult = getMergeConflictResult(err);
+      if (conflictResult) {
+        notifyWorkspaceConfigUpdated(win, gitRootPath);
+        return safetyCommitFiles.length || protectedBackupFiles.length || localBackupFiles.length
+          ? {
+              ...conflictResult,
+              safetyCommitCreated: Boolean(safetyCommitFiles.length),
+              safetyCommitFiles,
+              protectedFilesBackedUp: Boolean(protectedBackupFiles.length),
+              protectedBackupFiles,
+              protectedBackupPath,
+              localFilesBackedUp: Boolean(localBackupFiles.length),
+              localBackupFiles,
+              localBackupPath
+            }
+          : conflictResult;
+      }
+
+      throw createGitError(err, 'Git pull failed');
+    }
+  }
+
+  throw new Error('Git pull still reports local files that would be overwritten after several safety commits. Commit or move the remaining local files, then pull again.');
 };
 
 async function getChangedFilesInCollectionGit(_gitRootPath, _collectionPath) {
@@ -1038,10 +1291,15 @@ async function getChangedFilesInCollectionGit(_gitRootPath, _collectionPath) {
         });
       }
 
+      const isConflictStatus = (file) => {
+        const statusCode = `${file.index || ' '}${file.working_dir || ' '}`;
+        return ['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'].includes(statusCode);
+      };
+
       const unstaged = await Promise.all(
         status.files
           .filter(
-            (file) => file.index === '?' || file.index === ' ' || file.working_dir === '?' || file.working_dir === 'M'
+            (file) => !isConflictStatus(file) && (file.index === '?' || file.index === ' ' || file.working_dir === '?' || file.working_dir === 'M')
           )
           .map(async (file) => {
             return { path: file.path, type: 'unstaged', fileIndex: file.index, working_dir: file.working_dir };
@@ -1058,7 +1316,8 @@ async function getChangedFilesInCollectionGit(_gitRootPath, _collectionPath) {
         status.files
           .filter(
             (file) =>
-              (file.index === 'M' || file.index === 'A' || file.index === 'D')
+              !isConflictStatus(file)
+              && (file.index === 'M' || file.index === 'A' || file.index === 'D')
               && (file.working_dir === 'M' || file.working_dir === ' ')
           )
           .map(async (file) => {
@@ -1067,8 +1326,14 @@ async function getChangedFilesInCollectionGit(_gitRootPath, _collectionPath) {
       );
 
       const conflicted = await Promise.all(
-        status.files.filter((file) => file.index === 'U' || file.working_dir === 'U').map(async (file) => {
-          return { path: file.path, type: 'conflicted', fileIndex: file.index, working_dir: file.working_dir };
+        status.files.filter(isConflictStatus).map(async (file) => {
+          return {
+            path: file.path,
+            type: 'conflicted',
+            fileIndex: file.index,
+            working_dir: file.working_dir,
+            status: `${file.index || ' '}${file.working_dir || ' '}`.trim()
+          };
         }) || []
       );
 
@@ -1170,6 +1435,247 @@ const hasGitCommits = (gitRootPath) => {
   });
 };
 
+const extractUntrackedOverwriteFiles = (message = '') => {
+  const lines = message.split(/\r?\n/);
+  const startIndex = lines.findIndex((line) => line.includes('untracked working tree files would be overwritten by merge'));
+  if (startIndex === -1) {
+    return [];
+  }
+
+  const files = [];
+  for (const line of lines.slice(startIndex + 1)) {
+    if (line.includes('Please move or remove them') || line.includes('Aborting')) {
+      break;
+    }
+
+    const filePath = line.trim();
+    if (filePath) {
+      files.push(filePath);
+    }
+  }
+
+  return files;
+};
+
+const createBackupId = () => {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+};
+
+const findBackupTargetsForMissingGitPath = (gitRootPath, filePath) => {
+  const normalizedPath = normalizeGitPath(filePath);
+  const replacementCharIndex = normalizedPath.indexOf('\uFFFD');
+  const searchablePath = replacementCharIndex === -1
+    ? normalizedPath
+    : normalizedPath.slice(0, replacementCharIndex);
+  const slashIndex = searchablePath.lastIndexOf('/');
+
+  if (slashIndex === -1) {
+    return [];
+  }
+
+  const parentPath = searchablePath.slice(0, slashIndex);
+  const leafPrefix = searchablePath.slice(slashIndex + 1);
+  const absoluteParentPath = path.resolve(gitRootPath, parentPath);
+  const relativeParentPath = path.relative(gitRootPath, absoluteParentPath);
+  const isInsideGitRoot = relativeParentPath && !relativeParentPath.startsWith('..') && !path.isAbsolute(relativeParentPath);
+
+  if (!isInsideGitRoot || !fs.existsSync(absoluteParentPath)) {
+    return [];
+  }
+
+  return fs.readdirSync(absoluteParentPath)
+    .filter((entryName) => entryName.startsWith(leafPrefix))
+    .map((entryName) => normalizeGitPath(path.posix.join(parentPath, entryName)));
+};
+
+const getBackupTargetsForGitPath = (gitRootPath, filePath) => {
+  const normalizedPath = normalizeGitPath(filePath);
+  const absolutePath = path.resolve(gitRootPath, normalizedPath);
+  const relativeToRoot = path.relative(gitRootPath, absolutePath);
+  const isInsideGitRoot = relativeToRoot && !relativeToRoot.startsWith('..') && !path.isAbsolute(relativeToRoot);
+
+  if (!isInsideGitRoot) {
+    return {
+      files: [],
+      skippedFiles: [filePath]
+    };
+  }
+
+  if (fs.existsSync(absolutePath)) {
+    return {
+      files: [normalizedPath],
+      skippedFiles: []
+    };
+  }
+
+  const matchedFiles = findBackupTargetsForMissingGitPath(gitRootPath, normalizedPath);
+  return matchedFiles.length
+    ? {
+        files: matchedFiles,
+        skippedFiles: []
+      }
+    : {
+        files: [],
+        skippedFiles: [filePath]
+      };
+};
+
+const backupFilesBeforePull = (gitRootPath, files, options = {}) => {
+  const { protectedOnly = false, excludeProtected = false } = options;
+  const normalizedFiles = [...new Set(files.map(normalizeGitPath).filter(Boolean))];
+  const filesToBackup = normalizedFiles.filter((filePath) => {
+    const isProtected = isProtectedWorkspaceGitPath(filePath);
+    if (protectedOnly) {
+      return isProtected;
+    }
+    if (excludeProtected) {
+      return !isProtected;
+    }
+    return true;
+  });
+
+  if (!filesToBackup.length) {
+    return {
+      files: [],
+      skippedFiles: [],
+      backupPath: ''
+    };
+  }
+
+  const backupRoot = path.join(gitRootPath, '.git', 'bruno-workspace-backups', createBackupId());
+  const backedUpFiles = [];
+  const skippedFiles = [];
+
+  for (const filePath of filesToBackup) {
+    const normalizedFilePath = normalizeGitPath(filePath);
+    if (backedUpFiles.some((backedUpFilePath) => normalizedFilePath.startsWith(`${backedUpFilePath}/`))) {
+      continue;
+    }
+
+    const backupTargets = getBackupTargetsForGitPath(gitRootPath, filePath);
+    if (backupTargets.skippedFiles.length) {
+      skippedFiles.push(...backupTargets.skippedFiles);
+      continue;
+    }
+
+    for (const backupFilePath of backupTargets.files) {
+      const absolutePath = path.resolve(gitRootPath, backupFilePath);
+      const relativeToRoot = path.relative(gitRootPath, absolutePath);
+      const targetPath = path.join(backupRoot, relativeToRoot);
+
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.renameSync(absolutePath, targetPath);
+      backedUpFiles.push(backupFilePath);
+    }
+  }
+
+  return {
+    files: backedUpFiles,
+    skippedFiles,
+    backupPath: backedUpFiles.length ? backupRoot : ''
+  };
+};
+
+const parsePorcelainStatusPaths = (output = '') => {
+  const entries = output.split('\0');
+  const files = [];
+
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry) continue;
+
+    const status = entry.slice(0, 2);
+    const filePath = entry.slice(3);
+    if (filePath) {
+      files.push(filePath);
+    }
+
+    if (status[0] === 'R' || status[0] === 'C') {
+      i += 1;
+    }
+  }
+
+  return [...new Set(files.map(normalizeGitPath).filter(Boolean))];
+};
+
+const getLocalWorkspaceFilesForSafetyCommit = async (gitRootPath) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  const status = await git.raw(['-c', 'core.quotePath=false', 'status', '--porcelain', '-z', '--untracked-files=all']);
+  return parsePorcelainStatusPaths(status).filter((filePath) => !isProtectedWorkspaceGitPath(filePath));
+};
+
+const saveLocalWorkspaceFilesBeforePull = async (gitRootPath, additionalFiles = []) => {
+  const committableFiles = [
+    ...await getLocalWorkspaceFilesForSafetyCommit(gitRootPath),
+    ...additionalFiles
+  ];
+  return createSafetyCommitForFiles(gitRootPath, committableFiles);
+};
+
+const hasStagedChanges = async (gitRootPath) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  const status = await git.raw(['-c', 'core.quotePath=false', 'status', '--porcelain', '-z', '--untracked-files=no']);
+  return status
+    .split('\0')
+    .filter(Boolean)
+    .some((entry) => {
+      const indexStatus = entry[0];
+      return indexStatus && indexStatus !== ' ' && indexStatus !== '?';
+    });
+};
+
+const createSafetyCommitForFiles = async (gitRootPath, files, message = 'Save local workspace files before pull') => {
+  const normalizedFiles = [...new Set(files.map(normalizeGitPath).filter(Boolean))];
+  if (!normalizedFiles.length) {
+    return {
+      committed: false,
+      files: [],
+      skippedFiles: []
+    };
+  }
+
+  const committableFiles = [];
+  const skippedFiles = [];
+
+  for (const filePath of normalizedFiles) {
+    const absolutePath = path.resolve(gitRootPath, filePath);
+    const relativeToRoot = path.relative(gitRootPath, absolutePath);
+    const isInsideGitRoot = relativeToRoot && !relativeToRoot.startsWith('..') && !path.isAbsolute(relativeToRoot);
+    const isGitInternal = filePath === '.git' || filePath.startsWith('.git/');
+
+    if (!isInsideGitRoot || isGitInternal) {
+      skippedFiles.push(filePath);
+      continue;
+    }
+
+    committableFiles.push(filePath);
+  }
+
+  if (!committableFiles.length) {
+    return {
+      committed: false,
+      files: [],
+      skippedFiles
+    };
+  }
+
+  await stageRelativeFiles(gitRootPath, committableFiles);
+  if (!await hasStagedChanges(gitRootPath)) {
+    return {
+      committed: false,
+      files: [],
+      skippedFiles
+    };
+  }
+
+  await commitChanges(gitRootPath, message);
+  return {
+    committed: true,
+    files: committableFiles,
+    skippedFiles
+  };
+};
+
 const getWorkspaceGitStatusForClient = (status = {}) => ({
   current: status.current || '',
   tracking: status.tracking || null,
@@ -1211,17 +1717,12 @@ const getAheadBehindForClient = (aheadBehind = {}) => ({
 const getWorkspaceGitData = async (input) => {
   const { workspacePath, collectionPaths, preferCollectionParent, fetchRemote, remote } = normalizeWorkspaceGitInput(input);
   const gitTargetPath = getWorkspaceGitTargetPath({ workspacePath, collectionPaths, preferCollectionParent });
-  const outsideCollections = getExternalCollectionPaths(workspacePath, collectionPaths).map((collectionPath) => ({
-    path: collectionPath,
-    name: path.basename(collectionPath)
-  }));
   const gitRootPath = getWorkspaceGitRootPath(gitTargetPath);
   if (!gitRootPath) {
     return {
       isGitRepository: false,
       gitRootPath: null,
-      gitTargetPath,
-      outsideCollections
+      gitTargetPath
     };
   }
   ensureGitAvailable();
@@ -1261,7 +1762,6 @@ const getWorkspaceGitData = async (input) => {
     hasCommits,
     aheadBehind: getAheadBehindForClient(aheadBehind),
     auth,
-    outsideCollections,
     mergeInProgress
   };
 };
@@ -1270,15 +1770,24 @@ const syncGitChanges = async (win, { gitRootPath, processUid, remote = 'origin',
   await fetchChanges(gitRootPath, remote);
   const status = await getGitStatus(gitRootPath);
   const branch = remoteBranch || status.current;
+  const shouldPull = status.behind > 0 || (!status.tracking && await remoteBranchExists({ gitRootPath, remote, branch }));
   const result = {
     fetched: true,
     pulled: false,
     pushed: false
   };
 
-  if (status.behind > 0) {
-    await pullGitChanges(win, { gitRootPath, processUid, remote, remoteBranch: branch, strategy });
+  if (shouldPull) {
+    const pullResult = await pullGitChanges(win, { gitRootPath, processUid, remote, remoteBranch: branch, strategy });
     result.pulled = true;
+
+    if (pullResult?.mergeInProgress) {
+      return {
+        ...result,
+        mergeInProgress: true,
+        message: pullResult.message
+      };
+    }
   }
 
   const nextStatus = await getGitStatus(gitRootPath);
@@ -1304,6 +1813,20 @@ const fetchRemoteBranches = ({ gitRootPath, remote }) => {
       }
     });
   });
+};
+
+const remoteBranchExists = async ({ gitRootPath, remote, branch }) => {
+  if (!remote || !branch) {
+    return false;
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  try {
+    await git.raw(['rev-parse', '--verify', '--quiet', `refs/remotes/${remote}/${branch}`]);
+    return true;
+  } catch (_) {
+    return false;
+  }
 };
 
 const addRemote = ({ gitRootPath, remoteName, remoteUrl }) => {
@@ -1584,6 +2107,7 @@ const continueMerge = async (gitRootPath, conflictedFiles, commitMessage) => {
           reject(err);
           return;
         }
+        notifyWorkspaceConfigUpdated(null, gitRootPath);
         resolve(stdout);
       });
     } catch (error) {
@@ -1598,7 +2122,9 @@ const continueResolvedMerge = async (gitRootPath, conflictedFilePaths, commitMes
       const fsPromises = require('fs/promises');
       const fullPaths = conflictedFilePaths.map((filePath) => path.join(gitRootPath, filePath));
 
-      await stageChanges(gitRootPath, fullPaths);
+      if (fullPaths.length) {
+        await stageChanges(gitRootPath, fullPaths);
+      }
 
       if (commitMessage) {
         const mergeMsgPath = path.join(gitRootPath, '.git', 'MERGE_MSG');
@@ -1610,6 +2136,7 @@ const continueResolvedMerge = async (gitRootPath, conflictedFilePaths, commitMes
           reject(err);
           return;
         }
+        notifyWorkspaceConfigUpdated(null, gitRootPath);
         resolve(stdout);
       });
     } catch (error) {
@@ -2355,6 +2882,7 @@ module.exports = {
   getGitStatus,
   stageChanges,
   unstageChanges,
+  resolveConflictFile,
   discardChanges,
   commitChanges,
   getChangedFilesInCollectionGit,

@@ -209,7 +209,7 @@ const RemoveCollectionsModal = ({ collectionUids, onClose }) => {
                 {collectionsWithUnsavedChanges.length === 1 ? 'collection' : 'collections'}?
               </div>
               <div className="mt-2 text-xs text-gray-500">
-                Collections will be removed from the current workspace but will still be available in the file system and can be re-opened later.
+                Collections will be deleted from disk because the workspace owns its collections.
               </div>
 
               <div className="mt-4">
@@ -245,15 +245,15 @@ const RemoveCollectionsModal = ({ collectionUids, onClose }) => {
             <>
               <div className="mt-4">
                 {hasMultipleCollections ? (
-                  `Are you sure you want to close all ${collectionUids.length} collections in this workspace?`
+                  `Are you sure you want to delete all ${collectionUids.length} collections from this workspace?`
                 ) : (
                   <>
-                    Are you sure you want to close the collection <strong>{singleCollectionName}</strong> from this workspace?
+                    Are you sure you want to delete the collection <strong>{singleCollectionName}</strong> from this workspace?
                   </>
                 )}
               </div>
               <div className="mt-4 text-xs text-gray-500">
-                Collections will be removed from the current workspace but will still be available in the file system and can be re-opened later.
+                Collections will be deleted from disk because the workspace owns its collections.
               </div>
               <div className="flex justify-end mt-6">
                 <Button className="mr-2" color="secondary" variant="ghost" onClick={handleCancel} data-testid="modal-close-button">

@@ -3,7 +3,7 @@ const path = require('path');
 const { dialog, ipcMain } = require('electron');
 const Yup = require('yup');
 const { isDirectory, getCollectionStats, normalizeAndResolvePath } = require('../utils/filesystem');
-const { isPathInsideDirectory } = require('../utils/workspace-config');
+const { isWorkspaceCollectionPath } = require('../utils/workspace-config');
 const { generateUidBasedOnHash } = require('../utils/common');
 const { transformBrunoConfigAfterRead } = require('../utils/transformBrunoConfig');
 const { parseCollection } = require('@usebruno/filestore');
@@ -93,7 +93,7 @@ const openCollectionDialog = async (win, watcher, options = {}) => {
       const resolvedPath = path.resolve(filePath);
 
       if (isDirectory(resolvedPath)) {
-        if (options.workspacePath && options.workspacePath !== 'default' && !isPathInsideDirectory(options.workspacePath, resolvedPath)) {
+        if (options.workspacePath && !isWorkspaceCollectionPath(options.workspacePath, resolvedPath)) {
           acc.invalidPaths.push(resolvedPath);
           console.error(`[ERROR] Collection must be inside workspace: "${resolvedPath}"`);
           return acc;
@@ -118,7 +118,7 @@ const openCollectionDialog = async (win, watcher, options = {}) => {
 
     // Notify about any invalid paths
     if (invalidPaths.length > 0) {
-      win.webContents.send('main:display-error', `Some selected folders could not be opened. Workspace collections must be inside the workspace folder: ${invalidPaths.join(', ')}`);
+      win.webContents.send('main:display-error', `Some selected folders could not be opened. Workspace collections must be inside the workspace collections folder: ${invalidPaths.join(', ')}`);
     }
   }
 };

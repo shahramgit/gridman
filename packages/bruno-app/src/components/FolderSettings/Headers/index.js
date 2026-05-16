@@ -91,6 +91,7 @@ const Headers = ({ collection, folder }) => {
     {
       key: 'value',
       name: 'Value',
+      width: '35%',
       placeholder: 'Value',
       render: ({ value, onChange }) => (
         <SingleLineEditor
@@ -102,6 +103,23 @@ const Headers = ({ collection, folder }) => {
           item={folder}
           autocomplete={MimeTypes}
           placeholder={!value ? 'Value' : ''}
+        />
+      )
+    },
+    {
+      key: 'description',
+      name: 'Description',
+      placeholder: 'Description',
+      width: '35%',
+      render: ({ value, onChange }) => (
+        <SingleLineEditor
+          value={value || ''}
+          theme={storedTheme}
+          onSave={handleSave}
+          onChange={onChange}
+          collection={collection}
+          item={folder}
+          placeholder={!value ? 'Description' : ''}
         />
       )
     }

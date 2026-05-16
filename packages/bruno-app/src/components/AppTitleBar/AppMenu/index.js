@@ -3,10 +3,13 @@ import { IconMenu2 } from '@tabler/icons';
 import MenuDropdown from 'ui/MenuDropdown';
 import ActionIcon from 'ui/ActionIcon';
 import StyledWrapper from './StyledWrapper';
+import { useSelector } from 'react-redux';
 
 const AppMenu = () => {
   const [isOpen, setIsOpen] = useState(false);
   const { ipcRenderer } = window;
+  const { workspaces, activeWorkspaceUid } = useSelector((state) => state.workspaces);
+  const activeWorkspace = workspaces.find((workspace) => workspace.uid === activeWorkspaceUid);
 
   const menuItems = [
     {
@@ -15,8 +18,8 @@ const AppMenu = () => {
       submenu: [
         {
           id: 'open-collection',
-          label: 'Open Collection',
-          onClick: () => ipcRenderer?.invoke('renderer:open-collection')
+          label: 'Import Collection',
+          onClick: () => ipcRenderer?.invoke('renderer:open-collection', { workspaceId: activeWorkspace?.pathname })
         },
         { type: 'divider', id: 'file-div-1' },
         {
@@ -122,7 +125,7 @@ const AppMenu = () => {
       submenu: [
         {
           id: 'about',
-          label: 'About Bruno',
+          label: 'About Gridman',
           onClick: () => ipcRenderer?.invoke('renderer:open-about')
         },
         {

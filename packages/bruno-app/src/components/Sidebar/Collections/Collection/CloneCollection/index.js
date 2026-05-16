@@ -3,7 +3,6 @@ import { useDispatch, useSelector } from 'react-redux';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
 import path from 'utils/common/path';
-import { browseDirectory } from 'providers/ReduxStore/slices/collections/actions';
 import { cloneCollection } from 'providers/ReduxStore/slices/collections/actions';
 import toast from 'react-hot-toast';
 import Modal from 'components/Modal';
@@ -64,20 +63,6 @@ const CloneCollection = ({ onClose, collectionUid }) => {
     }
   });
 
-  const browse = () => {
-    dispatch(browseDirectory())
-      .then((dirPath) => {
-        // When the user closes the dialog without selecting anything dirPath will be false
-        if (typeof dirPath === 'string') {
-          formik.setFieldValue('collectionLocation', dirPath);
-        }
-      })
-      .catch((error) => {
-        formik.setFieldValue('collectionLocation', '');
-        console.error(error);
-      });
-  };
-
   useEffect(() => {
     if (inputRef && inputRef.current) {
       inputRef.current.focus();
@@ -116,30 +101,15 @@ const CloneCollection = ({ onClose, collectionUid }) => {
           <label htmlFor="collection-location" className="block font-medium mt-3">
             Location
           </label>
-          <input
+          <div
             id="collection-location"
-            type="text"
-            name="collectionLocation"
-            readOnly={true}
-            className="block textbox mt-2 w-full cursor-pointer"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck="false"
-            value={formik.values.collectionLocation || ''}
-            onClick={browse}
-          />
+            className="block textbox mt-2 w-full bg-gray-50 dark:bg-gray-800 text-muted"
+          >
+            {defaultLocation || 'No active workspace'}
+          </div>
           {formik.touched.collectionLocation && formik.errors.collectionLocation ? (
             <div className="text-red-500">{formik.errors.collectionLocation}</div>
           ) : null}
-          <div className="mt-1">
-            <span
-              className="text-link cursor-pointer hover:underline"
-              onClick={browse}
-            >
-              Browse
-            </span>
-          </div>
 
           <div className="mt-4">
             <div className="flex items-center justify-between">

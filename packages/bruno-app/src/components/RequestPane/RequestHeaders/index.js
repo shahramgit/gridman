@@ -99,6 +99,7 @@ const RequestHeaders = ({ item, collection, addHeaderText }) => {
     {
       key: 'value',
       name: 'Value',
+      width: '35%',
       placeholder: 'Value',
       render: ({ value, onChange }) => (
         <SingleLineEditor
@@ -111,6 +112,24 @@ const RequestHeaders = ({ item, collection, addHeaderText }) => {
           collection={collection}
           item={item}
           placeholder={!value ? 'Value' : ''}
+        />
+      )
+    },
+    {
+      key: 'description',
+      name: 'Description',
+      placeholder: 'Description',
+      width: '35%',
+      render: ({ value, onChange }) => (
+        <SingleLineEditor
+          value={value || ''}
+          theme={storedTheme}
+          onSave={onSave}
+          onChange={onChange}
+          onRun={handleRun}
+          collection={collection}
+          item={item}
+          placeholder={!value ? 'Description' : ''}
         />
       )
     }

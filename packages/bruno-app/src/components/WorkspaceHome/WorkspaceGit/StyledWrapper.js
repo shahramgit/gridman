@@ -174,6 +174,13 @@ const StyledWrapper = styled.div`
     color: ${(props) => props.theme.colors.text.muted};
   }
 
+  .file-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
   .diff-box,
   .output-box {
     white-space: pre-wrap;

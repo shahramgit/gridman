@@ -82,7 +82,7 @@ const MultipartFormParams = ({ item, collection }) => {
         } else {
           updatedParams = [
             ...(currentParams || []),
-            { uid: row.uid, name: row.name || '', enabled: true, type: 'file', value: processedPaths, contentType: '' }
+            { uid: row.uid, name: row.name || '', enabled: true, type: 'file', value: processedPaths, contentType: '', description: '' }
           ];
         }
         handleParamsChange(updatedParams);
@@ -204,7 +204,7 @@ const MultipartFormParams = ({ item, collection }) => {
       key: 'contentType',
       name: 'Content-Type',
       placeholder: 'Auto',
-      width: '20%',
+      width: '15%',
       render: ({ value, onChange }) => (
         <SingleLineEditor
           onSave={onSave}
@@ -216,6 +216,24 @@ const MultipartFormParams = ({ item, collection }) => {
           collection={collection}
         />
       )
+    },
+    {
+      key: 'description',
+      name: 'Description',
+      placeholder: 'Description',
+      width: '20%',
+      render: ({ value, onChange }) => (
+        <SingleLineEditor
+          onSave={onSave}
+          theme={storedTheme}
+          placeholder={!value ? 'Description' : ''}
+          value={value || ''}
+          onChange={onChange}
+          onRun={handleRun}
+          collection={collection}
+          item={item}
+        />
+      )
     }
   ];
 
@@ -223,6 +241,7 @@ const MultipartFormParams = ({ item, collection }) => {
     name: '',
     value: '',
     contentType: '',
+    description: '',
     type: 'text'
   };
 

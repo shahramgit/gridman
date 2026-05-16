@@ -28,7 +28,7 @@ const FEATURES = [
   {
     id: 'brunoJson',
     label: 'Show bruno.json',
-    description: 'Store whether Bruno collection config files should be visible where supported.'
+    description: 'Store whether Gridman collection config files should be visible where supported.'
   }
 ];
 

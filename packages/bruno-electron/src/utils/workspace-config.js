@@ -13,6 +13,10 @@ const OPENCOLLECTION_VERSION = '1.0.0';
 const GITIGNORE_MANAGED_BLOCK_START = '# Bruno managed collection remotes';
 const GITIGNORE_MANAGED_BLOCK_END = '# End Bruno managed collection remotes';
 
+const hasGitConflictMarkers = (content = '') => {
+  return /^<<<<<<< |^=======\s*$|^>>>>>>> /m.test(content);
+};
+
 const quoteYamlValue = (value) => {
   if (typeof value !== 'string') {
     return `"${String(value)}"`;
@@ -85,7 +89,7 @@ const isValidSpecEntry = (spec) => {
   return true;
 };
 
-const sanitizeCollections = (collections) => {
+const sanitizeCollections = (collections, workspacePath) => {
   if (!Array.isArray(collections)) {
     return [];
   }
@@ -106,8 +110,17 @@ const sanitizeCollections = (collections) => {
       sanitized.remote = collection.remote.trim();
     }
 
-    return sanitized;
-  });
+    if (!workspacePath) {
+      return sanitized;
+    }
+
+    try {
+      return normalizeCollectionEntry(workspacePath, sanitized);
+    } catch (error) {
+      console.warn('Skipping external workspace collection entry:', sanitized.path);
+      return null;
+    }
+  }).filter(Boolean);
 };
 
 const sanitizeSpecs = (specs) => {
@@ -158,8 +171,80 @@ const isPathInsideDirectory = (parentPath, childPath) => {
   return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 };
 
+const getWorkspaceCollectionsDir = (workspacePath) => path.join(workspacePath, 'collections');
+
+const isWorkspaceCollectionPath = (workspacePath, collectionPath) => {
+  if (!workspacePath || !collectionPath) {
+    return false;
+  }
+
+  return isPathInsideDirectory(getWorkspaceCollectionsDir(workspacePath), collectionPath);
+};
+
+const normalizeRelativeCollectionPath = (collectionPath) => {
+  const relativePath = posixifyPath(collectionPath).trim().replace(/^\/+/, '');
+  if (!relativePath) {
+    return null;
+  }
+
+  if (relativePath.split('/').includes('..')) {
+    return null;
+  }
+
+  const normalizedPath = path.posix.normalize(relativePath);
+  if (
+    normalizedPath === '.'
+    || normalizedPath === 'collections'
+    || normalizedPath.startsWith('../')
+    || normalizedPath.includes('/../')
+  ) {
+    return null;
+  }
+
+  if (normalizedPath.startsWith('collections/')) {
+    return normalizedPath;
+  }
+
+  return `collections/${normalizedPath}`;
+};
+
+const getWorkspaceCollectionRelativePath = (workspacePath, collectionPath) => {
+  if (!workspacePath || !collectionPath || typeof collectionPath !== 'string') {
+    return null;
+  }
+
+  let relativePath;
+  if (path.isAbsolute(collectionPath)) {
+    const absolutePath = path.resolve(collectionPath);
+    if (!isWorkspaceCollectionPath(workspacePath, absolutePath)) {
+      return null;
+    }
+    relativePath = posixifyPath(path.relative(workspacePath, absolutePath));
+  } else {
+    relativePath = normalizeRelativeCollectionPath(collectionPath);
+  }
+
+  if (!relativePath) {
+    return null;
+  }
+
+  const absolutePath = path.resolve(workspacePath, relativePath);
+  if (!isWorkspaceCollectionPath(workspacePath, absolutePath)) {
+    return null;
+  }
+
+  return relativePath;
+};
+
 const normalizeCollectionEntry = (workspacePath, collection) => {
-  const relativePath = makeRelativePath(workspacePath, collection.path);
+  const relativePath = getWorkspaceCollectionRelativePath(
+    workspacePath,
+    collection.path
+  );
+
+  if (!relativePath) {
+    throw new Error('Workspace collections must use relative paths under collections/.');
+  }
 
   const normalizedCollection = {
     name: collection.name,
@@ -208,12 +293,12 @@ const createWorkspaceConfig = (workspaceName) => ({
   docs: ''
 });
 
-const normalizeWorkspaceConfig = (config) => {
+const normalizeWorkspaceConfig = (config, workspacePath) => {
   return {
     ...config,
     name: config.info?.name,
     type: config.info?.type,
-    collections: config.collections || [],
+    collections: sanitizeCollections(config.collections, workspacePath),
     apiSpecs: config.specs || []
   };
 };
@@ -226,16 +311,20 @@ const readWorkspaceConfig = (workspacePath) => {
   }
 
   const yamlContent = fs.readFileSync(workspaceFilePath, 'utf8');
+  if (hasGitConflictMarkers(yamlContent)) {
+    throw new Error('Workspace has unresolved Git conflicts in workspace.yml');
+  }
+
   const workspaceConfig = yaml.load(yamlContent);
 
   if (!workspaceConfig || typeof workspaceConfig !== 'object') {
     throw new Error('Invalid workspace: workspace.yml is malformed');
   }
 
-  return normalizeWorkspaceConfig(workspaceConfig);
+  return normalizeWorkspaceConfig(workspaceConfig, workspacePath);
 };
 
-const generateYamlContent = (config) => {
+const generateYamlContent = (config, workspacePath) => {
   const yamlLines = [];
   const workspaceName = config.info?.name || config.name || 'Untitled Workspace';
   const workspaceType = config.info?.type || config.type || WORKSPACE_TYPE;
@@ -246,7 +335,7 @@ const generateYamlContent = (config) => {
   yamlLines.push(`  type: ${workspaceType}`);
   yamlLines.push('');
 
-  const collections = sanitizeCollections(config.collections);
+  const collections = sanitizeCollections(config.collections, workspacePath);
   if (collections.length > 0) {
     yamlLines.push('collections:');
     for (const collection of collections) {
@@ -290,7 +379,7 @@ const generateYamlContent = (config) => {
 
 const writeWorkspaceConfig = async (workspacePath, config) => {
   return withLock(getWorkspaceLockKey(workspacePath), async () => {
-    const yamlContent = generateYamlContent(config);
+    const yamlContent = generateYamlContent(config, workspacePath);
     await writeWorkspaceFileAtomic(workspacePath, yamlContent);
   });
 };
@@ -320,7 +409,7 @@ const updateWorkspaceName = async (workspacePath, newName) => {
     if (config.info) {
       config.info.name = newName;
     }
-    const yamlContent = generateYamlContent(config);
+    const yamlContent = generateYamlContent(config, workspacePath);
     await writeWorkspaceFileAtomic(workspacePath, yamlContent);
     return config;
   });
@@ -330,7 +419,7 @@ const updateWorkspaceDocs = async (workspacePath, docs) => {
   return withLock(getWorkspaceLockKey(workspacePath), async () => {
     const config = readWorkspaceConfig(workspacePath);
     config.docs = docs;
-    const yamlContent = generateYamlContent(config);
+    const yamlContent = generateYamlContent(config, workspacePath);
     await writeWorkspaceFileAtomic(workspacePath, yamlContent);
     return docs;
   });
@@ -341,28 +430,16 @@ const addCollectionToWorkspace = async (workspacePath, collection) => {
     throw new Error('Invalid collection: name and path are required');
   }
 
-  const absoluteCollectionPath = path.isAbsolute(collection.path)
-    ? collection.path
-    : path.resolve(workspacePath, collection.path);
-
-  if (!isPathInsideDirectory(workspacePath, absoluteCollectionPath)) {
-    throw new Error('Workspace collections must be inside the workspace folder. Move this collection inside the workspace before adding it.');
-  }
+  const normalizedCollection = normalizeCollectionEntry(workspacePath, {
+    ...collection,
+    name: collection.name.trim()
+  });
 
   return withLock(getWorkspaceLockKey(workspacePath), async () => {
     const config = readWorkspaceConfig(workspacePath);
 
     if (!config.collections) {
       config.collections = [];
-    }
-
-    const normalizedCollection = {
-      name: collection.name.trim(),
-      path: posixifyPath(collection.path.trim())
-    };
-
-    if (collection.remote && typeof collection.remote === 'string') {
-      normalizedCollection.remote = collection.remote.trim();
     }
 
     const existingIndex = config.collections.findIndex((c) => c.path && posixifyPath(c.path) === normalizedCollection.path);
@@ -373,7 +450,7 @@ const addCollectionToWorkspace = async (workspacePath, collection) => {
       config.collections.push(normalizedCollection);
     }
 
-    const yamlContent = generateYamlContent(config);
+    const yamlContent = generateYamlContent(config, workspacePath);
     await writeWorkspaceFileAtomic(workspacePath, yamlContent);
     return config.collections;
   });
@@ -471,7 +548,7 @@ const setCollectionGitRemote = async (workspacePath, collectionPath, remoteUrl) 
       throw new Error('Collection not found in workspace');
     }
 
-    await writeWorkspaceFileAtomic(workspacePath, generateYamlContent(config));
+    await writeWorkspaceFileAtomic(workspacePath, generateYamlContent(config, workspacePath));
     await addCollectionToWorkspaceGitignore(workspacePath, collectionPath);
     return config;
   });
@@ -495,7 +572,7 @@ const clearCollectionGitRemote = async (workspacePath, collectionPath) => {
       throw new Error('Collection not found in workspace');
     }
 
-    await writeWorkspaceFileAtomic(workspacePath, generateYamlContent(config));
+    await writeWorkspaceFileAtomic(workspacePath, generateYamlContent(config, workspacePath));
     await removeCollectionFromWorkspaceGitignore(workspacePath, collectionPath);
     return config;
   });
@@ -526,7 +603,7 @@ const removeCollectionFromWorkspace = async (workspacePath, collectionPath) => {
       return true;
     });
 
-    const yamlContent = generateYamlContent(config);
+    const yamlContent = generateYamlContent(config, workspacePath);
     await writeWorkspaceFileAtomic(workspacePath, yamlContent);
 
     return {
@@ -568,7 +645,7 @@ const reorderWorkspaceCollections = async (workspacePath, collectionPaths) => {
     const notInList = existing.filter((c) => !matched.has(c));
     config.collections = [...inNewOrder, ...notInList];
 
-    const yamlContent = generateYamlContent(config);
+    const yamlContent = generateYamlContent(config, workspacePath);
     await writeWorkspaceFileAtomic(workspacePath, yamlContent);
   });
 };
@@ -579,13 +656,16 @@ const resolveAndFilterWorkspaceCollections = (workspacePath, rawCollections) => 
   return (rawCollections || [])
     .map((collection) => {
       if (!collection.path) return collection;
-      const collectionPath = posixifyPath(collection.path);
-      const absolute = path.isAbsolute(collectionPath)
-        ? collectionPath
-        : path.resolve(workspacePath, collectionPath);
+      const relativePath = getWorkspaceCollectionRelativePath(workspacePath, collection.path);
+      if (!relativePath) {
+        console.warn('Skipping external workspace collection entry:', collection.path);
+        return null;
+      }
+      const absolute = path.resolve(workspacePath, relativePath);
       return { ...collection, path: absolute };
     })
     .map((collection) => {
+      if (!collection) return null;
       if (!collection.path) return null;
       const normalizedPath = path.normalize(collection.path);
       if (seenPaths.has(normalizedPath)) return null;
@@ -646,7 +726,7 @@ const addApiSpecToWorkspace = async (workspacePath, apiSpec) => {
       config.specs.push(normalizedSpec);
     }
 
-    const yamlContent = generateYamlContent(config);
+    const yamlContent = generateYamlContent(config, workspacePath);
     await writeWorkspaceFileAtomic(workspacePath, yamlContent);
     return config.specs;
   });
@@ -678,7 +758,7 @@ const removeApiSpecFromWorkspace = async (workspacePath, apiSpecPath) => {
       return true;
     });
 
-    const yamlContent = generateYamlContent(config);
+    const yamlContent = generateYamlContent(config, workspacePath);
     await writeWorkspaceFileAtomic(workspacePath, yamlContent);
 
     return {
@@ -689,11 +769,6 @@ const removeApiSpecFromWorkspace = async (workspacePath, apiSpecPath) => {
 };
 
 const getWorkspaceUid = (workspacePath) => {
-  const { defaultWorkspaceManager } = require('../store/default-workspace');
-  const defaultWorkspacePath = defaultWorkspaceManager.getDefaultWorkspacePath();
-  if (defaultWorkspacePath && path.normalize(workspacePath) === path.normalize(defaultWorkspacePath)) {
-    return defaultWorkspaceManager.getDefaultWorkspaceUid();
-  }
   return generateUidBasedOnHash(workspacePath);
 };
 
@@ -719,7 +794,11 @@ module.exports = {
   addApiSpecToWorkspace,
   removeApiSpecFromWorkspace,
   isPathInsideDirectory,
+  isWorkspaceCollectionPath,
+  getWorkspaceCollectionsDir,
+  getWorkspaceCollectionRelativePath,
   generateYamlContent,
+  hasGitConflictMarkers,
   getWorkspaceUid,
   writeWorkspaceFileAtomic,
   isValidCollectionEntry,

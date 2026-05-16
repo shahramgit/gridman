@@ -4,7 +4,7 @@ const path = require('path');
 const chokidar = require('chokidar');
 const yaml = require('js-yaml');
 const { generateUidBasedOnHash, uuid } = require('../utils/common');
-const { getWorkspaceUid } = require('../utils/workspace-config');
+const { getWorkspaceUid, hasGitConflictMarkers } = require('../utils/workspace-config');
 const { parseEnvironment } = require('@usebruno/filestore');
 const EnvironmentSecretsStore = require('../store/env-secrets');
 const { decryptStringSafe } = require('../utils/encryption');
@@ -38,6 +38,11 @@ const handleWorkspaceFileChange = (win, workspacePath) => {
     }
 
     const yamlContent = fs.readFileSync(workspaceFilePath, 'utf8');
+    if (hasGitConflictMarkers(yamlContent)) {
+      win.webContents.send('main:workspace-config-conflicted', workspacePath, getWorkspaceUid(workspacePath));
+      return;
+    }
+
     const rawConfig = yaml.load(yamlContent);
     const workspaceConfig = normalizeWorkspaceConfig(rawConfig);
 
@@ -51,7 +56,8 @@ const handleWorkspaceFileChange = (win, workspacePath) => {
 
     win.webContents.send('main:workspace-config-updated', workspacePath, workspaceUid, {
       ...workspaceConfig,
-      name: isDefault ? DEFAULT_WORKSPACE_NAME : workspaceConfig.name,
+      name: isDefault ? DEFAULT_WORKSPACE_NAME : path.basename(workspacePath),
+      remoteWorkspaceName: workspaceConfig.name,
       type: isDefault ? 'default' : workspaceConfig.type
     });
   } catch (error) {

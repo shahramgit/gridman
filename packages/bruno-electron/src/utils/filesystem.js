@@ -9,7 +9,7 @@ const DEFAULT_GITIGNORE = [
   '# Secrets',
   '.env*',
   '',
-  '# Bruno environments (may contain secrets)',
+  '# Gridman environments (may contain secrets)',
   '**/environments/',
   '',
   '# Dependencies',
@@ -455,6 +455,37 @@ const isValidDotEnvFilename = (filename) => {
   return basename === '.env' || (basename.startsWith('.env.') && /^\.env\.[a-zA-Z0-9._-]+$/.test(basename));
 };
 
+const COLLECTION_ROOT_FILES = new Set(['opencollection.yml', 'bruno.json', 'collection.bru']);
+const LOCAL_ONLY_COLLECTION_RESIDUE = new Set(['environments', '.gitignore', '.DS_Store', 'Thumbs.db']);
+
+const isReusableDeletedCollectionDirectory = (dirPath) => {
+  if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+    return false;
+  }
+
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+
+  if (!entries.length) {
+    return true;
+  }
+
+  return entries.every((entry) => {
+    if (COLLECTION_ROOT_FILES.has(entry.name)) {
+      return false;
+    }
+
+    if (entry.name === 'environments' && entry.isDirectory()) {
+      return true;
+    }
+
+    if (entry.isFile() && (LOCAL_ONLY_COLLECTION_RESIDUE.has(entry.name) || isValidDotEnvFilename(entry.name))) {
+      return true;
+    }
+
+    return false;
+  });
+};
+
 const isBrunoConfigFile = (pathname, collectionPath) => {
   const dirname = path.dirname(pathname);
   const basename = path.basename(pathname);
@@ -545,6 +576,7 @@ module.exports = {
   getCollectionFormat,
   isDotEnvFile,
   isValidDotEnvFilename,
+  isReusableDeletedCollectionDirectory,
   isBrunoConfigFile,
   isBruEnvironmentConfig,
   isCollectionRootBruFile,

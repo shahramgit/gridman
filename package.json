@@ -1,5 +1,5 @@
 {
-  "name": "usebruno",
+  "name": "gridman",
   "private": true,
   "workspaces": [
     "packages/bruno-app",

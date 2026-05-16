@@ -132,7 +132,6 @@ export const confirmWorkspaceCreation = (tempWorkspaceUid, workspaceName) => {
 
 /**
  * Cancels creation of a temporary workspace, removing it from Redux.
- * Only switches to default workspace if the temp workspace was the active one.
  */
 export const cancelWorkspaceCreation = (tempWorkspaceUid) => {
   return async (dispatch, getState) => {
@@ -147,11 +146,12 @@ export const cancelWorkspaceCreation = (tempWorkspaceUid) => {
     const wasActive = getState().workspaces.activeWorkspaceUid === tempWorkspaceUid;
     dispatch(removeWorkspace(tempWorkspaceUid));
 
-    // Only switch to default if the cancelled workspace was the active one
     if (wasActive) {
-      const defaultWorkspace = getState().workspaces.workspaces.find((w) => w.type === 'default');
-      if (defaultWorkspace) {
-        await dispatch(switchWorkspace(defaultWorkspace.uid));
+      const nextWorkspace = getState().workspaces.workspaces[0];
+      if (nextWorkspace) {
+        await dispatch(switchWorkspace(nextWorkspace.uid));
+      } else {
+        dispatch(setActiveWorkspace(null));
       }
     }
   };
@@ -481,7 +481,7 @@ export const loadLastOpenedWorkspaces = () => {
       const validWorkspaceUids = new Set(workspaces.map((w) => w.uid));
 
       for (const currentWorkspace of currentWorkspaces) {
-        if (currentWorkspace.type !== 'default' && !validWorkspaceUids.has(currentWorkspace.uid)) {
+        if (!validWorkspaceUids.has(currentWorkspace.uid)) {
           dispatch(removeWorkspace(currentWorkspace.uid));
         }
       }
@@ -521,11 +521,11 @@ export const workspaceOpenedEvent = (workspacePath, workspaceUid, workspaceConfi
     } catch (error) {
     }
 
-    // If this is the default workspace or no workspace is active yet, switch to it
     const state = getState();
     const activeWorkspaceUid = state.workspaces.activeWorkspaceUid;
+    const activeWorkspaceExists = state.workspaces.workspaces.some((w) => w.uid === activeWorkspaceUid);
 
-    if (!activeWorkspaceUid || workspaceConfig.type === 'default') {
+    if (!activeWorkspaceUid || !activeWorkspaceExists) {
       dispatch(switchWorkspace(workspaceUid));
     }
   };
@@ -538,10 +538,15 @@ export const workspaceConfigUpdatedEvent = (workspacePath, workspaceUid, workspa
     }
 
     const { collections, apiSpecs, ...configWithoutCollections } = workspaceConfig;
+    const existingWorkspace = getState().workspaces.workspaces.find((w) => w.uid === workspaceUid);
+    const localName = existingWorkspace?.pathname === workspacePath && existingWorkspace?.name
+      ? existingWorkspace.name
+      : configWithoutCollections.name;
 
     dispatch(updateWorkspace({
       uid: workspaceUid,
-      ...configWithoutCollections
+      ...configWithoutCollections,
+      name: localName
     }));
 
     const activeWorkspaceUid = getState().workspaces.activeWorkspaceUid;
@@ -686,9 +691,12 @@ export const importCollectionInWorkspace = (collection, workspaceUid, collection
       throw new Error('Workspace not found');
     }
 
-    const location = collectionLocation || path.join(currentWorkspace.pathname, 'collections');
+    const location = path.join(currentWorkspace.pathname, 'collections');
     const transformedCollection = await transformCollection(collection, type);
-    const collectionPath = await ipcRenderer.invoke('renderer:import-collection', transformedCollection, location);
+    const result = await ipcRenderer.invoke('renderer:import-collection', transformedCollection, location, {
+      workspaceId: currentWorkspace.pathname
+    });
+    const collectionPath = result.success.items[0]?.path;
 
     const workspaceCollection = {
       name: transformedCollection.name,

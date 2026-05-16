@@ -1,10 +1,9 @@
-import React, { useRef, useEffect, useState, forwardRef } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import React, { useRef, useState, forwardRef } from 'react';
+import { useSelector } from 'react-redux';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
 import path from 'utils/common/path';
 import { IconCaretDown } from '@tabler/icons';
-import { browseDirectory } from 'providers/ReduxStore/slices/collections/actions';
 import { postmanToBruno } from 'utils/importers/postman-collection';
 import { convertInsomniaToBruno } from 'utils/importers/insomnia-collection';
 import { convertOpenapiToBruno } from 'utils/importers/openapi-collection';
@@ -39,13 +38,13 @@ const getCollectionName = (format, rawData) => {
       // Fallback to root name property
       return rawData.name || 'Insomnia Collection';
     case 'bruno':
-      return rawData.name || 'Bruno Collection';
+      return rawData.name || 'Gridman Collection';
     case 'opencollection':
       return rawData.info?.name || 'OpenCollection';
     case 'wsdl':
       return 'WSDL Collection';
     case 'bruno-zip':
-      return rawData.collectionName || 'Bruno Collection';
+      return rawData.collectionName || 'Gridman Collection';
     default:
       return 'Collection';
   }
@@ -97,8 +96,6 @@ const groupingOptions = [
 ];
 
 const ImportCollectionLocation = ({ onClose, handleSubmit, rawData, format, sourceUrl, filePath, rawContent }) => {
-  const inputRef = useRef();
-  const dispatch = useDispatch();
   const [groupingType, setGroupingType] = useState('tags');
   const [collectionFormat, setCollectionFormat] = useState(DEFAULT_COLLECTION_FORMAT);
   const isOpenAPISyncEnabled = useBetaFeature(BETA_FEATURES.OPENAPI_SYNC);
@@ -158,7 +155,7 @@ const ImportCollectionLocation = ({ onClose, handleSubmit, rawData, format, sour
         options.rawOpenAPISpec = rawContent || rawData;
       }
 
-      handleSubmit(convertedCollection, values.collectionLocation, options);
+      handleSubmit(convertedCollection, defaultLocation, options);
     }
   });
 
@@ -177,25 +174,6 @@ const ImportCollectionLocation = ({ onClose, handleSubmit, rawData, format, sour
       </div>
     );
   });
-  const browse = () => {
-    dispatch(browseDirectory())
-      .then((dirPath) => {
-        if (typeof dirPath === 'string' && dirPath.length > 0) {
-          formik.setFieldValue('collectionLocation', dirPath);
-        }
-      })
-      .catch((error) => {
-        formik.setFieldValue('collectionLocation', '');
-        console.error(error);
-      });
-  };
-
-  useEffect(() => {
-    if (inputRef && inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, [inputRef]);
-
   const onSubmit = async () => {
     if (isZipImport) {
       const errors = await formik.validateForm();
@@ -203,8 +181,7 @@ const ImportCollectionLocation = ({ onClose, handleSubmit, rawData, format, sour
         formik.setTouched({ collectionLocation: true });
         return;
       }
-      const collectionLocation = formik.values.collectionLocation;
-      handleSubmit(rawData, collectionLocation, { format: collectionFormat, isZipImport: true });
+      handleSubmit(rawData, defaultLocation, { format: collectionFormat, isZipImport: true });
     } else {
       formik.handleSubmit();
     }
@@ -231,35 +208,17 @@ const ImportCollectionLocation = ({ onClose, handleSubmit, rawData, format, sour
               <label htmlFor="collectionLocation" className="font-medium mt-4 flex items-center">
                 Location
                 <Help>
-                  <p>Bruno stores your collections on your computer's filesystem.</p>
-                  <p className="mt-2">Choose the location where you want to store this collection.</p>
+                  <p>Gridman stores imported collections inside the active workspace.</p>
+                  <p className="mt-2">The destination is fixed to this workspace's collections folder.</p>
                 </Help>
               </label>
-              <input
-                id="collection-location"
-                type="text"
-                name="collectionLocation"
-                className="block textbox mt-2 w-full cursor-pointer"
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck="false"
-                value={formik.values.collectionLocation || ''}
-                onClick={browse}
-                onChange={(e) => {
-                  formik.setFieldValue('collectionLocation', e.target.value);
-                }}
-              />
+              <div id="collection-location" className="block textbox mt-2 w-full bg-gray-50 dark:bg-gray-800 text-muted">
+                {defaultLocation || 'No active workspace'}
+              </div>
             </>
             {formik.touched.collectionLocation && formik.errors.collectionLocation ? (
               <div className="text-red-500">{formik.errors.collectionLocation}</div>
             ) : null}
-
-            <div className="mt-1">
-              <span className="text-link cursor-pointer hover:underline" onClick={browse}>
-                Browse
-              </span>
-            </div>
 
             {!isZipImport && (
               <div className="mt-4">
@@ -271,7 +230,7 @@ const ImportCollectionLocation = ({ onClose, handleSubmit, rawData, format, sour
                       <strong>OpenCollection (YAML):</strong> Industry-standard YAML format (.yml files)
                     </p>
                     <p className="mt-1">
-                      <strong>BRU:</strong> Bruno's native file format (.bru files)
+                      <strong>BRU:</strong> Gridman's native file format (.bru files)
                     </p>
                   </Help>
                 </label>

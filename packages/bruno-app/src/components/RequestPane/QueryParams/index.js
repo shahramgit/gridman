@@ -11,6 +11,7 @@ import {
 import { saveRequest, sendRequest } from 'providers/ReduxStore/slices/collections/actions';
 import { updateTableColumnWidths } from 'providers/ReduxStore/slices/tabs';
 import MultiLineEditor from 'components/MultiLineEditor';
+import SingleLineEditor from 'components/SingleLineEditor';
 import EditableTable from 'components/EditableTable';
 import StyledWrapper from './StyledWrapper';
 import BulkEditor from '../../BulkEditor';
@@ -86,6 +87,7 @@ const QueryParams = ({ item, collection }) => {
     {
       key: 'value',
       name: 'Value',
+      width: '35%',
       placeholder: 'Value',
       render: ({ value, onChange }) => (
         <MultiLineEditor
@@ -98,6 +100,24 @@ const QueryParams = ({ item, collection }) => {
           item={item}
           variablesAutocomplete={true}
           placeholder={!value ? 'Value' : ''}
+        />
+      )
+    },
+    {
+      key: 'description',
+      name: 'Description',
+      placeholder: 'Description',
+      width: '35%',
+      render: ({ value, onChange }) => (
+        <SingleLineEditor
+          value={value || ''}
+          theme={storedTheme}
+          onSave={onSave}
+          onChange={onChange}
+          onRun={handleRun}
+          collection={collection}
+          item={item}
+          placeholder={!value ? 'Description' : ''}
         />
       )
     }
@@ -114,6 +134,7 @@ const QueryParams = ({ item, collection }) => {
     {
       key: 'value',
       name: 'Value',
+      width: '35%',
       placeholder: 'Value',
       render: ({ row, value, onChange }) => (
         <MultiLineEditor
@@ -124,6 +145,24 @@ const QueryParams = ({ item, collection }) => {
           onRun={handleRun}
           collection={collection}
           item={item}
+        />
+      )
+    },
+    {
+      key: 'description',
+      name: 'Description',
+      placeholder: 'Description',
+      width: '35%',
+      render: ({ row, value }) => (
+        <SingleLineEditor
+          value={value || ''}
+          theme={storedTheme}
+          onSave={onSave}
+          onChange={(newValue) => handlePathParamChange(row.uid, 'description', newValue)}
+          onRun={handleRun}
+          collection={collection}
+          item={item}
+          placeholder={!value ? 'Description' : ''}
         />
       )
     }

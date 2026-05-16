@@ -5,12 +5,12 @@ const archiver = require('archiver');
 const extractZip = require('extract-zip');
 const { ipcMain, dialog } = require('electron');
 const isDev = require('electron-is-dev');
-const { createDirectory, sanitizeName, writeFile, DEFAULT_GITIGNORE } = require('../utils/filesystem');
+const { createDirectory, sanitizeName, writeFile, DEFAULT_GITIGNORE, isValidCollectionDirectory } = require('../utils/filesystem');
 const yaml = require('js-yaml');
 const LastOpenedWorkspaces = require('../store/last-opened-workspaces');
-const { defaultWorkspaceManager } = require('../store/default-workspace');
 const { globalEnvironmentsManager } = require('../store/workspace-environments');
 const { globalEnvironmentsStore } = require('../store/global-environments');
+const { resolveDefaultLocation } = require('../utils/default-location');
 
 const {
   createWorkspaceConfig,
@@ -28,6 +28,7 @@ const {
   resolveAndFilterWorkspaceCollections,
   normalizeCollectionEntry,
   isPathInsideDirectory,
+  isWorkspaceCollectionPath,
   validateWorkspacePath,
   validateWorkspaceDirectory,
   getWorkspaceUid
@@ -35,33 +36,110 @@ const {
 
 const DEFAULT_WORKSPACE_NAME = 'My Workspace';
 
-const getUniqueCollectionTargetPath = (collectionsDir, collectionName) => {
-  const sanitizedName = sanitizeName(collectionName || 'collection') || 'collection';
-  let targetPath = path.join(collectionsDir, sanitizedName);
-  let counter = 1;
+const assertWorkspaceCollectionFolder = (workspacePath, collectionPath) => {
+  const collectionsDir = path.join(workspacePath, 'collections');
+  const absolutePath = path.resolve(collectionPath);
+  const isInsideCollectionsDir = isPathInsideDirectory(collectionsDir, absolutePath);
 
-  while (fs.existsSync(targetPath)) {
-    targetPath = path.join(collectionsDir, `${sanitizedName}-${counter}`);
-    counter++;
+  if (!isInsideCollectionsDir || !isValidCollectionDirectory(absolutePath)) {
+    throw new Error('Only valid collection folders inside this workspace can be removed.');
   }
 
-  return targetPath;
+  return absolutePath;
 };
 
-const prepareWorkspaceConfigForClient = (workspaceConfig, workspacePath, isDefault) => {
+const prepareWorkspaceConfigForClient = (workspaceConfig, workspacePath) => {
   const config = {
     ...workspaceConfig,
     collections: resolveAndFilterWorkspaceCollections(workspacePath, workspaceConfig.collections)
   };
+  const remoteWorkspaceName = workspaceConfig.name;
 
-  if (isDefault) {
-    return {
-      ...config,
-      name: DEFAULT_WORKSPACE_NAME,
-      type: 'default'
-    };
+  return {
+    ...config,
+    name: path.basename(workspacePath),
+    remoteWorkspaceName
+  };
+};
+
+const getWorkspaceCollectionReconciliation = (workspacePath) => {
+  validateWorkspacePath(workspacePath);
+
+  const workspaceConfig = readWorkspaceConfig(workspacePath);
+  const configuredEntries = (workspaceConfig.collections || [])
+    .map((collection) => {
+      if (!collection?.path) return null;
+      if (path.isAbsolute(collection.path)) return null;
+      const absolutePath = path.resolve(workspacePath, collection.path);
+      if (!isWorkspaceCollectionPath(workspacePath, absolutePath)) return null;
+      return {
+        name: collection.name || path.basename(absolutePath),
+        path: absolutePath,
+        relativePath: path.relative(workspacePath, absolutePath).replace(/\\/g, '/')
+      };
+    })
+    .filter(Boolean);
+
+  const configuredPaths = new Set(configuredEntries.map((entry) => path.normalize(entry.path)));
+  const collectionsDir = path.join(workspacePath, 'collections');
+  const collectionFolders = fs.existsSync(collectionsDir)
+    ? fs.readdirSync(collectionsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => path.join(collectionsDir, entry.name))
+        .filter((collectionPath) => isValidCollectionDirectory(collectionPath))
+    : [];
+
+  const orphanCollections = collectionFolders
+    .filter((collectionPath) => !configuredPaths.has(path.normalize(collectionPath)))
+    .map((collectionPath) => ({
+      name: path.basename(collectionPath),
+      path: collectionPath,
+      relativePath: path.relative(workspacePath, collectionPath).replace(/\\/g, '/')
+    }));
+
+  const missingCollections = configuredEntries
+    .filter((entry) => !isValidCollectionDirectory(entry.path))
+    .map((entry) => ({
+      name: entry.name,
+      path: entry.path,
+      relativePath: entry.relativePath
+    }));
+
+  return {
+    orphanCollections,
+    missingCollections
+  };
+};
+
+const ensureInitialWorkspace = async () => {
+  const workspaceParent = resolveDefaultLocation();
+  const workspacePath = path.join(workspaceParent, DEFAULT_WORKSPACE_NAME);
+  const workspaceFilePath = path.join(workspacePath, 'workspace.yml');
+
+  if (fs.existsSync(workspaceFilePath)) {
+    validateWorkspacePath(workspacePath);
+    const workspaceConfig = readWorkspaceConfig(workspacePath);
+    validateWorkspaceConfig(workspaceConfig);
+    return { workspacePath, workspaceConfig };
   }
-  return config;
+
+  if (fs.existsSync(workspacePath)) {
+    const files = fs.readdirSync(workspacePath);
+    if (files.length > 0) {
+      throw new Error(`workspace: ${workspacePath} already exists and is not a Gridman workspace`);
+    }
+  } else {
+    await createDirectory(workspacePath);
+  }
+
+  await createDirectory(path.join(workspacePath, 'collections'));
+  await createDirectory(path.join(workspacePath, 'environments'));
+
+  const workspaceConfig = createWorkspaceConfig(DEFAULT_WORKSPACE_NAME);
+  await writeWorkspaceConfig(workspacePath, workspaceConfig);
+  await writeFile(path.join(workspacePath, '.gitignore'), DEFAULT_GITIGNORE);
+
+  return { workspacePath, workspaceConfig };
 };
 
 const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
@@ -89,7 +167,6 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
         await createDirectory(path.join(dirPath, 'collections'));
 
         const workspaceUid = getWorkspaceUid(dirPath);
-        const isDefault = workspaceUid === 'default';
         const workspaceConfig = createWorkspaceConfig(workspaceName);
 
         await writeWorkspaceConfig(dirPath, workspaceConfig);
@@ -97,7 +174,7 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
 
         lastOpenedWorkspaces.add(dirPath);
 
-        const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, dirPath, isDefault);
+        const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, dirPath);
 
         mainWindow.webContents.send('main:workspace-opened', dirPath, workspaceUid, configForClient);
 
@@ -123,8 +200,7 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
       validateWorkspaceConfig(workspaceConfig);
 
       const workspaceUid = getWorkspaceUid(workspacePath);
-      const isDefault = workspaceUid === 'default';
-      const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, workspacePath, isDefault);
+      const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, workspacePath);
 
       lastOpenedWorkspaces.add(workspacePath);
 
@@ -163,8 +239,7 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
       validateWorkspaceConfig(workspaceConfig);
 
       const workspaceUid = getWorkspaceUid(workspacePath);
-      const isDefault = workspaceUid === 'default';
-      const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, workspacePath, isDefault);
+      const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, workspacePath);
 
       lastOpenedWorkspaces.add(workspacePath);
 
@@ -413,8 +488,7 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
         validateWorkspaceConfig(finalConfig);
 
         const workspaceUid = getWorkspaceUid(finalWorkspacePath);
-        const isDefault = workspaceUid === 'default';
-        const configForClient = prepareWorkspaceConfigForClient(finalConfig, finalWorkspacePath, isDefault);
+        const configForClient = prepareWorkspaceConfigForClient(finalConfig, finalWorkspacePath);
 
         lastOpenedWorkspaces.add(finalWorkspacePath);
 
@@ -534,75 +608,10 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
 
       const workspaceConfig = readWorkspaceConfig(workspacePath);
       const workspaceUid = getWorkspaceUid(workspacePath);
-      const isDefault = workspaceUid === 'default';
-      const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, workspacePath, isDefault);
+      const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, workspacePath);
       mainWindow.webContents.send('main:workspace-config-updated', workspacePath, workspaceUid, configForClient);
 
       return updatedCollections;
-    } catch (error) {
-      throw error;
-    }
-  });
-
-  ipcMain.handle('renderer:move-workspace-collections-inside', async (event, { workspacePath, collectionPaths = [] }) => {
-    try {
-      validateWorkspacePath(workspacePath);
-
-      if (!Array.isArray(collectionPaths) || collectionPaths.length === 0) {
-        return [];
-      }
-
-      const collectionsDir = path.join(workspacePath, 'collections');
-      if (!fs.existsSync(collectionsDir)) {
-        await createDirectory(collectionsDir);
-      }
-
-      const workspaceConfig = readWorkspaceConfig(workspacePath);
-      const movedCollections = [];
-
-      for (const collectionPath of collectionPaths) {
-        const absoluteCollectionPath = path.resolve(collectionPath);
-
-        if (!fs.existsSync(absoluteCollectionPath)) {
-          throw new Error(`Collection path does not exist: ${absoluteCollectionPath}`);
-        }
-
-        if (isPathInsideDirectory(workspacePath, absoluteCollectionPath)) {
-          continue;
-        }
-
-        const collectionEntry = (workspaceConfig.collections || []).find((collection) => {
-          const configuredPath = collection.path
-            ? (path.isAbsolute(collection.path) ? collection.path : path.resolve(workspacePath, collection.path))
-            : null;
-          return configuredPath && path.normalize(configuredPath) === path.normalize(absoluteCollectionPath);
-        });
-
-        const targetPath = getUniqueCollectionTargetPath(collectionsDir, collectionEntry?.name || path.basename(absoluteCollectionPath));
-        await fsExtra.move(absoluteCollectionPath, targetPath, { overwrite: false });
-
-        movedCollections.push({
-          from: absoluteCollectionPath,
-          to: targetPath,
-          name: collectionEntry?.name || path.basename(targetPath)
-        });
-
-        if (collectionEntry) {
-          collectionEntry.path = path.relative(workspacePath, targetPath).replace(/\\/g, '/');
-        }
-      }
-
-      if (movedCollections.length > 0) {
-        await writeWorkspaceConfig(workspacePath, workspaceConfig);
-      }
-
-      const workspaceUid = getWorkspaceUid(workspacePath);
-      const isDefault = workspaceUid === 'default';
-      const updatedConfig = readWorkspaceConfig(workspacePath);
-      const configForClient = prepareWorkspaceConfigForClient(updatedConfig, workspacePath, isDefault);
-      mainWindow.webContents.send('main:workspace-config-updated', workspacePath, workspaceUid, configForClient);
-
-      return movedCollections;
     } catch (error) {
       throw error;
     }
@@ -633,16 +642,15 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
 
   ipcMain.handle('renderer:remove-collection-from-workspace', async (event, workspaceUid, workspacePath, collectionPath, options = {}) => {
     try {
-      const { deleteFiles = false } = options;
+      const absoluteCollectionPath = assertWorkspaceCollectionFolder(workspacePath, collectionPath);
       const result = await removeCollectionFromWorkspace(workspacePath, collectionPath);
 
-      if (deleteFiles && result.removedCollection && fs.existsSync(collectionPath)) {
-        await fsExtra.remove(collectionPath);
+      if (fs.existsSync(absoluteCollectionPath)) {
+        await fsExtra.remove(absoluteCollectionPath);
       }
 
       const correctWorkspaceUid = getWorkspaceUid(workspacePath);
-      const isDefault = correctWorkspaceUid === 'default';
-      const configForClient = prepareWorkspaceConfigForClient(result.updatedConfig, workspacePath, isDefault);
+      const configForClient = prepareWorkspaceConfigForClient(result.updatedConfig, workspacePath);
       mainWindow.webContents.send('main:workspace-config-updated', workspacePath, correctWorkspaceUid, configForClient);
 
       return true;
@@ -653,10 +661,102 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
 
   const broadcastWorkspaceConfig = (workspacePath, config) => {
     const workspaceUid = getWorkspaceUid(workspacePath);
-    const isDefault = workspaceUid === 'default';
-    const configForClient = prepareWorkspaceConfigForClient(config, workspacePath, isDefault);
+    const configForClient = prepareWorkspaceConfigForClient(config, workspacePath);
     mainWindow.webContents.send('main:workspace-config-updated', workspacePath, workspaceUid, configForClient);
   };
+
+  ipcMain.handle('renderer:get-workspace-collection-reconciliation', async (event, workspacePath) => {
+    try {
+      return getWorkspaceCollectionReconciliation(workspacePath);
+    } catch (error) {
+      throw error;
+    }
+  });
+
+  ipcMain.handle('renderer:add-orphan-workspace-collections', async (event, workspacePath, orphanCollections = []) => {
+    try {
+      validateWorkspacePath(workspacePath);
+
+      if (!Array.isArray(orphanCollections) || orphanCollections.length === 0) {
+        return [];
+      }
+
+      const addedCollections = [];
+      for (const collection of orphanCollections) {
+        const absolutePath = path.resolve(collection.path);
+        if (!isWorkspaceCollectionPath(workspacePath, absolutePath) || !isValidCollectionDirectory(absolutePath)) {
+          continue;
+        }
+
+        const relativePath = path.relative(workspacePath, absolutePath).replace(/\\/g, '/');
+        await addCollectionToWorkspace(workspacePath, {
+          name: collection.name || path.basename(absolutePath),
+          path: relativePath
+        });
+        addedCollections.push({
+          name: collection.name || path.basename(absolutePath),
+          path: absolutePath,
+          relativePath
+        });
+      }
+
+      broadcastWorkspaceConfig(workspacePath, readWorkspaceConfig(workspacePath));
+      return addedCollections;
+    } catch (error) {
+      throw error;
+    }
+  });
+
+  ipcMain.handle('renderer:delete-orphan-workspace-collections', async (event, workspacePath, orphanCollections = []) => {
+    try {
+      validateWorkspacePath(workspacePath);
+
+      if (!Array.isArray(orphanCollections) || orphanCollections.length === 0) {
+        return [];
+      }
+
+      const deletedCollections = [];
+      for (const collection of orphanCollections) {
+        const absolutePath = assertWorkspaceCollectionFolder(workspacePath, collection.path);
+        await fsExtra.remove(absolutePath);
+        deletedCollections.push({
+          name: collection.name || path.basename(absolutePath),
+          path: absolutePath,
+          relativePath: path.relative(workspacePath, absolutePath).replace(/\\/g, '/')
+        });
+      }
+
+      return deletedCollections;
+    } catch (error) {
+      throw error;
+    }
+  });
+
+  ipcMain.handle('renderer:remove-missing-workspace-collections', async (event, workspacePath, missingCollections = []) => {
+    try {
+      validateWorkspacePath(workspacePath);
+
+      if (!Array.isArray(missingCollections) || missingCollections.length === 0) {
+        return [];
+      }
+
+      const removedCollections = [];
+      for (const collection of missingCollections) {
+        const absolutePath = path.isAbsolute(collection.path)
+          ? collection.path
+          : path.resolve(workspacePath, collection.path);
+        const result = await removeCollectionFromWorkspace(workspacePath, absolutePath);
+        if (result.removedCollection) {
+          removedCollections.push(result.removedCollection);
+        }
+      }
+
+      broadcastWorkspaceConfig(workspacePath, readWorkspaceConfig(workspacePath));
+      return removedCollections;
+    } catch (error) {
+      throw error;
+    }
+  });
 
   ipcMain.handle('renderer:connect-collection-to-git', async (event, workspacePath, collectionPath, remoteUrl) => {
     try {
@@ -721,28 +821,6 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
     }
   });
 
-  ipcMain.handle('renderer:get-default-workspace', async (event) => {
-    try {
-      const result = await defaultWorkspaceManager.ensureDefaultWorkspaceExists();
-      if (!result) {
-        return null;
-      }
-
-      const { workspacePath, workspaceUid } = result;
-      const workspaceConfig = readWorkspaceConfig(workspacePath);
-      const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, workspacePath, true);
-
-      return {
-        workspaceConfig: configForClient,
-        workspaceUid,
-        workspacePath
-      };
-    } catch (error) {
-      console.error('Error getting default workspace:', error);
-      return null;
-    }
-  });
-
   // Guard to prevent main:renderer-ready from running multiple times (only needed in dev mode due to strict mode)
   let rendererReadyProcessed = false;
 
@@ -753,30 +831,11 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
     rendererReadyProcessed = true;
 
     try {
-      let defaultWorkspacePath = null;
-
-      const defaultResult = await defaultWorkspaceManager.ensureDefaultWorkspaceExists();
-      if (defaultResult) {
-        const { workspacePath, workspaceUid } = defaultResult;
-        defaultWorkspacePath = workspacePath;
-        const workspaceConfig = readWorkspaceConfig(workspacePath);
-        const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, workspacePath, true);
-
-        win.webContents.send('main:workspace-opened', workspacePath, workspaceUid, configForClient);
-
-        if (workspaceWatcher) {
-          workspaceWatcher.addWatcher(win, workspacePath);
-        }
-      }
-
       const workspacePaths = lastOpenedWorkspaces.getAll();
       const invalidPaths = [];
+      let openedWorkspaceCount = 0;
 
       for (const workspacePath of workspacePaths) {
-        if (defaultWorkspacePath && workspacePath === defaultWorkspacePath) {
-          continue;
-        }
-
         const workspaceYmlPath = path.join(workspacePath, 'workspace.yml');
 
         if (fs.existsSync(workspaceYmlPath)) {
@@ -784,10 +843,10 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
             const workspaceConfig = readWorkspaceConfig(workspacePath);
             validateWorkspaceConfig(workspaceConfig);
             const workspaceUid = getWorkspaceUid(workspacePath);
-            const isDefault = workspaceUid === 'default';
-            const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, workspacePath, isDefault);
+            const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, workspacePath);
 
             win.webContents.send('main:workspace-opened', workspacePath, workspaceUid, configForClient);
+            openedWorkspaceCount++;
 
             if (workspaceWatcher) {
               workspaceWatcher.addWatcher(win, workspacePath);
@@ -803,6 +862,23 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
 
       for (const invalidPath of invalidPaths) {
         lastOpenedWorkspaces.remove(invalidPath);
+      }
+
+      if (openedWorkspaceCount === 0) {
+        try {
+          const { workspacePath, workspaceConfig } = await ensureInitialWorkspace();
+          const workspaceUid = getWorkspaceUid(workspacePath);
+          const configForClient = prepareWorkspaceConfigForClient(workspaceConfig, workspacePath);
+
+          lastOpenedWorkspaces.add(workspacePath);
+          win.webContents.send('main:workspace-opened', workspacePath, workspaceUid, configForClient);
+
+          if (workspaceWatcher) {
+            workspaceWatcher.addWatcher(win, workspacePath);
+          }
+        } catch (error) {
+          console.error('Error creating initial workspace:', error);
+        }
       }
     } catch (error) {
       console.error('Error initializing workspaces:', error);

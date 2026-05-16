@@ -3,7 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
 import path from 'utils/common/path';
-import { browseDirectory, createCollection } from 'providers/ReduxStore/slices/collections/actions';
+import { createCollection } from 'providers/ReduxStore/slices/collections/actions';
 import toast from 'react-hot-toast';
 import Portal from 'components/Portal';
 import Modal from 'components/Modal';
@@ -18,7 +18,7 @@ import { DEFAULT_COLLECTION_FORMAT } from 'utils/common/constants';
 import StyledWrapper from './StyledWrapper';
 import Button from 'ui/Button';
 
-const CreateCollection = ({ onClose, defaultLocation: propDefaultLocation, initialCollectionName = '' }) => {
+const CreateCollection = ({ onClose, initialCollectionName = '' }) => {
   const inputRef = useRef();
   const dispatch = useDispatch();
   const workspaces = useSelector((state) => state.workspaces?.workspaces || []);
@@ -69,18 +69,6 @@ const CreateCollection = ({ onClose, defaultLocation: propDefaultLocation, initi
       }
     }
   });
-
-  const browse = () => {
-    dispatch(browseDirectory())
-      .then((dirPath) => {
-        if (typeof dirPath === 'string') {
-          formik.setFieldValue('collectionLocation', dirPath);
-        }
-      })
-      .catch(() => {
-        formik.setFieldValue('collectionLocation', '');
-      });
-  };
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -139,40 +127,19 @@ const CreateCollection = ({ onClose, defaultLocation: propDefaultLocation, initi
                 Location
                 <Help>
                   <p>
-                    Bruno stores your collections on your computer's filesystem.
-                  </p>
-                  <p className="mt-2">
-                    Choose the location where you want to store this collection.
+                    Gridman stores workspace collections under this workspace's collections folder.
                   </p>
                 </Help>
               </label>
-              <input
+              <div
                 id="collection-location"
-                type="text"
-                name="collectionLocation"
-                className="block textbox mt-2 w-full cursor-pointer"
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck="false"
-                readOnly={true}
-                value={formik.values.collectionLocation || ''}
-                onClick={browse}
-                onChange={(e) => {
-                  formik.setFieldValue('collectionLocation', e.target.value);
-                }}
-              />
+                className="block textbox mt-2 w-full bg-gray-50 dark:bg-gray-800 text-muted"
+              >
+                {defaultLocation || 'No active workspace'}
+              </div>
               {formik.touched.collectionLocation && formik.errors.collectionLocation ? (
                 <div className="text-red-500">{formik.errors.collectionLocation}</div>
               ) : null}
-              <div className="mt-1">
-                <span
-                  className="text-link cursor-pointer hover:underline"
-                  onClick={browse}
-                >
-                  Browse
-                </span>
-              </div>
               {formik.values.collectionName?.trim()?.length > 0 && (
                 <div className="mt-4">
                   <div className="flex items-center justify-between">
@@ -241,7 +208,7 @@ const CreateCollection = ({ onClose, defaultLocation: propDefaultLocation, initi
                         <strong>OpenCollection (YAML):</strong> Industry-standard YAML format (.yml files)
                       </p>
                       <p className="mt-1">
-                        <strong>BRU:</strong> Bruno's native file format (.bru files)
+                        <strong>BRU:</strong> Gridman's native file format (.bru files)
                       </p>
                     </Help>
                   </label>

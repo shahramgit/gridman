@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
-import { IconArrowLeft, IconPlus, IconFolder, IconLock, IconDots, IconCategory, IconLogin } from '@tabler/icons';
+import { IconArrowLeft, IconPlus, IconFolder, IconDots, IconCategory, IconLogin } from '@tabler/icons';
 import toast from 'react-hot-toast';
 
 import get from 'lodash/get';
@@ -54,10 +54,6 @@ const ManageWorkspace = () => {
   };
 
   const handleCloseClick = (workspace) => {
-    if (workspace.type === 'default') {
-      toast.error('Cannot remove the default workspace');
-      return;
-    }
     setDeleteWorkspaceModal({ open: true, workspace });
   };
 
@@ -114,22 +110,16 @@ const ManageWorkspace = () => {
           </div>
         ) : (
           sortedWorkspaces.map((workspace) => {
-            const isDefault = workspace.type === 'default';
             const isActive = workspace.uid === activeWorkspaceUid;
 
             return (
               <div key={workspace.uid} className="workspace-item">
                 <div className="workspace-info">
                   <div className="workspace-name-row">
-                    <span className={`workspace-icon ${isDefault ? 'default' : 'regular'}`}>
-                      {isDefault ? (
-                        <IconLock size={14} strokeWidth={1.5} />
-                      ) : (
-                        <IconCategory size={14} strokeWidth={1.5} />
-                      )}
+                    <span className="workspace-icon regular">
+                      <IconCategory size={14} strokeWidth={1.5} />
                     </span>
                     <span className="workspace-name">{workspace.name}</span>
-                    {isDefault && <span className="default-badge">Default</span>}
                   </div>
                   {workspace.pathname && (
                     <div className="workspace-path">{workspace.pathname}</div>
@@ -144,7 +134,7 @@ const ManageWorkspace = () => {
                     <IconLogin size={14} strokeWidth={1.5} />
                     <span>Open</span>
                   </button>
-                  {workspace.pathname && workspace.type !== 'default' && (
+                  {workspace.pathname && (
                     <button
                       className="action-btn"
                       onClick={() => handleShowInFolder(workspace)}
@@ -153,19 +143,17 @@ const ManageWorkspace = () => {
                       <span>{getRevealInFolderLabel()}</span>
                     </button>
                   )}
-                  {!isDefault && (
-                    <MenuDropdown
-                      placement="bottom-end"
-                      items={[
-                        { id: 'rename', label: 'Rename', onClick: () => handleRenameClick(workspace) },
-                        { id: 'remove', label: 'Remove', onClick: () => handleCloseClick(workspace) }
-                      ]}
-                    >
-                      <button className="more-actions-btn">
-                        <IconDots size={14} strokeWidth={1.5} />
-                      </button>
-                    </MenuDropdown>
-                  )}
+                  <MenuDropdown
+                    placement="bottom-end"
+                    items={[
+                      { id: 'rename', label: 'Rename', onClick: () => handleRenameClick(workspace) },
+                      { id: 'remove', label: 'Remove', onClick: () => handleCloseClick(workspace) }
+                    ]}
+                  >
+                    <button className="more-actions-btn">
+                      <IconDots size={14} strokeWidth={1.5} />
+                    </button>
+                  </MenuDropdown>
                 </div>
               </div>
             );

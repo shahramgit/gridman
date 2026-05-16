@@ -13,7 +13,7 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
   const { collections } = useSelector((state) => state.collections);
   const { workspaces, activeWorkspaceUid } = useSelector((state) => state.workspaces);
 
-  const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid) || workspaces.find((w) => w.type === 'default');
+  const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid);
 
   // Build the sidebar list in workspace.yml order while keeping Git scoped to the workspace.
   const sidebarEntries = useMemo(() => {

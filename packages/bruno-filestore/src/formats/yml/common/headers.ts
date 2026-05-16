@@ -51,6 +51,14 @@ export const toBrunoHttpHeaders = (headers: HttpRequestHeader[] | HttpResponseHe
       enabled: ('disabled' in header) ? header.disabled !== true : true
     };
 
+    if ('description' in header && header.description) {
+      if (typeof header.description === 'string' && header.description.trim().length) {
+        brunoHeader.description = header.description;
+      } else if (typeof header.description === 'object' && header.description.content?.trim().length) {
+        brunoHeader.description = header.description.content;
+      }
+    }
+
     return brunoHeader;
   });
 

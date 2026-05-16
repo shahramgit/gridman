@@ -52,12 +52,13 @@ const {
   generateUniqueName,
   isDotEnvFile,
   isValidDotEnvFilename,
+  isReusableDeletedCollectionDirectory,
   isBrunoConfigFile,
   isBruEnvironmentConfig,
   isCollectionRootBruFile,
   scanForBrunoFiles
 } = require('../utils/filesystem');
-const { openCollectionDialog, openCollectionsByPathname, registerScratchCollectionPath } = require('../app/collections');
+const { openCollectionsByPathname, registerScratchCollectionPath } = require('../app/collections');
 const { generateUidBasedOnHash, stringifyJson, safeStringifyJSON, safeParseJSON } = require('../utils/common');
 const { moveRequestUid, deleteRequestUid, syncExampleUidsCache } = require('../cache/requestUids');
 const { deleteCookiesForDomain, getDomainsWithCookies, addCookieForDomain, modifyCookieForDomain, parseCookieString, createCookieString, deleteCookie } = require('../utils/cookies');
@@ -76,7 +77,14 @@ const { REQUEST_TYPES } = require('../utils/constants');
 const { cancelOAuth2AuthorizationRequest, isOauth2AuthorizationRequestInProgress } = require('../utils/oauth2-protocol-handler');
 const { findUniqueFolderName } = require('../utils/collection-import');
 const { saveSpecAndUpdateMetadata, cleanupSpecFilesForCollection } = require('./openapi-sync');
-const { isPathInsideDirectory } = require('../utils/workspace-config');
+const {
+  addCollectionToWorkspace,
+  getWorkspaceCollectionsDir,
+  getWorkspaceUid,
+  isWorkspaceCollectionPath,
+  readWorkspaceConfig,
+  resolveAndFilterWorkspaceCollections
+} = require('../utils/workspace-config');
 
 const environmentSecretsStore = new EnvironmentSecretsStore();
 const collectionSecurityStore = new CollectionSecurityStore();
@@ -166,11 +174,71 @@ const validatePathIsInsideCollection = (filePath) => {
 };
 
 const isWorkspaceCollectionPathAllowed = (workspacePath, collectionPath) => {
-  if (!workspacePath || workspacePath === 'default') {
-    return true;
+  return Boolean(workspacePath) && isWorkspaceCollectionPath(workspacePath, collectionPath);
+};
+
+const getWorkspaceCollectionLocation = (workspacePath) => {
+  if (!workspacePath) {
+    throw new Error('An active workspace is required.');
   }
 
-  return isPathInsideDirectory(workspacePath, collectionPath);
+  const collectionsDir = getWorkspaceCollectionsDir(workspacePath);
+  fsExtra.ensureDirSync(collectionsDir);
+  return collectionsDir;
+};
+
+const getUniqueCollectionCopyTarget = async (workspacePath, sourcePath) => {
+  const collectionsDir = getWorkspaceCollectionLocation(workspacePath);
+  const baseName = sanitizeName(path.basename(sourcePath)) || 'collection';
+  const uniqueName = fs.existsSync(path.join(collectionsDir, baseName))
+    ? await findUniqueFolderName(baseName, collectionsDir)
+    : baseName;
+  return path.join(collectionsDir, sanitizeName(uniqueName));
+};
+
+const hasCollectionConfigFile = (collectionPath) => {
+  return fs.existsSync(path.join(collectionPath, 'opencollection.yml')) || fs.existsSync(path.join(collectionPath, 'bruno.json'));
+};
+
+const prepareWorkspaceConfigForClient = (workspaceConfig, workspacePath) => {
+  const remoteWorkspaceName = workspaceConfig.name;
+
+  return {
+    ...workspaceConfig,
+    name: path.basename(workspacePath),
+    remoteWorkspaceName,
+    collections: resolveAndFilterWorkspaceCollections(workspacePath, workspaceConfig.collections)
+  };
+};
+
+const broadcastWorkspaceConfig = (mainWindow, workspacePath) => {
+  if (!workspacePath || !mainWindow) {
+    return;
+  }
+
+  const workspaceConfig = readWorkspaceConfig(workspacePath);
+  mainWindow.webContents.send(
+    'main:workspace-config-updated',
+    workspacePath,
+    getWorkspaceUid(workspacePath),
+    prepareWorkspaceConfigForClient(workspaceConfig, workspacePath)
+  );
+};
+
+const registerCollectionInWorkspace = async (mainWindow, workspacePath, collectionPath, collectionName) => {
+  if (!workspacePath || !collectionPath) {
+    return;
+  }
+
+  if (!isWorkspaceCollectionPathAllowed(workspacePath, collectionPath)) {
+    throw new Error('Imported collections must be inside the workspace collections folder.');
+  }
+
+  await addCollectionToWorkspace(workspacePath, {
+    name: collectionName || path.basename(collectionPath),
+    path: collectionPath
+  });
+  broadcastWorkspaceConfig(mainWindow, workspacePath);
 };
 
 const registerRendererEventHandlers = (mainWindow, watcher) => {
@@ -181,16 +249,25 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       try {
         const format = options.format || DEFAULT_COLLECTION_FORMAT;
         collectionFolderName = sanitizeName(collectionFolderName);
-        const dirPath = path.join(collectionLocation, collectionFolderName);
+        const targetLocation = getWorkspaceCollectionLocation(options.workspaceId);
+        const dirPath = path.join(targetLocation, collectionFolderName);
 
         if (!isWorkspaceCollectionPathAllowed(options.workspaceId, dirPath)) {
-          throw new Error('Workspace collections must be created inside the workspace folder.');
+          throw new Error('Workspace collections must be created inside the workspace collections folder.');
         }
 
         if (fs.existsSync(dirPath)) {
           const files = fs.readdirSync(dirPath);
 
-          if (files.length > 0) {
+          if (files.length > 0 && hasCollectionConfigFile(dirPath)) {
+            await openCollectionsByPathname(mainWindow, watcher, [dirPath], { workspacePath: options.workspaceId });
+            return {
+              openedExistingCollection: true,
+              path: dirPath
+            };
+          }
+
+          if (files.length > 0 && !isReusableDeletedCollectionDirectory(dirPath)) {
             throw new Error(`collection: ${dirPath} already exists and is not empty`);
           }
         }
@@ -1084,9 +1161,50 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
   ipcMain.handle('renderer:open-collection', async (event, options = {}) => {
     if (watcher && mainWindow) {
-      await openCollectionDialog(mainWindow, watcher, {
-        workspacePath: options.workspaceId
+      const workspacePath = options.workspaceId;
+      const collectionsDir = getWorkspaceCollectionLocation(workspacePath);
+      const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openDirectory', 'createDirectory', 'multiSelections'],
+        title: 'Import Collection',
+        buttonLabel: 'Import Collection'
       });
+
+      if (canceled || !filePaths?.length) {
+        return [];
+      }
+
+      const importedPaths = [];
+      for (const filePath of [...new Set(filePaths)]) {
+        const sourcePath = path.resolve(filePath);
+        if (!isDirectory(sourcePath)) {
+          continue;
+        }
+        if (!hasCollectionConfigFile(sourcePath)) {
+          throw new Error(`Invalid collection: ${sourcePath}`);
+        }
+
+        const targetPath = isWorkspaceCollectionPathAllowed(workspacePath, sourcePath)
+          ? sourcePath
+          : await getUniqueCollectionCopyTarget(workspacePath, sourcePath);
+
+        if (targetPath !== sourcePath) {
+          await fsExtra.copy(sourcePath, targetPath, {
+            overwrite: false,
+            errorOnExist: true,
+            filter: (src) => path.basename(src) !== '.git'
+          });
+        }
+
+        if (!isWorkspaceCollectionPathAllowed(workspacePath, targetPath)) {
+          throw new Error('Imported collections must be copied into the workspace collections folder.');
+        }
+
+        await openCollectionsByPathname(mainWindow, watcher, [targetPath], { workspacePath });
+        await registerCollectionInWorkspace(mainWindow, workspacePath, targetPath, path.basename(targetPath));
+        importedPaths.push(targetPath);
+      }
+
+      return importedPaths;
     }
   });
 
@@ -1095,11 +1213,11 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       if (options.workspacePath) {
         const outsideCollection = collectionPaths.find((collectionPath) => !isWorkspaceCollectionPathAllowed(options.workspacePath, collectionPath));
         if (outsideCollection) {
-          throw new Error('Workspace collections must be inside the workspace folder.');
+          throw new Error('Workspace collections must be inside the workspace collections folder.');
         }
       }
 
-      await openCollectionsByPathname(mainWindow, watcher, collectionPaths);
+      await openCollectionsByPathname(mainWindow, watcher, collectionPaths, { workspacePath: options.workspacePath });
       if (options.workspacePath) {
         const { setCollectionWorkspace } = require('../store/process-env');
         const { generateUidBasedOnHash } = require('../utils/common');
@@ -1118,7 +1236,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     }
   });
 
-  ipcMain.handle('renderer:remove-collection', async (event, collectionPath, collectionUid, workspacePath) => {
+  ipcMain.handle('renderer:remove-collection', async (event, collectionPath, collectionUid, workspacePath, options = {}) => {
     if (watcher && mainWindow) {
       watcher.removeWatcher(collectionPath, mainWindow, collectionUid);
 
@@ -1131,13 +1249,19 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     const { clearCollectionWorkspace } = require('../store/process-env');
     clearCollectionWorkspace(collectionUid);
 
-    if (workspacePath && workspacePath !== 'default') {
+    const shouldDeleteCollectionFiles = Boolean(workspacePath) && isWorkspaceCollectionPathAllowed(workspacePath, collectionPath);
+
+    if (workspacePath) {
       try {
         const { removeCollectionFromWorkspace } = require('../utils/workspace-config');
         await removeCollectionFromWorkspace(workspacePath, collectionPath);
       } catch (error) {
         console.error('Error removing collection from workspace.yml:', error);
       }
+    }
+
+    if (shouldDeleteCollectionFiles && fs.existsSync(collectionPath)) {
+      await fsExtra.remove(collectionPath);
     }
 
     // Clean up AppData spec files for this collection
@@ -1151,6 +1275,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
   ipcMain.handle('renderer:import-collection', async (_, collection, collectionLocation, options = {}) => {
     const format = options.format || DEFAULT_COLLECTION_FORMAT;
     const rawOpenAPISpec = options.rawOpenAPISpec;
+    const targetCollectionLocation = getWorkspaceCollectionLocation(options.workspaceId);
     let collections = Array.isArray(collection) ? collection : [collection];
     let completedImports = 0;
     let failedImports = 0;
@@ -1162,13 +1287,13 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         mainWindow.webContents.send('main:collection-import-started', coll.uid);
 
         let collectionName = sanitizeName(coll.name);
-        let collectionPath = path.join(collectionLocation, collectionName);
+        let collectionPath = path.join(targetCollectionLocation, collectionName);
 
         // Auto-rename if collection already exists
         if (fs.existsSync(collectionPath)) {
-          const uniqueName = await findUniqueFolderName(coll.name, collectionLocation);
+          const uniqueName = await findUniqueFolderName(coll.name, targetCollectionLocation);
           collectionName = sanitizeName(uniqueName);
-          collectionPath = path.join(collectionLocation, collectionName);
+          collectionPath = path.join(targetCollectionLocation, collectionName);
           coll.name = uniqueName;
         }
 
@@ -1292,6 +1417,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
         mainWindow.webContents.send('main:collection-opened', collectionPath, uid, brunoConfig);
         ipcMain.emit('main:collection-opened', mainWindow, collectionPath, uid, brunoConfig);
+
+        await registerCollectionInWorkspace(mainWindow, options.workspaceId, collectionPath, coll.name);
 
         mainWindow.webContents.send('main:collection-import-ended', coll.uid);
 
@@ -2339,15 +2466,13 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     }
   });
 
-  ipcMain.handle('renderer:import-collection-zip', async (event, zipFilePath, collectionLocation) => {
+  ipcMain.handle('renderer:import-collection-zip', async (event, zipFilePath, collectionLocation, options = {}) => {
     try {
       if (!fs.existsSync(zipFilePath)) {
         throw new Error('ZIP file does not exist');
       }
 
-      if (!collectionLocation || !fs.existsSync(collectionLocation)) {
-        throw new Error('Collection location does not exist');
-      }
+      const targetCollectionLocation = getWorkspaceCollectionLocation(options.workspaceId);
 
       const tempDir = path.join(os.tmpdir(), `bruno_zip_import_${Date.now()}`);
       await fsExtra.ensureDir(tempDir);
@@ -2428,14 +2553,15 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         if (!sanitizedName) {
           sanitizedName = `untitled-${Date.now()}`;
         }
-        let finalCollectionPath = path.join(collectionLocation, sanitizedName);
+        let finalCollectionPath = path.join(targetCollectionLocation, sanitizedName);
         let counter = 1;
         while (fs.existsSync(finalCollectionPath)) {
-          finalCollectionPath = path.join(collectionLocation, `${sanitizedName} (${counter})`);
+          finalCollectionPath = path.join(targetCollectionLocation, `${sanitizedName} (${counter})`);
           counter++;
         }
 
         await fsExtra.move(collectionDir, finalCollectionPath);
+        await fsExtra.remove(path.join(finalCollectionPath, '.git')).catch(() => {});
         if (tempDir !== collectionDir) {
           await fsExtra.remove(tempDir).catch(() => {});
         }
@@ -2447,6 +2573,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
         mainWindow.webContents.send('main:collection-opened', finalCollectionPath, uid, brunoConfig);
         ipcMain.emit('main:collection-opened', mainWindow, finalCollectionPath, uid, brunoConfig);
+
+        await registerCollectionInWorkspace(mainWindow, options.workspaceId, finalCollectionPath, collectionName);
 
         return finalCollectionPath;
       } catch (error) {
@@ -2461,8 +2589,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
 const registerMainEventHandlers = (mainWindow, watcher) => {
   ipcMain.on('main:open-collection', () => {
-    if (watcher && mainWindow) {
-      openCollectionDialog(mainWindow, watcher);
+    if (mainWindow) {
+      mainWindow.webContents.send('main:display-error', 'Use Import Collection from an active workspace so Gridman can copy it into that workspace.');
     }
   });
 

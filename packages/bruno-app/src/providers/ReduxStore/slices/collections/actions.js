@@ -92,25 +92,6 @@ import { saveGlobalEnvironment } from 'providers/ReduxStore/slices/global-enviro
 import { getTabToFocusForCurrentWorkspace } from 'providers/ReduxStore/slices/workspaces/getTabToFocusForCurrentWorkspace';
 import { clearPersistedScope } from 'hooks/usePersistedState/PersistedScopeProvider';
 
-const isPathInsideDirectory = (parentPath, childPath) => {
-  if (!parentPath || !childPath) {
-    return false;
-  }
-
-  const relativePath = path.relative(path.resolve(parentPath), path.resolve(childPath));
-  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
-};
-
-const assertWorkspaceCollectionLocation = (workspace, collectionLocation) => {
-  if (!workspace?.pathname || !collectionLocation) {
-    return;
-  }
-
-  if (!isPathInsideDirectory(workspace.pathname, collectionLocation)) {
-    throw new Error('Workspace collections must be inside the workspace folder.');
-  }
-};
-
 // generate a unique names
 const generateUniqueName = (originalName, existingItems, isFolder) => {
   // Extract base name by removing any existing " (number)" suffix
@@ -2389,17 +2370,12 @@ export const removeCollection = (collectionUid) => (dispatch, getState) => {
     const { workspaces } = state;
     const activeWorkspace = workspaces.workspaces.find((w) => w.uid === workspaces.activeWorkspaceUid);
 
-    let workspaceId = 'default';
-    if (activeWorkspace) {
-      if (activeWorkspace.pathname) {
-        workspaceId = activeWorkspace.pathname;
-      } else {
-        workspaceId = activeWorkspace.uid;
-      }
+    if (!activeWorkspace?.pathname) {
+      return reject(new Error('An active workspace is required.'));
     }
 
     ipcRenderer
-      .invoke('renderer:remove-collection', collection.pathname, collectionUid, workspaceId)
+      .invoke('renderer:remove-collection', collection.pathname, collectionUid, activeWorkspace.pathname)
       .then(() => {
         // Check if the collection still exists in other workspaces
         return ipcRenderer.invoke('renderer:get-collection-workspaces', collection.pathname);
@@ -2670,13 +2646,11 @@ export const createCollection = (collectionName, collectionFolderName, collectio
     if (activeWorkspace && activeWorkspace.pathname) {
       options.workspaceId = activeWorkspace.pathname;
     } else {
-      options.workspaceId = 'default';
+      throw new Error('An active workspace is required.');
     }
   }
 
-  if (options.workspaceId && options.workspaceId !== 'default') {
-    assertWorkspaceCollectionLocation({ pathname: options.workspaceId }, collectionLocation);
-  }
+  collectionLocation = path.join(options.workspaceId, 'collections');
 
   return new Promise((resolve, reject) => {
     ipcRenderer
@@ -2704,7 +2678,10 @@ export const openCollection = (options = {}) => (dispatch, getState) => {
     const activeWorkspace = state.workspaces.workspaces.find((w) => w.uid === state.workspaces.activeWorkspaceUid);
 
     if (!options.workspaceId) {
-      options.workspaceId = activeWorkspace?.pathname || 'default';
+      if (!activeWorkspace?.pathname) {
+        return reject(new Error('An active workspace is required.'));
+      }
+      options.workspaceId = activeWorkspace.pathname;
     }
 
     ipcRenderer.invoke('renderer:open-collection', options)
@@ -2761,9 +2738,13 @@ export const importCollection = (collection, collectionLocation, options = {}) =
       const activeWorkspace = state.workspaces.workspaces.find((w) => w.uid === state.workspaces.activeWorkspaceUid);
       const isMultiple = Array.isArray(collection);
 
-      assertWorkspaceCollectionLocation(activeWorkspace, collectionLocation);
+      if (!activeWorkspace?.pathname) {
+        throw new Error('An active workspace is required.');
+      }
+      collectionLocation = path.join(activeWorkspace.pathname, 'collections');
 
       const result = await ipcRenderer.invoke('renderer:import-collection', collection, collectionLocation, {
+        workspaceId: activeWorkspace.pathname,
         format: options.format || DEFAULT_COLLECTION_FORMAT,
         rawOpenAPISpec: options.rawOpenAPISpec
       });
@@ -2791,9 +2772,14 @@ export const importCollectionFromZip = (zipFilePath, collectionLocation) => asyn
   const state = getState();
   const activeWorkspace = state.workspaces.workspaces.find((w) => w.uid === state.workspaces.activeWorkspaceUid);
 
-  assertWorkspaceCollectionLocation(activeWorkspace, collectionLocation);
+  if (!activeWorkspace?.pathname) {
+    throw new Error('An active workspace is required.');
+  }
+  collectionLocation = path.join(activeWorkspace.pathname, 'collections');
 
-  const collectionPath = await ipcRenderer.invoke('renderer:import-collection-zip', zipFilePath, collectionLocation);
+  const collectionPath = await ipcRenderer.invoke('renderer:import-collection-zip', zipFilePath, collectionLocation, {
+    workspaceId: activeWorkspace.pathname
+  });
 
   if (activeWorkspace && activeWorkspace.pathname) {
     const collectionName = path.basename(collectionPath);

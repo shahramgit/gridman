@@ -54,8 +54,7 @@ const defaultPreferences = {
     hasSeenWelcomeModal: true
   },
   general: {
-    defaultLocation: '',
-    defaultWorkspacePath: ''
+    defaultLocation: ''
   },
   autoSave: {
     enabled: false,
@@ -127,8 +126,7 @@ const preferencesSchema = Yup.object().shape({
     hasSeenWelcomeModal: Yup.boolean()
   }),
   general: Yup.object({
-    defaultLocation: Yup.string().max(1024).nullable(),
-    defaultWorkspacePath: Yup.string().max(1024).nullable()
+    defaultLocation: Yup.string().max(1024).nullable()
   }),
   autoSave: Yup.object({
     enabled: Yup.boolean(),

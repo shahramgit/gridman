@@ -72,17 +72,17 @@ const getAuthSummary = (auth) => {
 
   if (auth.protocol === 'https') {
     return auth.credentialHelper?.configured
-      ? 'Bruno will use your system Git credential manager for tokens or app passwords.'
+      ? 'Gridman will use your system Git credential manager for tokens or app passwords.'
       : 'HTTPS works best with Git Credential Manager so credentials are stored in the OS keychain.';
   }
 
   if (auth.protocol === 'ssh') {
     return auth.ssh?.hasKeys
-      ? 'Bruno will use your existing SSH key through Git and ssh-agent.'
+      ? 'Gridman will use your existing SSH key through Git and ssh-agent.'
       : 'SSH needs a local key and the public key must be added to your Git provider.';
   }
 
-  return 'Bruno delegates authentication to Git on this machine.';
+  return 'Gridman delegates authentication to Git on this machine.';
 };
 
 const getAuthCommands = (auth) => {
@@ -124,7 +124,8 @@ const WorkspaceGit = ({ workspace }) => {
   const [output, setOutput] = useState('');
   const [remoteUrlInput, setRemoteUrlInput] = useState('');
   const [editingRemote, setEditingRemote] = useState(false);
-  const [repairingCollections, setRepairingCollections] = useState(false);
+  const [reconcilingCollections, setReconcilingCollections] = useState(false);
+  const [collectionReconciliation, setCollectionReconciliation] = useState(null);
   const [authDiagnostics, setAuthDiagnostics] = useState(null);
   const [authTestResult, setAuthTestResult] = useState(null);
 
@@ -136,8 +137,11 @@ const WorkspaceGit = ({ workspace }) => {
   const staged = changedFiles.staged || [];
   const unstaged = changedFiles.unstaged || [];
   const conflicted = changedFiles.conflicted || [];
+  const tooManyFiles = Boolean(changedFiles.tooManyFiles);
+  const totalChangedFiles = changedFiles.totalFiles || 0;
   const hasConflicts = gitData?.mergeInProgress || conflicted.length > 0;
-  const outsideCollections = gitData?.outsideCollections || [];
+  const orphanCollections = collectionReconciliation?.orphanCollections || [];
+  const missingCollections = collectionReconciliation?.missingCollections || [];
   const hasCommits = Boolean(gitData?.hasCommits);
   const browserRemoteUrl = getBrowserRemoteUrl(remoteUrl);
   const auth = authDiagnostics || gitData?.auth;
@@ -155,7 +159,11 @@ const WorkspaceGit = ({ workspace }) => {
         fetchRemote,
         remote
       });
+      const reconciliation = await window.ipcRenderer
+        .invoke('renderer:get-workspace-collection-reconciliation', workspace.pathname)
+        .catch(() => null);
       setGitData(result);
+      setCollectionReconciliation(reconciliation);
       setAuthDiagnostics(result?.auth || null);
       if (fetchRemote && result?.isGitRepository && result?.remotes?.length) {
         setOutput('Status refreshed from remote.');
@@ -193,17 +201,39 @@ const WorkspaceGit = ({ workspace }) => {
         ...payload
       });
       if (result) {
-        if (label.includes('Sync') && typeof result === 'object') {
-          setOutput(`${label} completed: fetched${result.pulled ? ', pulled' : ''}${result.pushed ? ', pushed' : ''}.`);
+        const safetyCommitNote = result.safetyCommitCreated
+          ? ` Local files were first saved in a safety commit: ${result.safetyCommitFiles?.join(', ')}.`
+          : '';
+        const protectedBackupNote = result.protectedFilesBackedUp
+          ? ` Protected local environment files were backed up before pull: ${result.protectedBackupPath}.`
+          : '';
+        const localBackupNote = result.localFilesBackedUp
+          ? ` Local files that could not be safety-committed were backed up before pull: ${result.localBackupPath}.`
+          : '';
+        if (result.mergeInProgress) {
+          setOutput(`${result.message || 'Merge conflicts need to be resolved before sync can continue.'}${safetyCommitNote}${protectedBackupNote}${localBackupNote}`);
+        } else if (label.includes('Sync') && typeof result === 'object') {
+          setOutput(`${label} completed: fetched${result.pulled ? ', pulled' : ''}${result.pushed ? ', pushed' : ''}.${safetyCommitNote}${protectedBackupNote}${localBackupNote}`);
+        } else if (result.safetyCommitCreated) {
+          setOutput(`${label} completed.${safetyCommitNote}${protectedBackupNote}${localBackupNote}`);
+        } else if (result.protectedFilesBackedUp) {
+          setOutput(`${label} completed.${protectedBackupNote}${localBackupNote}`);
+        } else if (result.localFilesBackedUp) {
+          setOutput(`${label} completed.${localBackupNote}`);
         } else {
           setOutput(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
         }
       }
-      toast.success(`${label} completed`);
+      if (result?.mergeInProgress) {
+        toast.error('Merge conflicts need to be resolved');
+      } else {
+        toast.success(`${label} completed`);
+      }
       await refresh();
     } catch (error) {
-      setOutput(error?.message || String(error));
-      toast.error(error?.message || `${label} failed`);
+      const message = getIpcErrorMessage(error, `${label} failed`);
+      setOutput(message);
+      toast.error(message);
       await refresh();
     } finally {
       setOperation(null);
@@ -257,8 +287,9 @@ const WorkspaceGit = ({ workspace }) => {
       toast.success('Sync Full completed');
       await refresh();
     } catch (error) {
-      setOutput(error?.message || String(error));
-      toast.error(error?.message || 'Sync Full failed');
+      const message = getIpcErrorMessage(error, 'Sync Full failed');
+      setOutput(message);
+      toast.error(message);
       await refresh();
     } finally {
       setOperation(null);
@@ -284,28 +315,81 @@ const WorkspaceGit = ({ workspace }) => {
     }
   };
 
-  const moveCollectionsInsideWorkspace = async () => {
-    if (!workspace?.pathname || outsideCollections.length === 0) return;
+  const addOrphanCollectionsToWorkspace = async () => {
+    if (!workspace?.pathname || orphanCollections.length === 0) return;
 
-    setRepairingCollections(true);
+    setReconcilingCollections(true);
     setOutput('');
     try {
-      const movedCollections = await window.ipcRenderer.invoke('renderer:move-workspace-collections-inside', {
-        workspacePath: workspace.pathname,
-        collectionPaths: outsideCollections.map((collection) => collection.path)
-      });
+      const addedCollections = await window.ipcRenderer.invoke(
+        'renderer:add-orphan-workspace-collections',
+        workspace.pathname,
+        orphanCollections
+      );
 
       setOutput([
-        'Moved collections into the workspace:',
-        ...movedCollections.map((collection) => `${collection.from} -> ${collection.to}`)
+        'Added collection folders back to workspace.yml:',
+        ...addedCollections.map((collection) => collection.relativePath || collection.path)
       ].join('\n'));
-      toast.success('Collections moved into workspace');
+      toast.success('Collection folders added to workspace');
       await refresh();
     } catch (error) {
       setOutput(error?.message || String(error));
-      toast.error(error?.message || 'Failed to move collections');
+      toast.error(error?.message || 'Failed to add collection folders');
     } finally {
-      setRepairingCollections(false);
+      setReconcilingCollections(false);
+    }
+  };
+
+  const deleteOrphanCollectionsFromDisk = async () => {
+    if (!workspace?.pathname || orphanCollections.length === 0) return;
+
+    setReconcilingCollections(true);
+    setOutput('');
+    try {
+      const deletedCollections = await window.ipcRenderer.invoke(
+        'renderer:delete-orphan-workspace-collections',
+        workspace.pathname,
+        orphanCollections
+      );
+
+      setOutput([
+        'Deleted collection folders from disk:',
+        ...deletedCollections.map((collection) => collection.relativePath || collection.path)
+      ].join('\n'));
+      toast.success('Collection folders deleted from disk');
+      await refresh();
+    } catch (error) {
+      setOutput(error?.message || String(error));
+      toast.error(error?.message || 'Failed to delete collection folders');
+    } finally {
+      setReconcilingCollections(false);
+    }
+  };
+
+  const removeMissingCollectionsFromWorkspace = async () => {
+    if (!workspace?.pathname || missingCollections.length === 0) return;
+
+    setReconcilingCollections(true);
+    setOutput('');
+    try {
+      const removedCollections = await window.ipcRenderer.invoke(
+        'renderer:remove-missing-workspace-collections',
+        workspace.pathname,
+        missingCollections
+      );
+
+      setOutput([
+        'Removed missing collection entries from workspace.yml:',
+        ...removedCollections.map((collection) => collection.path || collection.name)
+      ].join('\n'));
+      toast.success('Missing collection entries removed');
+      await refresh();
+    } catch (error) {
+      setOutput(error?.message || String(error));
+      toast.error(error?.message || 'Failed to remove missing collection entries');
+    } finally {
+      setReconcilingCollections(false);
     }
   };
 
@@ -417,6 +501,14 @@ const WorkspaceGit = ({ workspace }) => {
   const stageFiles = (files) => runGitOperation('Stage', 'renderer:stage-workspace-git-files', { files: files.map((file) => file.path) });
   const unstageFiles = (files) => runGitOperation('Unstage', 'renderer:unstage-workspace-git-files', { files: files.map((file) => file.path) });
 
+  const resolveConflict = (file, side) => {
+    const label = side === 'ours' ? 'Accept local' : 'Accept remote';
+    return runGitOperation(label, 'renderer:resolve-workspace-git-conflict-file', {
+      filePath: file.path,
+      side
+    });
+  };
+
   const commit = async () => {
     const message = commitMessage.trim();
     if (!message) {
@@ -461,8 +553,8 @@ const WorkspaceGit = ({ workspace }) => {
   const abortMerge = () => runGitOperation('Abort merge', 'renderer:abort-workspace-git-merge');
 
   const continueMerge = () => {
-    if (!conflicted.length) {
-      toast.error('No conflicted files found');
+    if (!gitData?.mergeInProgress) {
+      toast.error('No merge in progress');
       return;
     }
     return runGitOperation('Continue merge', 'renderer:continue-resolved-workspace-git-merge', {
@@ -486,7 +578,7 @@ const WorkspaceGit = ({ workspace }) => {
       'git init',
       'git branch -M main',
       'git remote add origin <url>',
-      'git add . && git commit -m "Initial Bruno workspace"'
+      'git add . && git commit -m "Initial Gridman workspace"'
     ];
 
     return (
@@ -498,8 +590,8 @@ const WorkspaceGit = ({ workspace }) => {
             </div>
             <h3>Start tracking this workspace</h3>
             <p className="text-muted">
-              Initialize Git in this workspace folder. Bruno will create the usual safe defaults, including a `.gitignore`
-              for secrets, Bruno environment files, dependencies, and OS files.
+              Initialize Git in this workspace folder. Gridman will create the usual safe defaults, including a `.gitignore`
+              for secrets, Gridman environment files, dependencies, and OS files.
             </p>
             <div className="flex flex-wrap gap-2 mt-4">
               <Button
@@ -521,26 +613,50 @@ const WorkspaceGit = ({ workspace }) => {
                 Refresh
               </Button>
             </div>
-            {outsideCollections.length > 0 && (
+            {(orphanCollections.length > 0 || missingCollections.length > 0) && (
               <div className="workspace-warning mt-4">
-                <div className="font-semibold">Collections outside this workspace</div>
+                <div className="font-semibold">Workspace collections need repair</div>
                 <p className="text-muted mt-1">
-                  Git can only track files under one workspace folder. Move these collections into this workspace before syncing.
+                  Some collection folders and `workspace.yml` entries are out of sync.
                 </p>
-                <div className="outside-list mt-2">
-                  {outsideCollections.map((collection) => (
-                    <div key={collection.path} className="outside-row">{collection.path}</div>
-                  ))}
-                </div>
-                <Button
-                  size="sm"
-                  color="primary"
-                  className="mt-3"
-                  loading={repairingCollections}
-                  onClick={moveCollectionsInsideWorkspace}
-                >
-                  Move inside workspace
-                </Button>
+                {orphanCollections.length > 0 && (
+                  <>
+                    <div className="outside-list mt-2">
+                      {orphanCollections.map((collection) => (
+                        <div key={collection.path} className="outside-row">{collection.relativePath || collection.path}</div>
+                      ))}
+                    </div>
+                    <Button
+                      size="sm"
+                      color="primary"
+                      className="mt-3"
+                      loading={reconcilingCollections}
+                      onClick={addOrphanCollectionsToWorkspace}
+                    >
+                      Add folders to workspace
+                    </Button>
+                    <Button
+                      size="sm"
+                      color="danger"
+                      className="mt-3 ml-2"
+                      loading={reconcilingCollections}
+                      onClick={deleteOrphanCollectionsFromDisk}
+                    >
+                      Delete folders from disk
+                    </Button>
+                  </>
+                )}
+                {missingCollections.length > 0 && (
+                  <Button
+                    size="sm"
+                    color="light"
+                    className="mt-3 ml-2"
+                    loading={reconcilingCollections}
+                    onClick={removeMissingCollectionsFromWorkspace}
+                  >
+                    Remove missing entries
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -617,26 +733,63 @@ const WorkspaceGit = ({ workspace }) => {
             )}
           </div>
 
-          {outsideCollections.length > 0 && (
+          {(orphanCollections.length > 0 || missingCollections.length > 0) && (
             <div className="panel warning-panel">
-              <div className="section-title">Workspace Layout</div>
+              <div className="section-title">Workspace Collections</div>
               <p className="text-sm text-muted">
-                These collections are outside the workspace folder, so they cannot be included in this workspace Git repository.
+                Git merge can leave collection folders and `workspace.yml` out of sync. Repair the workspace index before committing.
               </p>
-              <div className="outside-list mt-2">
-                {outsideCollections.map((collection) => (
-                  <div key={collection.path} className="outside-row">{collection.path}</div>
-                ))}
-              </div>
-              <Button
-                size="sm"
-                color="primary"
-                className="mt-3"
-                loading={repairingCollections}
-                onClick={moveCollectionsInsideWorkspace}
-              >
-                Move inside workspace
-              </Button>
+
+              {orphanCollections.length > 0 && (
+                <div className="mt-3">
+                  <div className="font-semibold">Folders not listed in workspace.yml</div>
+                  <div className="outside-list mt-2">
+                    {orphanCollections.map((collection) => (
+                      <div key={collection.path} className="outside-row">{collection.relativePath || collection.path}</div>
+                    ))}
+                  </div>
+                  <Button
+                    size="sm"
+                    color="primary"
+                    className="mt-3"
+                    loading={reconcilingCollections}
+                    onClick={addOrphanCollectionsToWorkspace}
+                  >
+                    Add folders to workspace
+                  </Button>
+                  <Button
+                    size="sm"
+                    color="danger"
+                    className="mt-3 ml-2"
+                    loading={reconcilingCollections}
+                    onClick={deleteOrphanCollectionsFromDisk}
+                  >
+                    Delete folders from disk
+                  </Button>
+                </div>
+              )}
+
+              {missingCollections.length > 0 && (
+                <div className="mt-3">
+                  <div className="font-semibold">Entries with missing folders</div>
+                  <div className="outside-list mt-2">
+                    {missingCollections.map((collection) => (
+                      <div key={`${collection.name}-${collection.path}`} className="outside-row">
+                        {collection.name}: {collection.relativePath || collection.path}
+                      </div>
+                    ))}
+                  </div>
+                  <Button
+                    size="sm"
+                    color="light"
+                    className="mt-3"
+                    loading={reconcilingCollections}
+                    onClick={removeMissingCollectionsFromWorkspace}
+                  >
+                    Remove missing entries
+                  </Button>
+                </div>
+              )}
             </div>
           )}
 
@@ -822,14 +975,14 @@ const WorkspaceGit = ({ workspace }) => {
               </Button>
             </div>
             <div className="text-muted text-sm mt-2">
-              Commit saves a Git snapshot. If nothing is staged, Bruno stages all unstaged files before committing.
+              Commit saves a Git snapshot. If nothing is staged, Gridman stages all unstaged files before committing.
             </div>
           </div>
 
           {hasConflicts && (
             <div className="panel">
               <div className="section-title">Conflicts</div>
-              <p className="text-sm text-muted">Resolve conflict markers in the files, then continue the merge.</p>
+              <p className="text-sm text-muted">Choose local or remote for each conflicted file, or edit the files manually, then continue the merge.</p>
               <textarea
                 className="textbox w-full h-16 mt-2"
                 value={mergeMessage}
@@ -846,21 +999,44 @@ const WorkspaceGit = ({ workspace }) => {
         <div className="space-y-4">
           <div className="panel">
             <div className="section-title">Changes</div>
+            {tooManyFiles && (
+              <div className="workspace-warning mb-3">
+                Git has {totalChangedFiles} changed files. Gridman hides the full list for performance, but Pull can still create a safety commit for non-protected files.
+              </div>
+            )}
             {conflicted.length > 0 && (
               <>
                 <div className="font-semibold mb-1">Conflicts</div>
                 {conflicted.map((file) => (
                   <div key={`conflict-${file.path}`} className={`file-row ${selectedFile?.path === file.path ? 'active' : ''}`} onClick={() => selectFile(file)}>
-                    <span className="file-status">UU</span>
+                    <span className="file-status">{file.status || `${file.fileIndex || ''}${file.working_dir || ''}`}</span>
                     <span className="truncate">{file.path}</span>
-                    <Button
-                      size="sm"
-                      color="light"
-                      onClick={(event) => {
-                        event.stopPropagation(); stageFiles([file]);
-                      }}
-                    >Stage
-                    </Button>
+                    <div className="file-actions">
+                      <Button
+                        size="sm"
+                        color="light"
+                        onClick={(event) => {
+                          event.stopPropagation(); resolveConflict(file, 'ours');
+                        }}
+                      >Accept local
+                      </Button>
+                      <Button
+                        size="sm"
+                        color="light"
+                        onClick={(event) => {
+                          event.stopPropagation(); resolveConflict(file, 'theirs');
+                        }}
+                      >Accept remote
+                      </Button>
+                      <Button
+                        size="sm"
+                        color="light"
+                        onClick={(event) => {
+                          event.stopPropagation(); stageFiles([file]);
+                        }}
+                      >Mark resolved
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </>

@@ -23,7 +23,6 @@ import { DEFAULT_COLLECTION_FORMAT } from 'utils/common/constants';
 import { itemSchema } from '@usebruno/schema';
 import { uuid } from 'utils/common';
 import { formatIpcError } from 'utils/common/error';
-import get from 'lodash/get';
 
 const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOpen = false, onClose }) => {
   const dispatch = useDispatch();
@@ -40,11 +39,7 @@ const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOp
   const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid);
   const allCollections = useSelector((state) => state.collections.collections);
   const isScratchCollection = activeWorkspace?.scratchCollectionUid === collection?.uid;
-  const preferences = useSelector((state) => state.app.preferences);
-  const isDefaultWorkspace = activeWorkspace?.type === 'default';
-  const defaultCollectionLocation = isDefaultWorkspace
-    ? get(preferences, 'general.defaultLocation', '')
-    : (activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '');
+  const defaultCollectionLocation = activeWorkspace?.pathname ? path.join(activeWorkspace.pathname, 'collections') : '';
 
   const availableCollections = useMemo(() => {
     if (!isScratchCollection || !activeWorkspace) return [];
@@ -469,7 +464,7 @@ const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOp
                             Location
                             <Help width={250} placement="top">
                               <p>
-                                Bruno stores your collections on your computer's filesystem.
+                                Gridman stores your collections on your computer's filesystem.
                               </p>
                               <p className="mt-2">
                                 Choose the location where you want to store this collection.
@@ -509,7 +504,7 @@ const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOp
                                 <strong>OpenCollection (YAML):</strong> Industry-standard YAML format (.yml files)
                               </p>
                               <p className="mt-1">
-                                <strong>BRU:</strong> Bruno's native file format (.bru files)
+                                <strong>BRU:</strong> Gridman's native file format (.bru files)
                               </p>
                             </Help>
                           </label>
