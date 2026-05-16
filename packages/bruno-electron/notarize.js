@@ -8,11 +8,16 @@ const notarize = async function (params) {
     return;
   }
 
-  let appId = 'com.usebruno.app';
+  let appId = 'com.vasl.gridman';
 
   let appPath = path.join(params.appOutDir, `${params.packager.appInfo.productFilename}.app`);
   if (!fs.existsSync(appPath)) {
     console.error(`Cannot find application at: ${appPath}`);
+    return;
+  }
+
+  if (!process.env.APPLE_ID || !process.env.APPLE_ID_PASSWORD) {
+    console.log(`Skipping notarization for ${appId}; Apple ID credentials are not configured.`);
     return;
   }
 
@@ -24,7 +29,7 @@ const notarize = async function (params) {
       appPath: appPath,
       appleId: process.env.APPLE_ID,
       appleIdPassword: process.env.APPLE_ID_PASSWORD,
-      ascProvider: 'W7LPPWA48L'
+      ascProvider: process.env.APPLE_ASC_PROVIDER
     });
   } catch (error) {
     console.error(error);

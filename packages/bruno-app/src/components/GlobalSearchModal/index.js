@@ -250,7 +250,7 @@ const GlobalSearchModal = ({ isOpen, onClose }) => {
     ensureCollectionIsMounted(targetCollection);
 
     if (result.type === SEARCH_TYPES.DOCUMENTATION) {
-      window.open('https://docs.usebruno.com/', '_blank');
+      window.open('https://github.com/shahramgit/gridman#readme', '_blank');
       onClose();
       return;
     }

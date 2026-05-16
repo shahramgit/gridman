@@ -19,7 +19,7 @@ const makeHtmlOutput = async (results, outputPath, runCompletionTime, environmen
 
   const htmlString = generateHtmlReport({
     runnerResults: runnerResults,
-    version: `usebruno v${CLI_VERSION}`,
+    version: `gridman v${CLI_VERSION}`,
     environment: environment,
     runCompletionTime: runCompletionTime
   });

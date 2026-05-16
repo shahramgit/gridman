@@ -364,7 +364,7 @@ app.on('ready', async () => {
     } else {
       console.error(
         'If you are using an official production build: the above error is most likely a bug! '
-        + ' Please report this under: https://github.com/usebruno/bruno/issues'
+        + ' Please report this under: https://github.com/shahramgit/gridman/issues'
       );
     }
   });

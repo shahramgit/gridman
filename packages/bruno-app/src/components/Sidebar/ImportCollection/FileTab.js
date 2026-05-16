@@ -84,7 +84,7 @@ const FileTab = ({
         return;
       }
 
-      toastError(new Error('The ZIP file is not a valid Bruno collection'));
+      toastError(new Error('The ZIP file is not a valid Gridman or Bruno collection'));
     } catch (err) {
       toastError(err, 'Import ZIP file failed');
     } finally {
@@ -271,7 +271,7 @@ const FileTab = ({
             </button>
           </p>
           <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
-            Supports Bruno, OpenCollection, Postman, Insomnia, OpenAPI 3.x / Swagger 2.0, WSDL, and ZIP formats
+            Supports Gridman, Bruno, OpenCollection, Postman, Insomnia, OpenAPI 3.x / Swagger 2.0, WSDL, and ZIP formats
           </p>
         </div>
       </div>

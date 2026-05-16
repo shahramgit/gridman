@@ -1,6 +1,7 @@
 
 MIT License
 
+Copyright (c) 2026 VASL contributors
 Copyright (c) 2022 Anoop M D, Anusree P S and Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

@@ -91,7 +91,7 @@ const CloneGitRepository = ({ onClose, onFinish, collectionRepositoryUrl = null,
       ...prev,
       {
         step: 'scan',
-        title: 'Scanning for Bruno files',
+        title: 'Scanning for collection files',
         completed: false
       }
     ]);

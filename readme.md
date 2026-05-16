@@ -1,182 +1,78 @@
-<br />
-<img src="assets/images/logo-transparent.png" width="80"/>
+# Gridman
 
-### Bruno - Opensource IDE for exploring and testing APIs.
+Gridman is a workspace-first API client derived from [Bruno](https://github.com/usebruno/bruno).
 
-[![GitHub version](https://badge.fury.io/gh/usebruno%2Fbruno.svg)](https://badge.fury.io/gh/usebruno%2Fbruno)
-[![CI](https://github.com/usebruno/bruno/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/usebruno/bruno/actions/workflows/tests.yml)
-[![Commit Activity](https://img.shields.io/github/commit-activity/m/usebruno/bruno)](https://github.com/usebruno/bruno/pulse)
-[![X](https://img.shields.io/twitter/follow/use_bruno?style=social&logo=x)](https://twitter.com/use_bruno)
-[![Website](https://img.shields.io/badge/Website-Visit-blue)](https://www.usebruno.com)
-[![Download](https://img.shields.io/badge/Download-Latest-brightgreen)](https://www.usebruno.com/downloads)
+Gridman keeps API work in ordinary folders on your filesystem. Each workspace is a visible folder, each collection lives under that workspace's `collections/` directory, and Git operations run at the workspace root.
 
-**English**
-| [Українська](docs/readme/readme_ua.md)
-| [Русский](docs/readme/readme_ru.md)
-| [Türkçe](docs/readme/readme_tr.md)
-| [Deutsch](docs/readme/readme_de.md)
-| [Français](docs/readme/readme_fr.md)
-| [Português (BR)](docs/readme/readme_pt_br.md)
-| [한국어](docs/readme/readme_kr.md)
-| [বাংলা](docs/readme/readme_bn.md)
-| [Español](docs/readme/readme_es.md)
-| [Italiano](docs/readme/readme_it.md)
-| [Română](docs/readme/readme_ro.md)
-| [Polski](docs/readme/readme_pl.md)
-| [简体中文](docs/readme/readme_cn.md)
-| [正體中文](docs/readme/readme_zhtw.md)
-| [العربية](docs/readme/readme_ar.md)
-| [日本語](docs/readme/readme_ja.md)
-| [ქართული](docs/readme/readme_ka.md)
-| [Nederlands](docs/readme/readme_nl.md)
-| [فارسی](docs/readme/readme_fa.md)
+## Why Gridman
 
-Bruno is a new and innovative API client, aimed at revolutionizing the status quo represented by Postman and similar tools out there.
+- Workspace-owned collections: no hidden default workspace and no external collection links.
+- Git-first collaboration: initialize, commit, pull, push, and sync at the workspace level.
+- File-based API data: requests, collections, docs, and workspace metadata remain plain files.
+- Offline-first desktop app: your API data stays on your machine unless you push it to your Git remote.
 
-Bruno stores your collections directly in a folder on your filesystem. We use a plain text markup language, Bru, to save information about API requests.
+## Project Status
 
-You can use Git or any version control of your choice to collaborate over your API collections.
+Gridman is a new fork and rebrand of Bruno. The codebase is actively diverging around a stricter workspace model and workspace-level Git workflows.
 
-Bruno is offline-only. There are no plans to add cloud-sync to Bruno, ever. We value your data privacy and believe it should stay on your device. Read our long-term vision [here](https://github.com/usebruno/bruno/discussions/269)
+Use development builds carefully and keep backups of important workspaces while the project stabilizes.
 
-[Download Bruno](https://www.usebruno.com/downloads)
+## Development
 
-📢 Watch our recent talk at India FOSS 3.0 Conference [here](https://www.youtube.com/watch?v=7bSMFpbcPiY)
-
-![bruno](assets/images/landing-2-dark.png#gh-light-mode-only)
-![bruno](assets/images/landing-2-light.png#gh-dark-mode-only) <br /><br />
-
-## Commercial Versions ✨
-
-Majority of our features are free and open source.
-We strive to strike a harmonious balance between [open-source principles and sustainability](https://github.com/usebruno/bruno/discussions/269)
-
-You can explore our [paid versions](https://www.usebruno.com/pricing) to see if there are additional features that you or your team may find useful! <br/>
-
-## Table of Contents
-
-- [Installation](#installation)
-- [Features](#features)
-  - [Run across multiple platforms 🖥️](#run-across-multiple-platforms-%EF%B8%8F)
-  - [Collaborate via Git 👩‍💻🧑‍💻](#collaborate-via-git-%E2%80%8D%E2%80%8D)
-- [Important Links 📌](#important-links-)
-- [Showcase 🎥](#showcase-)
-- [Share Testimonials 📣](#share-testimonials-)
-- [Publishing to New Package Managers](#publishing-to-new-package-managers)
-- [Stay in touch 🌐](#stay-in-touch-)
-- [Trademark](#trademark)
-- [Contribute 👩‍💻🧑‍💻](#contribute-%E2%80%8D%E2%80%8D)
-- [Authors](#authors)
-- [License 📄](#license-)
-
-## Installation
-
-Bruno is available as binary download [on our website](https://www.usebruno.com/downloads) for Mac, Windows and Linux.
-
-You can also install Bruno via package managers like Homebrew, Chocolatey, Scoop, Snap, Flatpak and Apt.
+Install dependencies:
 
 ```sh
-# On Mac via Homebrew
-brew install bruno
-
-# On Windows via Chocolatey
-choco install bruno
-
-# On Windows via Scoop
-scoop bucket add extras
-scoop install bruno
-
-# On Windows via winget
-winget install Bruno.Bruno
-
-# On Linux via Snap
-snap install bruno
-
-# On Linux via Flatpak
-flatpak install com.usebruno.Bruno
-
-# On Arch Linux via AUR
-yay -S bruno
-
-# On Linux via Apt
-sudo mkdir -p /etc/apt/keyrings
-sudo apt update && sudo apt install gpg curl
-curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x9FA6017ECABE0266" \
-  | gpg --dearmor \
-  | sudo tee /etc/apt/keyrings/bruno.gpg > /dev/null
-sudo chmod 644 /etc/apt/keyrings/bruno.gpg
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/bruno.gpg] http://debian.usebruno.com/ bruno stable" \
-  | sudo tee /etc/apt/sources.list.d/bruno.list
-sudo apt update && sudo apt install bruno
+npm run setup
 ```
 
-## Features
+Run the desktop development app:
 
-### Run across multiple platforms 🖥️
+```sh
+npm run dev
+```
 
-![bruno](assets/images/run-anywhere.png) <br /><br />
+Build the renderer:
 
-### Collaborate via Git 👩‍💻🧑‍💻
+```sh
+npm run build:web
+```
 
-Or any version control system of your choice
+Build desktop packages:
 
-![bruno](assets/images/version-control.png) <br /><br />
+```sh
+npm run build:electron:mac
+npm run build:electron:win
+npm run build:electron:linux
+```
 
-## Important Links 📌
+Platform builds use Electron Builder. Cross-platform packaging can require platform-specific tools such as signing certificates, Wine, or native Git.
 
-- [Our Long Term Vision](https://github.com/usebruno/bruno/discussions/269)
-- [Roadmap](https://www.usebruno.com/roadmap)
-- [Documentation](https://docs.usebruno.com)
-- [Stack Overflow](https://stackoverflow.com/questions/tagged/bruno)
-- [Website](https://www.usebruno.com)
-- [Pricing](https://www.usebruno.com/pricing)
-- [Download](https://www.usebruno.com/downloads)
+## Workspace Model
 
-## Showcase 🎥
+Gridman intentionally uses a strict workspace model:
 
-- [Testimonials](https://github.com/usebruno/bruno/discussions/343)
-- [Knowledge Hub](https://github.com/usebruno/bruno/discussions/386)
-- [Scriptmania](https://github.com/usebruno/bruno/discussions/385)
+- Workspaces are normal folders, usually under `~/Documents/gridman`.
+- Collections must be stored below `<workspace>/collections/`.
+- Imported collections are copied into the active workspace instead of linked from their original location.
+- Deleting a collection removes the collection folder from disk.
+- `workspace.yml` stores relative collection paths.
 
-## Share Testimonials 📣
+This model keeps Git behavior predictable because one repository owns one workspace.
 
-If Bruno has helped you at work and your teams, please don't forget to share your [testimonials on our GitHub discussion](https://github.com/usebruno/bruno/discussions/343)
+## Git Workflow
 
-## Publishing to New Package Managers
+Git is workspace-level only. Initialize Git in a workspace, connect an origin, commit workspace files, then pull or push through the Git tab.
 
-Please see [here](publishing.md) for more information.
+Gridman excludes local environment files from normal Git commits by default because they may contain secrets or machine-specific values.
 
-## Stay in touch 🌐
+## Attribution
 
-[𝕏 (Twitter)](https://twitter.com/use_bruno) <br />
-[Website](https://www.usebruno.com) <br />
-[Discord](https://discord.com/invite/KgcZUncpjq) <br />
-[LinkedIn](https://www.linkedin.com/company/usebruno)
+Gridman includes code derived from [Bruno](https://github.com/usebruno/bruno), originally created by Anoop M D, Anusree P S, and contributors. Bruno is distributed under the MIT License.
 
-## Trademark
+The Bruno name is a trademark of its owner. Gridman is an independent fork and is not affiliated with or endorsed by the Bruno project.
 
-**Name**
+See [NOTICE.md](NOTICE.md) and [license.md](license.md) for attribution and license details.
 
-`Bruno` is a trademark held by [Anoop M D](https://www.helloanoop.com/)
+## License
 
-**Logo**
-
-The logo is sourced from [OpenMoji](https://openmoji.org/library/emoji-1F436/). License: CC [BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
-
-## Contribute 👩‍💻🧑‍💻
-
-I am happy that you are looking to improve bruno. Please check out the [contributing guide](contributing.md)
-
-Even if you are not able to make contributions via code, please don't hesitate to file bugs and feature requests that needs to be implemented to solve your use case.
-
-## Authors
-
-<div align="center">
-    <a href="https://github.com/usebruno/bruno/graphs/contributors">
-        <img src="https://contrib.rocks/image?repo=usebruno/bruno" />
-    </a>
-</div>
-
-## License 📄
-
-[MIT](license.md)
+Gridman is distributed under the MIT License. See [license.md](license.md).

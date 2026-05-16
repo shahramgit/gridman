@@ -108,7 +108,7 @@ const StatusBar = () => {
               <button
                 className="status-bar-button"
                 onClick={() => {
-                  window?.ipcRenderer?.openExternal('https://github.com/usebruno/bruno');
+                  window?.ipcRenderer?.openExternal('https://github.com/shahramgit/gridman');
                 }}
                 tabIndex={0}
                 aria-label="Open GitHub Repository"

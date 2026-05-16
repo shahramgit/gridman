@@ -265,7 +265,7 @@ const handler = async (argv) => {
       // Save as JSON file
       const outputPath = path.resolve(outputFile);
       fs.writeFileSync(outputPath, JSON.stringify(brunoCollection, null, 2));
-      console.log(chalk.green(`Bruno collection saved as JSON to ${outputPath}`));
+      console.log(chalk.green(`Collection saved as JSON to ${outputPath}`));
     } else if (output) {
       const resolvedOutput = path.resolve(output);
 
@@ -307,7 +307,7 @@ const handler = async (argv) => {
       await createCollectionFromBrunoObject(brunoCollection, outputDir, {
         format: collectionFormat === 'opencollection' ? 'yml' : 'bru'
       });
-      console.log(chalk.green(`Bruno collection created at ${outputDir}`));
+      console.log(chalk.green(`Collection created at ${outputDir}`));
     }
   } catch (error) {
     console.error(chalk.red(`Error: ${error.message}`));

@@ -2,14 +2,14 @@
   "version": "3.3.0-vasl.2",
   "name": "gridman",
   "description": "Gridman API Client for Exploring and Testing APIs",
-  "homepage": "https://www.usebruno.com",
+  "homepage": "https://github.com/shahramgit/gridman",
   "repository": {
     "type": "git",
-    "url": "https://github.com/usebruno/bruno.git"
+    "url": "git+https://github.com/shahramgit/gridman.git"
   },
   "private": true,
   "main": "src/index.js",
-  "author": "Anoop M D <anoop.md1421@gmail.com> (https://helloanoop.com/)",
+  "author": "VASL contributors",
   "scripts": {
     "clean": "rimraf dist",
     "dev": "electron .",

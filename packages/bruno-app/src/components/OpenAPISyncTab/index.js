@@ -136,7 +136,7 @@ const OpenAPISyncTab = ({ collection }) => {
                   <button
                     type="button"
                     className="beta-feedback-link"
-                    onClick={() => window?.ipcRenderer?.openExternal('https://github.com/usebruno/bruno/discussions/7401')}
+                    onClick={() => window?.ipcRenderer?.openExternal('https://github.com/shahramgit/gridman/issues')}
                   >
                     Share feedback
                   </button>

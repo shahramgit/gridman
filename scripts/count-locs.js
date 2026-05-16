@@ -103,7 +103,7 @@ function printTable(data) {
 }
 
 function main() {
-  console.log('Counting lines of code in Bruno packages...\n');
+  console.log('Counting lines of code in Gridman packages...\n');
   
   const packages = getPackages();
   const results = [];

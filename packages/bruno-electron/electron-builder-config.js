@@ -21,10 +21,6 @@ const config = {
     category: 'public.app-category.developer-tools',
     target: [
       {
-        target: 'pkg',
-        arch: ['x64', 'arm64']
-      },
-      {
         target: 'dmg',
         arch: ['x64', 'arm64']
       },
@@ -35,17 +31,14 @@ const config = {
     ],
     icon: 'resources/icons/mac/icon.icns',
     hardenedRuntime: true,
-    identity: 'Anoop MD (W7LPPWA48L)',
+    identity: null,
     entitlements: 'resources/entitlements.mac.plist',
     entitlementsInherit: 'resources/entitlements.mac.plist',
     notarize: false,
     protocols: [
       {
         name: 'Gridman',
-        schemes: [
-          'gridman',
-          'bruno'
-        ]
+        schemes: ['gridman']
       }
     ]
   },
@@ -69,12 +62,12 @@ const config = {
     protocols: [
       {
         name: 'Gridman',
-        schemes: ['gridman', 'bruno']
+        schemes: ['gridman']
       }
     ],
     category: 'Development',
     desktop: {
-      MimeType: 'x-scheme-handler/gridman;x-scheme-handler/bruno;'
+      MimeType: 'x-scheme-handler/gridman;'
     }
   },
   deb: {
