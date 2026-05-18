@@ -60,7 +60,7 @@ export const tabsSlice = createSlice({
       }
 
       const lastTab = state.tabs[state.tabs.length - 1];
-      if (state.tabs.length > 0 && lastTab.preview) {
+      if (state.tabs.length > 0 && lastTab.preview && preview !== false) {
         state.tabs[state.tabs.length - 1] = {
           uid,
           collectionUid,
