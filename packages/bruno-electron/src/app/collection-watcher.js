@@ -859,6 +859,9 @@ class CollectionWatcher {
     try {
       const metadataContent = fs.readFileSync(metadataPath, 'utf8');
       const metadata = JSON.parse(metadataContent);
+      if (metadata.type === 'scratch') {
+        return tempDirectoryPath;
+      }
       return metadata.collectionPath;
     } catch (error) {
       console.error(`Error reading metadata from temp directory ${tempDirectoryPath}:`, error);

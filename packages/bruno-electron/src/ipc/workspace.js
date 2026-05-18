@@ -5,6 +5,7 @@ const archiver = require('archiver');
 const extractZip = require('extract-zip');
 const { ipcMain, dialog } = require('electron');
 const isDev = require('electron-is-dev');
+const { app } = require('electron');
 const { createDirectory, sanitizeName, writeFile, DEFAULT_GITIGNORE, isValidCollectionDirectory } = require('../utils/filesystem');
 const yaml = require('js-yaml');
 const LastOpenedWorkspaces = require('../store/last-opened-workspaces');
@@ -33,6 +34,18 @@ const {
   validateWorkspaceDirectory,
   getWorkspaceUid
 } = require('../utils/workspace-config');
+
+const isTransientCollectionPath = (collectionPath) => {
+  if (!collectionPath || typeof collectionPath !== 'string') {
+    return false;
+  }
+
+  const transientBase = path.join(app.getPath('userData'), 'tmp', 'transient');
+  const normalizedPath = path.normalize(collectionPath);
+  const normalizedTransientBase = path.normalize(transientBase);
+
+  return normalizedPath === normalizedTransientBase || normalizedPath.startsWith(normalizedTransientBase + path.sep);
+};
 
 const DEFAULT_WORKSPACE_NAME = 'My Workspace';
 
@@ -603,6 +616,11 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
 
   ipcMain.handle('renderer:add-collection-to-workspace', async (event, workspacePath, collection) => {
     try {
+      if (isTransientCollectionPath(collection?.path)) {
+        const workspaceConfig = readWorkspaceConfig(workspacePath);
+        return workspaceConfig.collections || [];
+      }
+
       const normalizedCollection = normalizeCollectionEntry(workspacePath, collection);
       const updatedCollections = await addCollectionToWorkspace(workspacePath, normalizedCollection);
 

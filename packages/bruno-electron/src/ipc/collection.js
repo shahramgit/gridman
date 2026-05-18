@@ -102,12 +102,12 @@ const getTransientDirectoryBase = () => {
 
 // Get the prefix used for transient collection directories
 const getTransientCollectionPrefix = () => {
-  return path.join(getTransientDirectoryBase(), 'bruno-');
+  return path.join(getTransientDirectoryBase(), 'gridman-');
 };
 
 // Get the prefix used for scratch collection directories
 const getTransientScratchPrefix = () => {
-  return path.join(getTransientDirectoryBase(), 'bruno-scratch-');
+  return path.join(getTransientDirectoryBase(), 'gridman-scratch-');
 };
 
 // Check if a path is within the transient directory
@@ -124,7 +124,7 @@ const envHasSecrets = (environment = {}) => {
 
 const findCollectionPathByItemPath = (filePath) => {
   const parts = filePath.split(path.sep);
-  const index = parts.findIndex((part) => part.startsWith('bruno-'));
+  const index = parts.findIndex((part) => part.startsWith('gridman-') || part.startsWith('bruno-'));
 
   if (isTransientPath(filePath) && index !== -1) {
     const transientDirPath = parts.slice(0, index + 1).join(path.sep);
@@ -1123,12 +1123,12 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
   // This is a simpler handler specifically for cleaning up transient requests
   // tempDirectory: the collection's temp directory path to validate files belong to this collection
   ipcMain.handle('renderer:delete-transient-requests', async (event, filePaths, tempDirectory) => {
-    const brunoTempPrefix = getTransientCollectionPrefix();
+    const gridmanTempPrefix = getTransientCollectionPrefix();
     const results = { deleted: [], skipped: [], errors: [] };
 
-    // Validate tempDirectory is within Bruno transient directory
+    // Validate tempDirectory is within Gridman transient directory
     const normalizedTempDir = tempDirectory ? path.normalize(tempDirectory) : null;
-    if (!normalizedTempDir || !normalizedTempDir.startsWith(brunoTempPrefix)) {
+    if (!normalizedTempDir || !normalizedTempDir.startsWith(gridmanTempPrefix)) {
       return { deleted: [], skipped: filePaths.map((p) => ({ path: p, reason: 'Invalid temp directory' })), errors: [] };
     }
 

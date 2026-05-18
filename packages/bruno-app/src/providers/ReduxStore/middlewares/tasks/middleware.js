@@ -22,10 +22,11 @@ taskMiddleware.startListening({
   effect: (action, listenerApi) => {
     const state = listenerApi.getState();
     const collectionUid = get(action, 'payload.file.meta.collectionUid');
+    const itemPathname = get(action, 'payload.file.meta.pathname');
 
     const openRequestTasks = filter(state.app.taskQueue, { type: taskTypes.OPEN_REQUEST });
     each(openRequestTasks, (task) => {
-      if (collectionUid === task.collectionUid) {
+      if (collectionUid === task.collectionUid && itemPathname === task.itemPathname) {
         const collection = findCollectionByUid(state.collections.collections, collectionUid);
         if (collection && collection.mountStatus === 'mounted' && !collection.isLoading) {
           const item = findItemInCollectionByPathname(collection, task.itemPathname);

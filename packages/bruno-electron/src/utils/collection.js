@@ -547,7 +547,7 @@ const parseFileMeta = (data, format = DEFAULT_COLLECTION_FORMAT) => {
 
 const hydrateRequestWithUuid = (request, pathname) => {
   request.uid = getRequestUid(pathname);
-  const prefix = path.join(os.tmpdir(), 'bruno-');
+  const prefix = path.join(os.tmpdir(), 'gridman-');
   request.isTransient = pathname.startsWith(prefix);
 
   const params = get(request, 'request.params', []);
