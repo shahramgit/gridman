@@ -10,7 +10,13 @@ import { getInvalidVariableNames } from 'utils/common/variables';
 import { completeQuitFlow } from 'providers/ReduxStore/slices/app';
 import { saveMultipleRequests, saveMultipleCollections, saveMultipleFolders, saveEnvironment, closeTabs } from 'providers/ReduxStore/slices/collections/actions';
 import { saveGlobalEnvironment, clearGlobalEnvironmentDraft } from 'providers/ReduxStore/slices/global-environments';
-import { deleteRequestDraft, deleteCollectionDraft, deleteFolderDraft, clearEnvironmentsDraft } from 'providers/ReduxStore/slices/collections';
+import {
+  addSaveTransientRequestModal,
+  deleteRequestDraft,
+  deleteCollectionDraft,
+  deleteFolderDraft,
+  clearEnvironmentsDraft
+} from 'providers/ReduxStore/slices/collections';
 import { IconAlertTriangle } from '@tabler/icons';
 import Modal from 'components/Modal';
 import Button from 'ui/Button';
@@ -63,7 +69,7 @@ const SaveRequestsModal = ({ onClose, forceCloseTabs = false, tabUidsToClose = [
         const items = flattenItems(collection.items);
 
         // Request drafts
-        const requests = filter(items, (item) => isItemARequest(item) && hasRequestChanges(item));
+        const requests = filter(items, (item) => isItemARequest(item) && (item.isTransient || hasRequestChanges(item)));
         each(requests, (draft) => {
           requestDrafts.push({
             ...draft,
@@ -150,6 +156,8 @@ const SaveRequestsModal = ({ onClose, forceCloseTabs = false, tabUidsToClose = [
       const collectionDrafts = allDrafts.filter((d) => d.type === 'collection');
       const folderDrafts = allDrafts.filter((d) => d.type === 'folder');
       const requestDrafts = allDrafts.filter((d) => isItemARequest(d));
+      const transientRequestDrafts = requestDrafts.filter((d) => d.isTransient);
+      const persistedRequestDrafts = requestDrafts.filter((d) => !d.isTransient);
       const collectionEnvironmentDrafts = allDrafts.filter((d) => d.type === 'collection-environment');
       const globalEnvironmentDrafts = allDrafts.filter((d) => d.type === 'global-environment');
 
@@ -163,9 +171,10 @@ const SaveRequestsModal = ({ onClose, forceCloseTabs = false, tabUidsToClose = [
         await dispatch(saveMultipleFolders(folderDrafts));
       }
 
-      // Save all request drafts
-      if (requestDrafts.length > 0) {
-        await dispatch(saveMultipleRequests(requestDrafts));
+      // Save all persisted request drafts. Transient requests need a real target
+      // collection first, so route them through the transient-save flow below.
+      if (persistedRequestDrafts.length > 0) {
+        await dispatch(saveMultipleRequests(persistedRequestDrafts));
       }
 
       // Save environment drafts, skipping any with invalid variable names
@@ -188,6 +197,18 @@ const SaveRequestsModal = ({ onClose, forceCloseTabs = false, tabUidsToClose = [
       }
 
       if (hasSkippedEnvs) {
+        return;
+      }
+
+      if (transientRequestDrafts.length > 0) {
+        transientRequestDrafts.forEach((draft) => {
+          const collection = findCollectionByUid(collections, draft.collectionUid);
+          if (collection) {
+            dispatch(addSaveTransientRequestModal({ item: draft, collection }));
+          }
+        });
+        toast.error('Choose a workspace collection to save transient requests before closing.');
+        onClose();
         return;
       }
 
