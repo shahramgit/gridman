@@ -1,7 +1,6 @@
 import React from 'react';
 import ReactJson from 'react-json-view';
 import ErrorBanner from 'ui/ErrorBanner';
-import EmbeddedDataPreviewStrip from 'components/EmbeddedDataPreviewStrip';
 
 const JsonPreview = ({ data, displayedTheme }) => {
   // Helper function to validate and parse JSON data
@@ -43,24 +42,21 @@ const JsonPreview = ({ data, displayedTheme }) => {
   }
 
   return (
-    <div className="h-full overflow-auto">
-      <EmbeddedDataPreviewStrip data={jsonData.data} />
-      <ReactJson
-        src={jsonData.data}
-        theme={displayedTheme === 'light' ? 'rjv-default' : 'monokai'}
-        collapsed={1}
-        displayDataTypes={false}
-        displayObjectSize={true}
-        enableClipboard={true}
-        name={false}
-        style={{
-          backgroundColor: 'transparent',
-          fontSize: '12px',
-          fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-          padding: '16px'
-        }}
-      />
-    </div>
+    <ReactJson
+      src={jsonData.data}
+      theme={displayedTheme === 'light' ? 'rjv-default' : 'monokai'}
+      collapsed={1}
+      displayDataTypes={false}
+      displayObjectSize={true}
+      enableClipboard={true}
+      name={false}
+      style={{
+        backgroundColor: 'transparent',
+        fontSize: '12px',
+        fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+        padding: '16px'
+      }}
+    />
   );
 };
 
