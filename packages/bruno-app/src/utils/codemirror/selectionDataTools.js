@@ -313,8 +313,12 @@ export const setupSelectionDataTools = (editor) => {
   };
 };
 
+const isTextInput = (target) => {
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+};
+
 const getInputSelection = (target) => {
-  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+  if (!isTextInput(target)) {
     return null;
   }
 
@@ -341,6 +345,27 @@ const getInputSelection = (target) => {
   };
 };
 
+const getSelectionContext = (event) => {
+  const targetInput = isTextInput(event.target) ? event.target : event.target?.closest?.('input, textarea');
+  const input = targetInput || (isTextInput(document.activeElement) ? document.activeElement : null);
+  const inputSelection = getInputSelection(input);
+
+  if (inputSelection?.selection?.trim()) {
+    return inputSelection;
+  }
+
+  const selectedText = window.getSelection?.().toString();
+  if (selectedText?.trim()) {
+    return {
+      selection: selectedText,
+      canReplace: false,
+      replaceSelection: () => {}
+    };
+  }
+
+  return null;
+};
+
 export const setupGlobalSelectionDataTools = () => {
   const menu = createMenu();
   const preview = createImagePreview();
@@ -353,8 +378,12 @@ export const setupGlobalSelectionDataTools = () => {
   };
 
   const handleContextMenu = (event) => {
-    const inputSelection = getInputSelection(event.target);
-    if (!inputSelection?.selection?.trim()) {
+    if (event.target?.closest?.('.CodeMirror')) {
+      return;
+    }
+
+    const selectionContext = getSelectionContext(event);
+    if (!selectionContext?.selection?.trim()) {
       hideMenu();
       return;
     }
@@ -363,9 +392,9 @@ export const setupGlobalSelectionDataTools = () => {
       menu,
       preview,
       event,
-      selection: inputSelection.selection,
-      canReplace: inputSelection.canReplace,
-      replaceSelection: inputSelection.replaceSelection
+      selection: selectionContext.selection,
+      canReplace: selectionContext.canReplace,
+      replaceSelection: selectionContext.replaceSelection
     });
   };
 
@@ -376,12 +405,12 @@ export const setupGlobalSelectionDataTools = () => {
     }
   };
 
-  document.addEventListener('contextmenu', handleContextMenu);
+  document.addEventListener('contextmenu', handleContextMenu, true);
   document.addEventListener('click', handleDocumentClick);
   preview.querySelector('[data-close]').addEventListener('click', hidePreview);
 
   return () => {
-    document.removeEventListener('contextmenu', handleContextMenu);
+    document.removeEventListener('contextmenu', handleContextMenu, true);
     document.removeEventListener('click', handleDocumentClick);
     menu.remove();
     preview.remove();
