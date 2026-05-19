@@ -4,10 +4,45 @@ import { prettifyJsonString } from 'utils/common/index';
 import { isJsonLikeContentType, isPlainTextContentType, isXmlLikeContentType } from './content-type';
 
 export const getRequestFromCurlCommand = (curlCommand, requestType = 'http-request') => {
+  const decodeFormValue = (value = '') => {
+    try {
+      return decodeURIComponent(String(value).replace(/\+/g, ' '));
+    } catch (e) {
+      return value;
+    }
+  };
+
   const parseFormData = (parsedBody) => {
     const formData = [];
+
+    if (typeof parsedBody === 'string') {
+      const normalizedBody = parsedBody.startsWith('?') ? parsedBody.slice(1) : parsedBody;
+      if (!normalizedBody) {
+        return formData;
+      }
+
+      normalizedBody.split('&').forEach((entry) => {
+        if (!entry) {
+          return;
+        }
+
+        const separatorIndex = entry.indexOf('=');
+        const rawName = separatorIndex >= 0 ? entry.slice(0, separatorIndex) : entry;
+        const rawValue = separatorIndex >= 0 ? entry.slice(separatorIndex + 1) : '';
+
+        formData.push({
+          name: decodeFormValue(rawName),
+          value: decodeFormValue(rawValue),
+          description: '',
+          enabled: true
+        });
+      });
+
+      return formData;
+    }
+
     forOwn(parsedBody, (value, key) => {
-      formData.push({ name: key, value, enabled: true });
+      formData.push({ name: key, value, description: '', enabled: true });
     });
 
     return formData;
