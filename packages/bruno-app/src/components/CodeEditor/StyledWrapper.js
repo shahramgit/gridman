@@ -197,6 +197,14 @@ const StyledWrapper = styled.div`
       color: ${(props) => props.theme.colors.text.warning};
     }
   }
+
+  .CodeMirror-embedded-media {
+    border-bottom: 1px dashed ${(props) => props.theme.colors.text.yellow};
+    background: ${(props) => props.theme.status.warning.background};
+    cursor: zoom-in;
+    border-radius: 3px;
+    padding: 0 2px;
+  }
 `;
 
 export default StyledWrapper;
