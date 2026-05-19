@@ -17,6 +17,25 @@ Gridman is a new fork and rebrand of Bruno. The codebase is actively diverging a
 
 Use development builds carefully and keep backups of important workspaces while the project stabilizes.
 
+## Download
+
+Download the latest Gridman release from [GitHub Releases](https://github.com/shahramgit/gridman/releases).
+
+Choose the asset for your platform:
+
+- macOS Apple Silicon: `arm64_mac.dmg`
+- macOS Intel: `x64_mac.dmg`
+- Windows ARM64: `arm64_win.exe`
+- Windows x64: `x64_win.exe`
+- Linux ARM64: `arm64_linux.AppImage`
+- Linux x64: `x86_64_linux.AppImage`
+
+Current macOS builds are unsigned. If macOS blocks the app after installing it, run:
+
+```sh
+sudo xattr -dr com.apple.quarantine "/Applications/Gridman.app"
+```
+
 ## Development
 
 Install dependencies:
