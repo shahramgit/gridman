@@ -16,6 +16,7 @@ import stripJsonComments from 'strip-json-comments';
 import { getAllVariables } from 'utils/collections';
 import { setupLinkAware } from 'utils/codemirror/linkAware';
 import { setupLintErrorTooltip } from 'utils/codemirror/lint-errors';
+import { setupEmbeddedMediaPreview } from 'utils/codemirror/embeddedMediaPreview';
 import CodeMirrorSearch from 'components/CodeMirrorSearch/index';
 import {
   applyEditorState,
@@ -239,6 +240,7 @@ class CodeEditor extends React.Component {
       );
 
       setupLinkAware(editor);
+      setupEmbeddedMediaPreview(editor);
 
       // Setup lint error tooltip on line number hover
       this.cleanupLintErrorTooltip = setupLintErrorTooltip(editor);
@@ -369,6 +371,7 @@ class CodeEditor extends React.Component {
       }
 
       this.editor?._destroyLinkAware?.();
+      this.editor?._destroyEmbeddedMediaPreview?.();
       this.editor.off('change', this._onEdit);
 
       // Clean up lint error tooltip
