@@ -185,6 +185,82 @@ const writeClipboard = async (text) => {
   await navigator.clipboard.writeText(text);
 };
 
+const addMenuButton = (menu, label, onClick) => {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = label;
+  button.style.cssText = [
+    'display:block',
+    'width:100%',
+    'border:0',
+    'border-radius:6px',
+    'background:transparent',
+    'padding:7px 9px',
+    'text-align:left',
+    'cursor:pointer',
+    'font:inherit',
+    'color:inherit'
+  ].join(';');
+  button.addEventListener('mouseenter', () => {
+    button.style.background = '#f3f3f3';
+  });
+  button.addEventListener('mouseleave', () => {
+    button.style.background = 'transparent';
+  });
+  button.addEventListener('click', async () => {
+    await onClick();
+    menu.style.display = 'none';
+  });
+  menu.appendChild(button);
+};
+
+const showImagePreview = (preview, imagePreview, event) => {
+  preview.querySelector('img').src = imagePreview.dataUrl;
+  preview.querySelector('[data-meta]').textContent = imagePreview.mimeType;
+  preview.style.display = 'block';
+  positionElement(preview, event);
+};
+
+const renderSelectionMenu = ({
+  menu,
+  preview,
+  event,
+  selection,
+  canReplace,
+  replaceSelection
+}) => {
+  const tools = getSelectionDataToolState(selection);
+  if (!tools.canDecodeBase64 && !tools.canEncodeBase64 && !tools.imagePreview) {
+    menu.style.display = 'none';
+    return false;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  menu.innerHTML = '';
+
+  if (tools.imagePreview) {
+    addMenuButton(menu, 'Preview as image', () => showImagePreview(preview, tools.imagePreview, event));
+  }
+  addMenuButton(menu, 'Copy selection', async () => writeClipboard(tools.raw));
+  if (tools.canDecodeBase64) {
+    addMenuButton(menu, 'Copy decoded Base64', async () => writeClipboard(tools.decodeBase64()));
+    if (canReplace) {
+      addMenuButton(menu, 'Replace with decoded Base64', () => replaceSelection(tools.decodeBase64()));
+    }
+  }
+  if (tools.canEncodeBase64) {
+    addMenuButton(menu, 'Copy as Base64', async () => writeClipboard(tools.encodeBase64()));
+    if (canReplace) {
+      addMenuButton(menu, 'Replace with Base64', () => replaceSelection(tools.encodeBase64()));
+    }
+  }
+
+  menu.style.display = 'block';
+  positionElement(menu, event);
+  return true;
+};
+
 export const setupSelectionDataTools = (editor) => {
   if (!editor) {
     return;
@@ -201,42 +277,6 @@ export const setupSelectionDataTools = (editor) => {
     preview.style.display = 'none';
   };
 
-  const addMenuButton = (label, onClick) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = label;
-    button.style.cssText = [
-      'display:block',
-      'width:100%',
-      'border:0',
-      'border-radius:6px',
-      'background:transparent',
-      'padding:7px 9px',
-      'text-align:left',
-      'cursor:pointer',
-      'font:inherit',
-      'color:inherit'
-    ].join(';');
-    button.addEventListener('mouseenter', () => {
-      button.style.background = '#f3f3f3';
-    });
-    button.addEventListener('mouseleave', () => {
-      button.style.background = 'transparent';
-    });
-    button.addEventListener('click', async () => {
-      await onClick();
-      hideMenu();
-    });
-    menu.appendChild(button);
-  };
-
-  const showImagePreview = (imagePreview, event) => {
-    preview.querySelector('img').src = imagePreview.dataUrl;
-    preview.querySelector('[data-meta]').textContent = imagePreview.mimeType;
-    preview.style.display = 'block';
-    positionElement(preview, event);
-  };
-
   const handleContextMenu = (event) => {
     const selection = editor.getSelection();
     if (!selection || !selection.trim()) {
@@ -244,35 +284,14 @@ export const setupSelectionDataTools = (editor) => {
       return;
     }
 
-    const tools = getSelectionDataToolState(selection);
-    if (!tools.canDecodeBase64 && !tools.canEncodeBase64 && !tools.imagePreview) {
-      hideMenu();
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    menu.innerHTML = '';
-
-    if (tools.imagePreview) {
-      addMenuButton('Preview as image', () => showImagePreview(tools.imagePreview, event));
-    }
-    addMenuButton('Copy selection', async () => writeClipboard(tools.raw));
-    if (tools.canDecodeBase64) {
-      addMenuButton('Copy decoded Base64', async () => writeClipboard(tools.decodeBase64()));
-      if (!editor.getOption('readOnly')) {
-        addMenuButton('Replace with decoded Base64', () => editor.replaceSelection(tools.decodeBase64(), 'around'));
-      }
-    }
-    if (tools.canEncodeBase64) {
-      addMenuButton('Copy as Base64', async () => writeClipboard(tools.encodeBase64()));
-      if (!editor.getOption('readOnly')) {
-        addMenuButton('Replace with Base64', () => editor.replaceSelection(tools.encodeBase64(), 'around'));
-      }
-    }
-
-    menu.style.display = 'block';
-    positionElement(menu, event);
+    renderSelectionMenu({
+      menu,
+      preview,
+      event,
+      selection,
+      canReplace: !editor.getOption('readOnly'),
+      replaceSelection: (value) => editor.replaceSelection(value, 'around')
+    });
   };
 
   const handleDocumentClick = (event) => {
@@ -288,6 +307,81 @@ export const setupSelectionDataTools = (editor) => {
 
   editor._destroySelectionDataTools = () => {
     wrapper.removeEventListener('contextmenu', handleContextMenu);
+    document.removeEventListener('click', handleDocumentClick);
+    menu.remove();
+    preview.remove();
+  };
+};
+
+const getInputSelection = (target) => {
+  if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+    return null;
+  }
+
+  if (typeof target.selectionStart !== 'number' || typeof target.selectionEnd !== 'number') {
+    return null;
+  }
+
+  if (target.selectionStart === target.selectionEnd) {
+    return null;
+  }
+
+  return {
+    selection: target.value.slice(target.selectionStart, target.selectionEnd),
+    canReplace: !target.readOnly && !target.disabled,
+    replaceSelection: (value) => {
+      const start = target.selectionStart;
+      const end = target.selectionEnd;
+      const nextValue = `${target.value.slice(0, start)}${value}${target.value.slice(end)}`;
+      target.value = nextValue;
+      target.setSelectionRange(start, start + value.length);
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  };
+};
+
+export const setupGlobalSelectionDataTools = () => {
+  const menu = createMenu();
+  const preview = createImagePreview();
+
+  const hideMenu = () => {
+    menu.style.display = 'none';
+  };
+  const hidePreview = () => {
+    preview.style.display = 'none';
+  };
+
+  const handleContextMenu = (event) => {
+    const inputSelection = getInputSelection(event.target);
+    if (!inputSelection?.selection?.trim()) {
+      hideMenu();
+      return;
+    }
+
+    renderSelectionMenu({
+      menu,
+      preview,
+      event,
+      selection: inputSelection.selection,
+      canReplace: inputSelection.canReplace,
+      replaceSelection: inputSelection.replaceSelection
+    });
+  };
+
+  const handleDocumentClick = (event) => {
+    if (!menu.contains(event.target) && !preview.contains(event.target)) {
+      hideMenu();
+      hidePreview();
+    }
+  };
+
+  document.addEventListener('contextmenu', handleContextMenu);
+  document.addEventListener('click', handleDocumentClick);
+  preview.querySelector('[data-close]').addEventListener('click', hidePreview);
+
+  return () => {
+    document.removeEventListener('contextmenu', handleContextMenu);
     document.removeEventListener('click', handleDocumentClick);
     menu.remove();
     preview.remove();
