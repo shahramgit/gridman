@@ -12,6 +12,18 @@ Upload only the final installer/runtime files:
 
 Do not upload unpacked folders, `.blockmap`, `.yml`, `.7z`, or generated intermediate files unless you intentionally add auto-update support later.
 
+## macOS unsigned app note
+
+Current macOS builds are not signed with an Apple Developer ID. After dragging `Gridman.app` into `/Applications`, macOS may block launch because the app is quarantined.
+
+Users can remove the quarantine flag with:
+
+```sh
+sudo xattr -dr com.apple.quarantine "/Applications/Gridman.app"
+```
+
+This should be included in the GitHub release notes until Gridman has a valid signed and notarized macOS build.
+
 ## Output directories
 
 Electron Builder writes platform builds to:
@@ -149,4 +161,3 @@ Use this only after checking the staged directory:
 ```sh
 ls -lh releases/v3.3.0-vasl.2/
 ```
-
