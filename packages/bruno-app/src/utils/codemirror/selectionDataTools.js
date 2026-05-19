@@ -103,6 +103,7 @@ export const getSelectionDataToolState = (selection) => {
   const imagePreview = getSelectionImagePreview(trimmed);
   const base64Source = trimmed.match(DATA_IMAGE_RE)?.[2] || trimmed;
   const canDecodeBase64 = isLikelyBase64(base64Source);
+  const decodedBytes = canDecodeBase64 ? decodeBase64Bytes(base64Source) : null;
 
   return {
     raw,
@@ -110,6 +111,8 @@ export const getSelectionDataToolState = (selection) => {
     imagePreview,
     canDecodeBase64,
     canEncodeBase64: raw.length > 0,
+    byteSize: decodedBytes?.length || 0,
+    base64Source,
     decodeBase64: () => decodeBase64ToText(base64Source),
     encodeBase64: () => encodeUtf8ToBase64(raw)
   };
@@ -164,6 +167,47 @@ const createImagePreview = () => {
   return preview;
 };
 
+const createInspectorModal = () => {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'CodeMirror-selection-data-tools-inspector';
+  backdrop.style.cssText = [
+    'position: fixed',
+    'display: none',
+    'inset: 0',
+    'z-index: 10003',
+    'background: rgba(0,0,0,0.28)',
+    'align-items: center',
+    'justify-content: center',
+    'font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    'color: #262626'
+  ].join(';');
+
+  const modal = document.createElement('div');
+  modal.style.cssText = [
+    'width: min(720px, calc(100vw - 32px))',
+    'max-height: min(760px, calc(100vh - 32px))',
+    'overflow: auto',
+    'border: 1px solid rgba(0,0,0,0.16)',
+    'border-radius: 10px',
+    'background: #fff',
+    'box-shadow: 0 24px 70px rgba(0,0,0,0.28)'
+  ].join(';');
+  modal.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid rgba(0,0,0,0.1);">
+      <div>
+        <strong style="display:block;font-size:15px;">Inspect selection</strong>
+        <span data-summary style="display:block;margin-top:3px;color:#666;font-size:12px;"></span>
+      </div>
+      <button type="button" data-close style="border:1px solid rgba(0,0,0,0.14);border-radius:6px;background:#f7f7f7;padding:5px 10px;cursor:pointer;">Close</button>
+    </div>
+    <div data-body style="padding:16px;display:flex;flex-direction:column;gap:14px;"></div>
+  `;
+
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+  return backdrop;
+};
+
 const positionElement = (element, event) => {
   const margin = 12;
   const rect = element.getBoundingClientRect();
@@ -183,6 +227,20 @@ const positionElement = (element, event) => {
 
 const writeClipboard = async (text) => {
   await navigator.clipboard.writeText(text);
+};
+
+const formatByteSize = (bytes) => {
+  if (!bytes) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const getSelectionType = (tools) => {
+  if (tools.imagePreview && tools.trimmed.match(DATA_IMAGE_RE)) return 'Data URL image';
+  if (tools.imagePreview) return 'Base64 image';
+  if (tools.canDecodeBase64) return 'Base64';
+  return 'Plain text';
 };
 
 const addMenuButton = (menu, label, onClick) => {
@@ -221,9 +279,138 @@ const showImagePreview = (preview, imagePreview, event) => {
   positionElement(preview, event);
 };
 
+const createInspectorButton = (label, onClick, primary = false) => {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = label;
+  button.style.cssText = [
+    'border:1px solid rgba(0,0,0,0.12)',
+    'border-radius:7px',
+    `background:${primary ? '#d97706' : '#fff7ed'}`,
+    `color:${primary ? '#fff' : '#c2410c'}`,
+    'padding:7px 10px',
+    'cursor:pointer',
+    'font:inherit',
+    'font-size:13px'
+  ].join(';');
+  button.addEventListener('click', onClick);
+  return button;
+};
+
+const createInspectorSection = (title, value, { rows = 4 } = {}) => {
+  const section = document.createElement('section');
+  section.style.cssText = 'display:flex;flex-direction:column;gap:7px;';
+
+  const label = document.createElement('div');
+  label.textContent = title;
+  label.style.cssText = 'font-weight:700;font-size:12px;text-transform:uppercase;color:#777;letter-spacing:.04em;';
+
+  const textarea = document.createElement('textarea');
+  textarea.readOnly = true;
+  textarea.rows = rows;
+  textarea.value = value || '';
+  textarea.style.cssText = [
+    'width:100%',
+    'box-sizing:border-box',
+    'resize:vertical',
+    'border:1px solid rgba(0,0,0,0.14)',
+    'border-radius:8px',
+    'background:#fafafa',
+    'padding:10px',
+    'font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+    'font-size:12px',
+    'line-height:1.45',
+    'color:#2b2b2b'
+  ].join(';');
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+  actions.appendChild(createInspectorButton(`Copy ${title.toLowerCase()}`, async () => writeClipboard(value || '')));
+
+  section.appendChild(label);
+  section.appendChild(textarea);
+  section.appendChild(actions);
+  return { section, actions };
+};
+
+const showInspectorModal = ({ inspector, tools, canReplace, replaceSelection }) => {
+  const body = inspector.querySelector('[data-body]');
+  const summary = inspector.querySelector('[data-summary]');
+  body.innerHTML = '';
+
+  const type = getSelectionType(tools);
+  const mimeText = tools.imagePreview?.mimeType ? ` · ${tools.imagePreview.mimeType}` : '';
+  const sizeText = tools.byteSize ? ` · ${formatByteSize(tools.byteSize)}` : '';
+  summary.textContent = `${type}${mimeText}${sizeText}`;
+
+  const meta = document.createElement('div');
+  meta.style.cssText = [
+    'display:grid',
+    'grid-template-columns:repeat(auto-fit, minmax(140px, 1fr))',
+    'gap:8px',
+    'font-size:13px'
+  ].join(';');
+  [
+    ['Type', type],
+    ['MIME', tools.imagePreview?.mimeType || '-'],
+    ['Decoded size', tools.byteSize ? formatByteSize(tools.byteSize) : '-']
+  ].forEach(([label, value]) => {
+    const item = document.createElement('div');
+    item.style.cssText = 'border:1px solid rgba(0,0,0,0.1);border-radius:8px;padding:9px;background:#fafafa;';
+    item.innerHTML = `<div style="font-size:11px;text-transform:uppercase;color:#777;font-weight:700;margin-bottom:3px;"></div><div style="font-weight:600;"></div>`;
+    item.children[0].textContent = label;
+    item.children[1].textContent = value;
+    meta.appendChild(item);
+  });
+  body.appendChild(meta);
+
+  if (tools.imagePreview) {
+    const imageSection = document.createElement('section');
+    imageSection.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
+    const imageLabel = document.createElement('div');
+    imageLabel.textContent = 'Image preview';
+    imageLabel.style.cssText = 'font-weight:700;font-size:12px;text-transform:uppercase;color:#777;letter-spacing:.04em;';
+    const image = document.createElement('img');
+    image.alt = 'Selected base64 image preview';
+    image.src = tools.imagePreview.dataUrl;
+    image.style.cssText = [
+      'display:block',
+      'max-width:100%',
+      'max-height:320px',
+      'object-fit:contain',
+      'margin:0 auto',
+      'border:1px solid rgba(0,0,0,0.08)',
+      'border-radius:8px',
+      'background:#f4f4f4'
+    ].join(';');
+    imageSection.appendChild(imageLabel);
+    imageSection.appendChild(image);
+    body.appendChild(imageSection);
+  }
+
+  const original = createInspectorSection('Original', tools.raw, { rows: 5 });
+  original.actions.appendChild(createInspectorButton('Copy as Base64', async () => writeClipboard(tools.encodeBase64())));
+  if (canReplace) {
+    original.actions.appendChild(createInspectorButton('Replace with Base64', () => replaceSelection(tools.encodeBase64())));
+  }
+  body.appendChild(original.section);
+
+  if (tools.canDecodeBase64) {
+    const decodedValue = tools.decodeBase64();
+    const decoded = createInspectorSection('Decoded', decodedValue, { rows: 5 });
+    if (canReplace) {
+      decoded.actions.appendChild(createInspectorButton('Replace with decoded', () => replaceSelection(decodedValue), true));
+    }
+    body.appendChild(decoded.section);
+  }
+
+  inspector.style.display = 'flex';
+};
+
 const renderSelectionMenu = ({
   menu,
   preview,
+  inspector,
   event,
   selection,
   canReplace,
@@ -239,6 +426,12 @@ const renderSelectionMenu = ({
   event.stopPropagation();
   menu.innerHTML = '';
 
+  addMenuButton(menu, 'Inspect selection', () => showInspectorModal({
+    inspector,
+    tools,
+    canReplace,
+    replaceSelection
+  }));
   if (tools.imagePreview) {
     addMenuButton(menu, 'Preview as image', () => showImagePreview(preview, tools.imagePreview, event));
   }
@@ -269,12 +462,16 @@ export const setupSelectionDataTools = (editor) => {
   const wrapper = editor.getWrapperElement();
   const menu = createMenu();
   const preview = createImagePreview();
+  const inspector = createInspectorModal();
 
   const hideMenu = () => {
     menu.style.display = 'none';
   };
   const hidePreview = () => {
     preview.style.display = 'none';
+  };
+  const hideInspector = () => {
+    inspector.style.display = 'none';
   };
 
   const handleContextMenu = (event) => {
@@ -287,6 +484,7 @@ export const setupSelectionDataTools = (editor) => {
     renderSelectionMenu({
       menu,
       preview,
+      inspector,
       event,
       selection,
       canReplace: !editor.getOption('readOnly'),
@@ -295,7 +493,7 @@ export const setupSelectionDataTools = (editor) => {
   };
 
   const handleDocumentClick = (event) => {
-    if (!menu.contains(event.target) && !preview.contains(event.target)) {
+    if (!menu.contains(event.target) && !preview.contains(event.target) && !inspector.contains(event.target)) {
       hideMenu();
       hidePreview();
     }
@@ -304,12 +502,17 @@ export const setupSelectionDataTools = (editor) => {
   wrapper.addEventListener('contextmenu', handleContextMenu);
   document.addEventListener('click', handleDocumentClick);
   preview.querySelector('[data-close]').addEventListener('click', hidePreview);
+  inspector.querySelector('[data-close]').addEventListener('click', hideInspector);
+  inspector.addEventListener('click', (event) => {
+    if (event.target === inspector) hideInspector();
+  });
 
   editor._destroySelectionDataTools = () => {
     wrapper.removeEventListener('contextmenu', handleContextMenu);
     document.removeEventListener('click', handleDocumentClick);
     menu.remove();
     preview.remove();
+    inspector.remove();
   };
 };
 
@@ -369,12 +572,16 @@ const getSelectionContext = (event) => {
 export const setupGlobalSelectionDataTools = () => {
   const menu = createMenu();
   const preview = createImagePreview();
+  const inspector = createInspectorModal();
 
   const hideMenu = () => {
     menu.style.display = 'none';
   };
   const hidePreview = () => {
     preview.style.display = 'none';
+  };
+  const hideInspector = () => {
+    inspector.style.display = 'none';
   };
 
   const handleContextMenu = (event) => {
@@ -391,6 +598,7 @@ export const setupGlobalSelectionDataTools = () => {
     renderSelectionMenu({
       menu,
       preview,
+      inspector,
       event,
       selection: selectionContext.selection,
       canReplace: selectionContext.canReplace,
@@ -399,7 +607,7 @@ export const setupGlobalSelectionDataTools = () => {
   };
 
   const handleDocumentClick = (event) => {
-    if (!menu.contains(event.target) && !preview.contains(event.target)) {
+    if (!menu.contains(event.target) && !preview.contains(event.target) && !inspector.contains(event.target)) {
       hideMenu();
       hidePreview();
     }
@@ -408,11 +616,16 @@ export const setupGlobalSelectionDataTools = () => {
   document.addEventListener('contextmenu', handleContextMenu, true);
   document.addEventListener('click', handleDocumentClick);
   preview.querySelector('[data-close]').addEventListener('click', hidePreview);
+  inspector.querySelector('[data-close]').addEventListener('click', hideInspector);
+  inspector.addEventListener('click', (event) => {
+    if (event.target === inspector) hideInspector();
+  });
 
   return () => {
     document.removeEventListener('contextmenu', handleContextMenu, true);
     document.removeEventListener('click', handleDocumentClick);
     menu.remove();
     preview.remove();
+    inspector.remove();
   };
 };

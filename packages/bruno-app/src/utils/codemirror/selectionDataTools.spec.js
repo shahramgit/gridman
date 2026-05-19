@@ -18,6 +18,7 @@ describe('selectionDataTools', () => {
 
     expect(tools.canDecodeBase64).toBe(true);
     expect(tools.decodeBase64()).toBe('Hello Gridman');
+    expect(tools.byteSize).toBe(13);
     expect(getSelectionDataToolState('Hello Gridman').encodeBase64()).toBe('SGVsbG8gR3JpZG1hbg==');
   });
 
