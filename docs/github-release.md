@@ -2,6 +2,34 @@
 
 This document describes how to prepare and upload Gridman release assets to GitHub.
 
+## User download instructions
+
+Add this section, or a version-specific variant of it, to the GitHub release notes.
+
+Download Gridman from the release assets:
+
+- macOS Apple Silicon: `gridman_<version>_arm64_mac.dmg`
+- macOS Intel: `gridman_<version>_x64_mac.dmg`
+- Windows ARM64: `gridman_<version>_arm64_win.exe`
+- Windows x64: `gridman_<version>_x64_win.exe`
+- Linux ARM64: `gridman_<version>_arm64_linux.AppImage`
+- Linux x64: `gridman_<version>_x86_64_linux.AppImage`
+
+For macOS, open the `.dmg`, drag `Gridman.app` to `/Applications`, then run Gridman from Applications.
+
+Current macOS builds are unsigned. If macOS blocks the app after installation, run:
+
+```sh
+sudo xattr -dr com.apple.quarantine "/Applications/Gridman.app"
+```
+
+For Linux, make the AppImage executable before running it:
+
+```sh
+chmod +x gridman_<version>_x86_64_linux.AppImage
+./gridman_<version>_x86_64_linux.AppImage
+```
+
 ## Release assets
 
 Upload only the final installer/runtime files:
