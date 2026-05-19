@@ -17,6 +17,7 @@ import { getAllVariables } from 'utils/collections';
 import { setupLinkAware } from 'utils/codemirror/linkAware';
 import { setupLintErrorTooltip } from 'utils/codemirror/lint-errors';
 import { setupEmbeddedMediaPreview } from 'utils/codemirror/embeddedMediaPreview';
+import { setupSelectionDataTools } from 'utils/codemirror/selectionDataTools';
 import CodeMirrorSearch from 'components/CodeMirrorSearch/index';
 import {
   applyEditorState,
@@ -241,6 +242,7 @@ class CodeEditor extends React.Component {
 
       setupLinkAware(editor);
       setupEmbeddedMediaPreview(editor);
+      setupSelectionDataTools(editor);
 
       // Setup lint error tooltip on line number hover
       this.cleanupLintErrorTooltip = setupLintErrorTooltip(editor);
@@ -372,6 +374,7 @@ class CodeEditor extends React.Component {
 
       this.editor?._destroyLinkAware?.();
       this.editor?._destroyEmbeddedMediaPreview?.();
+      this.editor?._destroySelectionDataTools?.();
       this.editor.off('change', this._onEdit);
 
       // Clean up lint error tooltip

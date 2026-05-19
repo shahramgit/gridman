@@ -7,6 +7,7 @@ import { setupAutoComplete } from 'utils/codemirror/autocomplete';
 import StyledWrapper from './StyledWrapper';
 import { IconEye, IconEyeOff } from '@tabler/icons';
 import { setupLinkAware } from 'utils/codemirror/linkAware';
+import { setupSelectionDataTools } from 'utils/codemirror/selectionDataTools';
 
 const CodeMirror = require('codemirror');
 
@@ -104,6 +105,7 @@ class SingleLineEditor extends Component {
       this._updateNewlineMarkers();
     }
     setupLinkAware(this.editor);
+    setupSelectionDataTools(this.editor);
 
     // Add mousetrap class so Mousetrap captures shortcuts even when CodeMirror is focused
     const cmInput = this.editor.getInputField();
@@ -210,6 +212,9 @@ class SingleLineEditor extends Component {
     if (this.editor) {
       if (this.editor?._destroyLinkAware) {
         this.editor._destroyLinkAware();
+      }
+      if (this.editor?._destroySelectionDataTools) {
+        this.editor._destroySelectionDataTools();
       }
       this.editor.off('change', this._onEdit);
       this.editor.off('paste', this._onPaste);
