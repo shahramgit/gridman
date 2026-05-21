@@ -12,6 +12,10 @@ const config = {
     {
       from: 'resources/data/sample-collection.json',
       to: 'data/sample-collection.json'
+    },
+    {
+      from: 'resources/icons',
+      to: 'icons'
     }
   ],
   files: ['**/*'],
