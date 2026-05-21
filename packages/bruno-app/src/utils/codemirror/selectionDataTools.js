@@ -1,7 +1,15 @@
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+const JWT_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
+const URL_ENCODED_RE = /%[0-9A-Fa-f]{2}/;
 const DATA_IMAGE_RE = /^data:(image\/(?:png|jpe?g|gif|webp|bmp|svg\+xml));base64,([A-Za-z0-9+/=\s]+)$/i;
 
 const normalizeBase64 = (value) => String(value || '').replace(/\s+/g, '');
+const normalizeBase64Url = (value) => {
+  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const paddingLength = (4 - (normalized.length % 4)) % 4;
+  return `${normalized}${'='.repeat(paddingLength)}`;
+};
+
 const normalizeSelectedToken = (value) => {
   let token = String(value || '').trim();
 
@@ -14,6 +22,11 @@ const normalizeSelectedToken = (value) => {
   }
 
   return token.replace(/[,;]+$/, '');
+};
+
+const normalizeJwtToken = (value) => {
+  const token = normalizeSelectedToken(value);
+  return token.replace(/^Bearer\s+/i, '');
 };
 
 export const isLikelyBase64 = (value) => {
@@ -47,6 +60,70 @@ const decodeBase64ToText = (base64) => {
     return decodeURIComponent(escape(binary));
   } catch (e) {
     return binary;
+  }
+};
+
+const decodeBase64UrlToText = (base64Url) => {
+  return decodeBase64ToText(normalizeBase64Url(base64Url));
+};
+
+const safeJsonParse = (value) => {
+  try {
+    return JSON.parse(value);
+  } catch (e) {
+    return null;
+  }
+};
+
+const formatJson = (value) => {
+  const parsed = typeof value === 'string' ? safeJsonParse(value) : value;
+  return parsed ? JSON.stringify(parsed, null, 2) : String(value || '');
+};
+
+const decodeUrlSelection = (value) => {
+  const trimmed = normalizeSelectedToken(value);
+  if (!URL_ENCODED_RE.test(trimmed)) {
+    return null;
+  }
+
+  try {
+    return decodeURIComponent(trimmed.replace(/\+/g, ' '));
+  } catch (e) {
+    return null;
+  }
+};
+
+const encodeUrlSelection = (value) => encodeURIComponent(String(value || ''));
+
+export const getSelectionJwtDetails = (selection) => {
+  const token = normalizeJwtToken(selection);
+  const parts = token.split('.');
+
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts.every((part) => JWT_SEGMENT_RE.test(part))) {
+    return null;
+  }
+
+  try {
+    const headerText = decodeBase64UrlToText(parts[0]);
+    const payloadText = decodeBase64UrlToText(parts[1]);
+    const header = safeJsonParse(headerText);
+    const payload = safeJsonParse(payloadText);
+
+    if (!header || !payload) {
+      return null;
+    }
+
+    return {
+      token,
+      header,
+      payload,
+      signature: parts[2],
+      headerText: formatJson(header),
+      payloadText: formatJson(payload),
+      decodedText: formatJson({ header, payload })
+    };
+  } catch (e) {
+    return null;
   }
 };
 
@@ -104,15 +181,24 @@ export const getSelectionDataToolState = (selection) => {
   const base64Source = trimmed.match(DATA_IMAGE_RE)?.[2] || trimmed;
   const canDecodeBase64 = isLikelyBase64(base64Source);
   const decodedBytes = canDecodeBase64 ? decodeBase64Bytes(base64Source) : null;
+  const jwt = getSelectionJwtDetails(raw);
+  const decodedUrl = decodeUrlSelection(raw);
 
   return {
     raw,
     trimmed,
     imagePreview,
+    jwt,
+    canDecodeJwt: Boolean(jwt),
+    canDecodeUrl: decodedUrl !== null,
+    canEncodeUrl: raw.length > 0,
     canDecodeBase64,
     canEncodeBase64: raw.length > 0,
     byteSize: decodedBytes?.length || 0,
     base64Source,
+    decodeJwt: () => jwt?.decodedText || '',
+    decodeUrl: () => decodedUrl || '',
+    encodeUrl: () => encodeUrlSelection(raw),
     decodeBase64: () => decodeBase64ToText(base64Source),
     encodeBase64: () => encodeUtf8ToBase64(raw)
   };
@@ -237,9 +323,11 @@ const formatByteSize = (bytes) => {
 };
 
 const getSelectionType = (tools) => {
+  if (tools.canDecodeJwt) return 'JWT';
   if (tools.imagePreview && tools.trimmed.match(DATA_IMAGE_RE)) return 'Data URL image';
   if (tools.imagePreview) return 'Base64 image';
   if (tools.canDecodeBase64) return 'Base64';
+  if (tools.canDecodeUrl) return 'URL encoded';
   return 'Plain text';
 };
 
@@ -353,7 +441,8 @@ const showInspectorModal = ({ inspector, tools, canReplace, replaceSelection }) 
   [
     ['Type', type],
     ['MIME', tools.imagePreview?.mimeType || '-'],
-    ['Decoded size', tools.byteSize ? formatByteSize(tools.byteSize) : '-']
+    ['Decoded size', tools.byteSize ? formatByteSize(tools.byteSize) : '-'],
+    ['URL encoded', tools.canDecodeUrl ? 'Yes' : 'No']
   ].forEach(([label, value]) => {
     const item = document.createElement('div');
     item.style.cssText = 'border:1px solid rgba(0,0,0,0.1);border-radius:8px;padding:9px;background:#fafafa;';
@@ -389,11 +478,33 @@ const showInspectorModal = ({ inspector, tools, canReplace, replaceSelection }) 
   }
 
   const original = createInspectorSection('Original', tools.raw, { rows: 5 });
+  original.actions.appendChild(createInspectorButton('Copy URL encoded', async () => writeClipboard(tools.encodeUrl())));
+  if (canReplace) {
+    original.actions.appendChild(createInspectorButton('Replace with URL encoded', () => replaceSelection(tools.encodeUrl())));
+  }
   original.actions.appendChild(createInspectorButton('Copy as Base64', async () => writeClipboard(tools.encodeBase64())));
   if (canReplace) {
     original.actions.appendChild(createInspectorButton('Replace with Base64', () => replaceSelection(tools.encodeBase64())));
   }
   body.appendChild(original.section);
+
+  if (tools.canDecodeJwt) {
+    const jwtHeader = createInspectorSection('JWT header', tools.jwt.headerText, { rows: 5 });
+    body.appendChild(jwtHeader.section);
+
+    const jwtPayload = createInspectorSection('JWT payload', tools.jwt.payloadText, { rows: 7 });
+    jwtPayload.actions.appendChild(createInspectorButton('Copy decoded JWT', async () => writeClipboard(tools.decodeJwt()), true));
+    body.appendChild(jwtPayload.section);
+  }
+
+  if (tools.canDecodeUrl) {
+    const decodedUrl = tools.decodeUrl();
+    const decoded = createInspectorSection('URL decoded', decodedUrl, { rows: 4 });
+    if (canReplace) {
+      decoded.actions.appendChild(createInspectorButton('Replace with URL decoded', () => replaceSelection(decodedUrl), true));
+    }
+    body.appendChild(decoded.section);
+  }
 
   if (tools.canDecodeBase64) {
     const decodedValue = tools.decodeBase64();
@@ -417,7 +528,14 @@ const renderSelectionMenu = ({
   replaceSelection
 }) => {
   const tools = getSelectionDataToolState(selection);
-  if (!tools.canDecodeBase64 && !tools.canEncodeBase64 && !tools.imagePreview) {
+  if (
+    !tools.canDecodeJwt
+    && !tools.canDecodeUrl
+    && !tools.canEncodeUrl
+    && !tools.canDecodeBase64
+    && !tools.canEncodeBase64
+    && !tools.imagePreview
+  ) {
     menu.style.display = 'none';
     return false;
   }
@@ -436,6 +554,21 @@ const renderSelectionMenu = ({
     addMenuButton(menu, 'Preview as image', () => showImagePreview(preview, tools.imagePreview, event));
   }
   addMenuButton(menu, 'Copy selection', async () => writeClipboard(tools.raw));
+  if (tools.canDecodeJwt) {
+    addMenuButton(menu, 'Copy decoded JWT', async () => writeClipboard(tools.decodeJwt()));
+  }
+  if (tools.canDecodeUrl) {
+    addMenuButton(menu, 'Copy URL decoded', async () => writeClipboard(tools.decodeUrl()));
+    if (canReplace) {
+      addMenuButton(menu, 'Replace with URL decoded', () => replaceSelection(tools.decodeUrl()));
+    }
+  }
+  if (tools.canEncodeUrl) {
+    addMenuButton(menu, 'Copy URL encoded', async () => writeClipboard(tools.encodeUrl()));
+    if (canReplace) {
+      addMenuButton(menu, 'Replace with URL encoded', () => replaceSelection(tools.encodeUrl()));
+    }
+  }
   if (tools.canDecodeBase64) {
     addMenuButton(menu, 'Copy decoded Base64', async () => writeClipboard(tools.decodeBase64()));
     if (canReplace) {

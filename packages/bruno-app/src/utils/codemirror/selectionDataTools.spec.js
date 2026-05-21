@@ -4,10 +4,17 @@ import {
   detectBase64ImageMimeType,
   getSelectionDataToolState,
   getSelectionImagePreview,
+  getSelectionJwtDetails,
   isLikelyBase64
 } from './selectionDataTools';
 
 describe('selectionDataTools', () => {
+  const jwt = [
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+    'eyJzdWIiOiIxMjMiLCJuYW1lIjoiR3JpZG1hbiJ9',
+    'signature'
+  ].join('.');
+
   it('detects likely base64 text', () => {
     expect(isLikelyBase64('SGVsbG8=')).toBe(true);
     expect(isLikelyBase64('not base64')).toBe(false);
@@ -46,5 +53,28 @@ describe('selectionDataTools', () => {
 
   it('does not preview non-image base64 as an image', () => {
     expect(getSelectionImagePreview('SGVsbG8gR3JpZG1hbg==')).toBe(null);
+  });
+
+  it('decodes jwt selections', () => {
+    const tools = getSelectionDataToolState(jwt);
+
+    expect(tools.canDecodeJwt).toBe(true);
+    expect(tools.jwt.header).toEqual({ alg: 'HS256', typ: 'JWT' });
+    expect(tools.jwt.payload).toEqual({ sub: '123', name: 'Gridman' });
+    expect(tools.decodeJwt()).toContain('"name": "Gridman"');
+  });
+
+  it('decodes bearer jwt selections', () => {
+    expect(getSelectionJwtDetails(`Bearer ${jwt}`)?.payload.name).toBe('Gridman');
+  });
+
+  it('decodes and encodes url selections', () => {
+    const decoded = getSelectionDataToolState('hello%20gridman%2Fapi');
+    const encoded = getSelectionDataToolState('hello gridman/api');
+
+    expect(decoded.canDecodeUrl).toBe(true);
+    expect(decoded.decodeUrl()).toBe('hello gridman/api');
+    expect(encoded.canDecodeUrl).toBe(false);
+    expect(encoded.encodeUrl()).toBe('hello%20gridman%2Fapi');
   });
 });
