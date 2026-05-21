@@ -9,7 +9,7 @@ const CollectionSearch = ({ searchText, setSearchText }) => {
         type="text"
         name="search"
         data-testid="sidebar-search-input"
-        placeholder="Search requests..."
+        placeholder="Search collections, folders, requests..."
         id="search"
         autoComplete="off"
         autoCorrect="off"
