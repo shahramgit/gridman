@@ -18,6 +18,7 @@ import { setupLinkAware } from 'utils/codemirror/linkAware';
 import { setupLintErrorTooltip } from 'utils/codemirror/lint-errors';
 import { setupEmbeddedMediaPreview } from 'utils/codemirror/embeddedMediaPreview';
 import { setupSelectionDataTools } from 'utils/codemirror/selectionDataTools';
+import { setupCodeMirrorResizeRefresh } from 'utils/codemirror/resize';
 import CodeMirrorSearch from 'components/CodeMirrorSearch/index';
 import {
   applyEditorState,
@@ -66,13 +67,16 @@ class CodeEditor extends React.Component {
 
   componentDidMount() {
     const variables = getAllVariables(this.props.collection, this.props.item);
-    const runShortcut = () => {
-      if (this.props.onRun) {
-        this.props.onRun();
-        return;
-      }
-      return CodeMirror.Pass;
-    };
+    /**
+     * No-op. We claim Cmd-Enter / Ctrl-Enter here only to suppress CodeMirror's
+     * sublime keymap default (insertLineAfter), which would otherwise insert a
+     * newline. sendRequest dispatch is owned by Mousetrap — the editor input has
+     * the `mousetrap` class (added below) so the global
+     * useKeybinding('sendRequest', …) in RequestTabPanel handles it, and only
+     * in request tabs. Falling through with CodeMirror.Pass when onRun is absent
+     * would re-introduce the newline in collection/folder-level editors.
+     */
+    const runShortcut = () => {};
 
     const editor = (this.editor = CodeMirror(this._node, {
       value: this.props.value || '',
@@ -270,6 +274,8 @@ class CodeEditor extends React.Component {
       if (cmInput) {
         cmInput.classList.add('mousetrap');
       }
+
+      this.cleanupResizeRefresh = setupCodeMirrorResizeRefresh(editor, this._node);
     }
   }
 
@@ -405,6 +411,7 @@ class CodeEditor extends React.Component {
 
       // Clean up lint error tooltip
       this.cleanupLintErrorTooltip?.();
+      this.cleanupResizeRefresh?.();
 
       const wrapper = this.editor.getWrapperElement();
       wrapper?.parentNode?.removeChild(wrapper);
