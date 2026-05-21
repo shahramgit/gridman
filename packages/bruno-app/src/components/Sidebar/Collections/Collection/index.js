@@ -32,6 +32,7 @@ import toast from 'react-hot-toast';
 import NewRequest from 'components/Sidebar/NewRequest';
 import NewFolder from 'components/Sidebar/NewFolder';
 import CollectionItem from './CollectionItem';
+import SearchHighlight from '../SearchHighlight';
 import RemoveCollection from './RemoveCollection';
 import { doesCollectionHaveItemsMatchingSearchText } from 'utils/collections/search';
 import { isItemAFolder, isItemARequest, areItemsLoading } from 'utils/collections';
@@ -496,7 +497,7 @@ const Collection = ({ collection, searchText }) => {
             />
           </ActionIcon>
           <div className="ml-1 w-full" id="sidebar-collection-name" title={collection.name}>
-            {collection.name}
+            <SearchHighlight text={collection.name} searchText={searchText} />
           </div>
           {isLoading ? <IconLoader2 className="animate-spin mx-1" size={18} strokeWidth={1.5} /> : null}
         </div>
