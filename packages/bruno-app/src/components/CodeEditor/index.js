@@ -6,7 +6,7 @@
  */
 
 import React, { createRef } from 'react';
-import { isEqual } from 'lodash';
+import { debounce, isEqual } from 'lodash';
 import { defineCodeMirrorBrunoVariablesMode } from 'utils/common/codemirror';
 import { setupAutoComplete, showRootHints } from 'utils/codemirror/autocomplete';
 import StyledWrapper from './StyledWrapper';
@@ -18,6 +18,7 @@ import { setupLinkAware } from 'utils/codemirror/linkAware';
 import { setupLintErrorTooltip } from 'utils/codemirror/lint-errors';
 import { setupEmbeddedMediaPreview } from 'utils/codemirror/embeddedMediaPreview';
 import { setupSelectionDataTools } from 'utils/codemirror/selectionDataTools';
+import { setupCodeMirrorResizeRefresh } from 'utils/codemirror/resize';
 import CodeMirrorSearch from 'components/CodeMirrorSearch/index';
 import {
   applyEditorState,
@@ -66,13 +67,16 @@ class CodeEditor extends React.Component {
 
   componentDidMount() {
     const variables = getAllVariables(this.props.collection, this.props.item);
-    const runShortcut = () => {
-      if (this.props.onRun) {
-        this.props.onRun();
-        return;
-      }
-      return CodeMirror.Pass;
-    };
+    /**
+     * No-op. We claim Cmd-Enter / Ctrl-Enter here only to suppress CodeMirror's
+     * sublime keymap default (insertLineAfter), which would otherwise insert a
+     * newline. sendRequest dispatch is owned by Mousetrap — the editor input has
+     * the `mousetrap` class (added below) so the global
+     * useKeybinding('sendRequest', …) in RequestTabPanel handles it, and only
+     * in request tabs. Falling through with CodeMirror.Pass when onRun is absent
+     * would re-introduce the newline in collection/folder-level editors.
+     */
+    const runShortcut = () => {};
 
     const editor = (this.editor = CodeMirror(this._node, {
       value: this.props.value || '',
@@ -215,6 +219,24 @@ class CodeEditor extends React.Component {
 
       editor.setOption('lint', this.props.mode && editor.getValue().trim().length > 0 ? this.lintOptions : false);
       editor.on('change', this._onEdit);
+
+      // Persist view state immediately when the user folds or unfolds — without
+      // this, a fold only gets saved on the next tab switch / unmount. That
+      // makes the persistence feel "delayed" or random, especially across
+      // sub-tab switches that don't change the docKey or unmount the editor.
+      // Debounced so rapid fold/unfold (e.g. Cmd-Y to fold all) doesn't write
+      // to localStorage on every event.
+      this._persistViewStateDebounced = debounce(() => {
+        if (!this.editor || !this._currentDocKey) return;
+        writePersistedEditorState({
+          scope: this.props.persistenceScope,
+          key: this._currentDocKey,
+          state: captureEditorState(this.editor)
+        });
+      }, 250);
+      editor.on('fold', this._persistViewStateDebounced);
+      editor.on('unfold', this._persistViewStateDebounced);
+
       editor.scrollTo(null, this.props.initialScroll);
       this._lastScrollTop = this.props.initialScroll || 0;
       editor.on('scroll', () => {
@@ -252,6 +274,8 @@ class CodeEditor extends React.Component {
       if (cmInput) {
         cmInput.classList.add('mousetrap');
       }
+
+      this.cleanupResizeRefresh = setupCodeMirrorResizeRefresh(editor, this._node);
     }
   }
 
@@ -377,8 +401,17 @@ class CodeEditor extends React.Component {
       this.editor?._destroySelectionDataTools?.();
       this.editor.off('change', this._onEdit);
 
+      // Tear down the debounced fold-persistence listener. Cancel any pending
+      // call so it can't fire after we've already snapshotted state above.
+      if (this._persistViewStateDebounced) {
+        this.editor.off('fold', this._persistViewStateDebounced);
+        this.editor.off('unfold', this._persistViewStateDebounced);
+        this._persistViewStateDebounced.cancel?.();
+      }
+
       // Clean up lint error tooltip
       this.cleanupLintErrorTooltip?.();
+      this.cleanupResizeRefresh?.();
 
       const wrapper = this.editor.getWrapperElement();
       wrapper?.parentNode?.removeChild(wrapper);

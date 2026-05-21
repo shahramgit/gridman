@@ -7,6 +7,8 @@ import last from 'lodash/last';
 
 const MAX_RECENTLY_CLOSED_TABS = 50;
 
+export const NON_CLOSABLE_TAB_TYPES = ['workspaceOverview', 'workspaceEnvironments', 'workspaceGit'];
+
 const initialState = {
   tabs: [],
   activeTabUid: null,
@@ -160,6 +162,13 @@ export const tabsSlice = createSlice({
         tab.requestPaneHeight = action.payload.requestPaneHeight;
       }
     },
+    updateApiSpecTabLeftPaneWidth: (state, action) => {
+      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+
+      if (tab) {
+        tab.apiSpecLeftPaneWidth = action.payload.apiSpecLeftPaneWidth;
+      }
+    },
     updateRequestPaneTab: (state, action) => {
       const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
 
@@ -265,12 +274,10 @@ export const tabsSlice = createSlice({
       const activeTab = find(state.tabs, (t) => t.uid === state.activeTabUid);
       const tabUids = action.payload.tabUids || [];
 
-      const nonClosableTypes = ['workspaceOverview', 'workspaceEnvironments', 'workspaceGit'];
-
       // Push closed tabs onto the recently closed stack (LIFO)
       // Exclude transient requests — they have no persisted file and can't be reopened
       const closedTabs = state.tabs.filter((t) =>
-        tabUids.includes(t.uid) && !nonClosableTypes.includes(t.type) && !t.isTransient
+        tabUids.includes(t.uid) && !NON_CLOSABLE_TAB_TYPES.includes(t.type) && !t.isTransient
       );
       if (closedTabs.length > 0) {
         state.recentlyClosedTabs.push(...closedTabs);
@@ -281,7 +288,7 @@ export const tabsSlice = createSlice({
       }
 
       state.tabs = filter(state.tabs, (t) =>
-        !tabUids.includes(t.uid) || nonClosableTypes.includes(t.type)
+        !tabUids.includes(t.uid) || NON_CLOSABLE_TAB_TYPES.includes(t.type)
       );
 
       if (activeTab && state.tabs.length) {
@@ -299,7 +306,8 @@ export const tabsSlice = createSlice({
           if (siblingTabs && siblingTabs.length) {
             state.activeTabUid = last(siblingTabs).uid;
           } else {
-            state.activeTabUid = last(state.tabs).uid;
+            const overviewTab = find(state.tabs, (t) => t.type === 'workspaceOverview');
+            state.activeTabUid = overviewTab ? overviewTab.uid : last(state.tabs).uid;
           }
         }
       }
@@ -315,7 +323,12 @@ export const tabsSlice = createSlice({
 
       const activeTabStillExists = state.tabs.some((t) => t.uid === prevActiveTabUid);
       if (!activeTabStillExists) {
-        state.activeTabUid = state.tabs.length > 0 ? last(state.tabs).uid : null;
+        if (state.tabs.length === 0) {
+          state.activeTabUid = null;
+        } else {
+          const overviewTab = find(state.tabs, (t) => t.type === 'workspaceOverview');
+          state.activeTabUid = overviewTab ? overviewTab.uid : last(state.tabs).uid;
+        }
       }
     },
     makeTabPermanent: (state, action) => {
@@ -417,6 +430,7 @@ export const {
   switchTab,
   updateRequestPaneTabWidth,
   updateRequestPaneTabHeight,
+  updateApiSpecTabLeftPaneWidth,
   updateRequestPaneTab,
   updateResponsePaneTab,
   updateResponseFormat,
