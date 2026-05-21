@@ -353,6 +353,8 @@ const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOp
     return null;
   }
 
+  const showNewFolderFooterButton = !showNewFolderInput && !isSelectingCollection && (filteredFolders.length > 0 && !searchText.trim());
+
   return (
     <StyledWrapper>
       <Modal
@@ -534,7 +536,7 @@ const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOp
                             size="sm"
                             onClick={handleCreateNewCollection}
                           >
-                            Save
+                            Create
                           </Button>
                         </div>
                       </li>
@@ -721,7 +723,20 @@ const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOp
                     </ul>
                   ) : (
                     <div className="folder-empty-state">
-                      {searchText.trim() ? 'No folders found' : 'No folders available'}
+                      <div className="flex flex-col items-center">
+                        <span>
+                          {searchText.trim() ? 'No folders found' : 'No folders available' }
+                        </span>
+                        <Button
+                          type="button"
+                          color="primary"
+                          variant="ghost"
+                          icon={<IconFolder size={16} strokeWidth={1.5} />}
+                          onClick={handleShowNewFolder}
+                        >
+                          New Folder
+                        </Button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -732,7 +747,7 @@ const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOp
 
         <div className="custom-modal-footer">
           <div className="footer-left">
-            {!showNewFolderInput && !isSelectingCollection && (
+            {showNewFolderFooterButton && (
               <Button
                 type="button"
                 color="primary"
