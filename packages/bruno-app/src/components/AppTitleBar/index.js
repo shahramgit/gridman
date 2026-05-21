@@ -20,7 +20,8 @@ import {
   IconSquare,
   IconUpload,
   IconX,
-  IconCopy
+  IconCopy,
+  IconExternalLink
 } from '@tabler/icons';
 import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
@@ -81,6 +82,61 @@ const getIpcErrorMessage = (error, fallback) => {
     .replace(/^Error invoking remote method '[^']+':\s*/i, '')
     .replace(/^Error:\s*/i, '')
     || fallback;
+};
+
+const getBrowserRemoteUrl = (value = '') => {
+  const remoteValue = value.trim();
+  if (!remoteValue) return '';
+  if (/^https?:\/\//i.test(remoteValue)) return remoteValue.replace(/\.git$/i, '');
+
+  const sshUrlMatch = remoteValue.match(/^ssh:\/\/(?:[^@]+@)?([^/:]+)(?::\d+)?\/(.+)$/i);
+  if (sshUrlMatch) return `https://${sshUrlMatch[1]}/${sshUrlMatch[2].replace(/\.git$/i, '')}`;
+
+  const scpStyleMatch = remoteValue.match(/^(?:[^@]+@)?([^:]+):(.+)$/i);
+  if (scpStyleMatch) return `https://${scpStyleMatch[1]}/${scpStyleMatch[2].replace(/\.git$/i, '')}`;
+
+  return '';
+};
+
+const getProviderUrls = ({ browserRemoteUrl, sourceBranch, targetBranch }) => {
+  if (!browserRemoteUrl || !sourceBranch) return { createMergeRequestUrl: '', mergeRequestsUrl: '' };
+
+  const encodedSource = encodeURIComponent(sourceBranch);
+  const encodedTarget = encodeURIComponent(targetBranch || 'main');
+  if (/github\.com/i.test(browserRemoteUrl)) {
+    return {
+      createMergeRequestUrl: `${browserRemoteUrl}/compare/${encodedTarget}...${encodedSource}?expand=1`,
+      mergeRequestsUrl: `${browserRemoteUrl}/pulls`
+    };
+  }
+
+  return {
+    createMergeRequestUrl: `${browserRemoteUrl}/-/merge_requests/new?merge_request[source_branch]=${encodedSource}&merge_request[target_branch]=${encodedTarget}`,
+    mergeRequestsUrl: `${browserRemoteUrl}/-/merge_requests`
+  };
+};
+
+const getSyncCommittedLabel = ({ hasRemote, hasUpstream, hasCommits, operation }) => {
+  if (!hasRemote) return 'Sync committed (set origin first)';
+  if (!hasUpstream) return 'Sync committed (publish branch first)';
+  if (!hasCommits) return 'Sync committed (commit first)';
+  if (operation === 'Sync committed') return 'Syncing committed changes...';
+  return 'Sync committed';
+};
+
+const getPullLabel = ({ hasRemote, hasUpstream, operation }) => {
+  if (!hasRemote) return 'Pull (set origin first)';
+  if (!hasUpstream) return 'Pull (publish branch first)';
+  if (operation === 'Pull') return 'Pulling...';
+  return 'Pull';
+};
+
+const getPushLabel = ({ hasRemote, hasUpstream, hasCommits, operation }) => {
+  if (!hasRemote) return 'Push (set origin first)';
+  if (!hasUpstream) return 'Publish branch';
+  if (!hasCommits) return 'Push (commit first)';
+  if (operation === 'Push') return 'Pushing...';
+  return 'Push';
 };
 
 const AppTitleBar = () => {
@@ -252,7 +308,7 @@ const AppTitleBar = () => {
       return;
     }
 
-    const currentBranch = workspaceGitData.currentGitBranch || workspaceGitData.defaultGitBranch || workspaceGitData.status?.current || 'main';
+    const currentBranch = workspaceGitData.currentBranch || workspaceGitData.currentGitBranch || workspaceGitData.status?.current || '';
     const remote = workspaceGitData.remotes?.find((item) => item.name === 'origin')?.name || workspaceGitData.remotes?.[0]?.name || 'origin';
 
     setWorkspaceGitOperation(label);
@@ -261,7 +317,6 @@ const AppTitleBar = () => {
         gitRootPath: workspaceGitData.gitRootPath,
         processUid: uuid(),
         remote,
-        remoteBranch: currentBranch,
         strategy: '--no-rebase',
         ...payload
       });
@@ -279,6 +334,15 @@ const AppTitleBar = () => {
       setWorkspaceGitOperation(null);
     }
   }, [handleOpenWorkspaceGit, refreshWorkspaceGitStatus, workspaceGitData]);
+
+  const publishWorkspaceGitBranch = useCallback(() => {
+    const currentBranch = workspaceGitData?.currentBranch || workspaceGitData?.currentGitBranch || workspaceGitData?.status?.current || '';
+    if (!currentBranch) {
+      toast.error('Current branch could not be detected');
+      return;
+    }
+    return runWorkspaceGitOperation('Publish branch', 'renderer:publish-workspace-git-branch', { branchName: currentBranch });
+  }, [runWorkspaceGitOperation, workspaceGitData]);
 
   const initializeWorkspaceGit = useCallback(async () => {
     if (!activeWorkspace?.pathname) return;
@@ -432,6 +496,15 @@ const AppTitleBar = () => {
     const hasRemote = Boolean(workspaceGitData?.remotes?.length);
     const hasConflicts = Boolean(workspaceGitData?.mergeInProgress || changedFiles.conflicted?.length);
     const hasCommits = Boolean(workspaceGitData?.hasCommits);
+    const hasUpstream = Boolean(workspaceGitData?.hasUpstream || workspaceGitData?.trackingBranch || workspaceGitData?.status?.tracking);
+    const currentBranch = workspaceGitData?.currentBranch || workspaceGitData?.currentGitBranch || workspaceGitData?.status?.current || '';
+    const remoteUrl = workspaceGitData?.remotes?.find((item) => item.name === 'origin')?.refs?.fetch || workspaceGitData?.remotes?.[0]?.refs?.fetch || '';
+    const browserRemoteUrl = getBrowserRemoteUrl(remoteUrl);
+    const providerUrls = getProviderUrls({
+      browserRemoteUrl,
+      sourceBranch: currentBranch,
+      targetBranch: workspaceGitData?.remoteDefaultBranch || workspaceGitData?.defaultGitBranch || 'main'
+    });
 
     return {
       changeCount,
@@ -439,7 +512,11 @@ const AppTitleBar = () => {
       behind,
       hasRemote,
       hasCommits,
+      hasUpstream,
       hasConflicts,
+      currentBranch,
+      trackingBranch: workspaceGitData?.trackingBranch || workspaceGitData?.status?.tracking || '',
+      providerUrls,
       isGitRepository: Boolean(workspaceGitData?.isGitRepository)
     };
   }, [workspaceGitData]);
@@ -470,6 +547,12 @@ const AppTitleBar = () => {
 
     return [
       {
+        type: 'label',
+        label: workspaceGitSummary.hasUpstream
+          ? `${workspaceGitSummary.currentBranch} -> ${workspaceGitSummary.trackingBranch}`
+          : `${workspaceGitSummary.currentBranch || 'Branch'} (not published)`
+      },
+      {
         id: 'open-workspace-git',
         leftSection: IconBrandGit,
         label: 'View changes in Git tab',
@@ -485,14 +568,13 @@ const AppTitleBar = () => {
       {
         id: 'sync-workspace-git',
         leftSection: IconUpload,
-        label: !workspaceGitSummary.hasRemote
-          ? 'Sync committed (set origin first)'
-          : !workspaceGitSummary.hasCommits
-              ? 'Sync committed (commit first)'
-              : workspaceGitOperation === 'Sync committed'
-                ? 'Syncing committed changes...'
-                : 'Sync committed',
-        disabled: !workspaceGitSummary.hasRemote || !workspaceGitSummary.hasCommits,
+        label: getSyncCommittedLabel({
+          hasRemote: workspaceGitSummary.hasRemote,
+          hasUpstream: workspaceGitSummary.hasUpstream,
+          hasCommits: workspaceGitSummary.hasCommits,
+          operation: workspaceGitOperation
+        }),
+        disabled: !workspaceGitSummary.hasRemote || !workspaceGitSummary.hasCommits || !workspaceGitSummary.hasUpstream,
         onClick: () => runWorkspaceGitOperation('Sync committed', 'renderer:sync-workspace-git')
       },
       {
@@ -504,22 +586,42 @@ const AppTitleBar = () => {
       {
         id: 'pull-workspace-git',
         leftSection: IconArrowDown,
-        label: !workspaceGitSummary.hasRemote ? 'Pull (set origin first)' : workspaceGitOperation === 'Pull' ? 'Pulling...' : 'Pull',
-        disabled: !workspaceGitSummary.hasRemote,
+        label: getPullLabel({
+          hasRemote: workspaceGitSummary.hasRemote,
+          hasUpstream: workspaceGitSummary.hasUpstream,
+          operation: workspaceGitOperation
+        }),
+        disabled: !workspaceGitSummary.hasRemote || !workspaceGitSummary.hasUpstream,
         onClick: () => runWorkspaceGitOperation('Pull', 'renderer:pull-workspace-git')
       },
       {
         id: 'push-workspace-git',
         leftSection: IconArrowUp,
-        label: !workspaceGitSummary.hasRemote
-          ? 'Push (set origin first)'
-          : !workspaceGitSummary.hasCommits
-              ? 'Push (commit first)'
-              : workspaceGitOperation === 'Push'
-                ? 'Pushing...'
-                : 'Push',
+        label: getPushLabel({
+          hasRemote: workspaceGitSummary.hasRemote,
+          hasUpstream: workspaceGitSummary.hasUpstream,
+          hasCommits: workspaceGitSummary.hasCommits,
+          operation: workspaceGitOperation
+        }),
         disabled: !workspaceGitSummary.hasRemote || !workspaceGitSummary.hasCommits,
-        onClick: () => runWorkspaceGitOperation('Push', 'renderer:push-workspace-git')
+        onClick: () => workspaceGitSummary.hasUpstream
+          ? runWorkspaceGitOperation('Push', 'renderer:push-workspace-git')
+          : publishWorkspaceGitBranch()
+      },
+      { type: 'divider', id: 'workspace-git-mr-divider' },
+      {
+        id: 'create-merge-request',
+        leftSection: IconExternalLink,
+        label: 'Create merge request',
+        disabled: !workspaceGitSummary.providerUrls.createMergeRequestUrl,
+        onClick: () => window?.ipcRenderer?.openExternal(workspaceGitSummary.providerUrls.createMergeRequestUrl)
+      },
+      {
+        id: 'open-merge-requests',
+        leftSection: IconExternalLink,
+        label: 'Open merge requests',
+        disabled: !workspaceGitSummary.providerUrls.mergeRequestsUrl,
+        onClick: () => window?.ipcRenderer?.openExternal(workspaceGitSummary.providerUrls.mergeRequestsUrl)
       }
     ];
   }, [
@@ -527,10 +629,16 @@ const AppTitleBar = () => {
     initializeWorkspaceGit,
     refreshWorkspaceGitStatus,
     runWorkspaceGitOperation,
+    publishWorkspaceGitBranch,
     workspaceGitOperation,
     workspaceGitSummary.hasCommits,
     workspaceGitSummary.hasRemote,
-    workspaceGitSummary.isGitRepository
+    workspaceGitSummary.hasUpstream,
+    workspaceGitSummary.isGitRepository,
+    workspaceGitSummary.currentBranch,
+    workspaceGitSummary.trackingBranch,
+    workspaceGitSummary.providerUrls.createMergeRequestUrl,
+    workspaceGitSummary.providerUrls.mergeRequestsUrl
   ]);
 
   return (
@@ -591,7 +699,7 @@ const AppTitleBar = () => {
                   <>
                     <span className="git-branch">
                       <IconGitBranch size={12} stroke={1.5} />
-                      {workspaceGitData?.currentGitBranch || 'main'}
+                      {workspaceGitData?.currentBranch || workspaceGitData?.currentGitBranch || workspaceGitData?.remoteDefaultBranch || 'main'}
                     </span>
                     {workspaceGitSummary.changeCount > 0 && <span className="git-pill">{workspaceGitSummary.changeCount}</span>}
                     {workspaceGitSummary.ahead > 0 && (

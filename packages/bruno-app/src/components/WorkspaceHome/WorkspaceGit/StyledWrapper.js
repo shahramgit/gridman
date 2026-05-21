@@ -282,6 +282,26 @@ const StyledWrapper = styled.div`
     align-items: center;
   }
 
+  .branch-controls,
+  .branch-create-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .branch-create-form {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+
+  .branch-checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 13px;
+  }
+
   .action-help {
     display: grid;
     gap: 4px;
@@ -293,6 +313,10 @@ const StyledWrapper = styled.div`
   @media (max-width: 1100px) {
     .git-layout,
     .empty-state-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .branch-create-form {
       grid-template-columns: 1fr;
     }
   }

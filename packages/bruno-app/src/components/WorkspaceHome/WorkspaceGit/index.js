@@ -16,7 +16,8 @@ import {
   IconCloudUpload,
   IconExternalLink,
   IconKey,
-  IconEdit
+  IconEdit,
+  IconPlus
 } from '@tabler/icons';
 
 import Button from 'ui/Button';
@@ -56,6 +57,27 @@ const getBrowserRemoteUrl = (value = '') => {
   }
 
   return '';
+};
+
+const getProviderUrls = ({ browserRemoteUrl, sourceBranch, targetBranch }) => {
+  if (!browserRemoteUrl || !sourceBranch) {
+    return { createMergeRequestUrl: '', mergeRequestsUrl: '' };
+  }
+
+  const encodedSource = encodeURIComponent(sourceBranch);
+  const encodedTarget = encodeURIComponent(targetBranch || 'main');
+
+  if (/github\.com/i.test(browserRemoteUrl)) {
+    return {
+      createMergeRequestUrl: `${browserRemoteUrl}/compare/${encodedTarget}...${encodedSource}?expand=1`,
+      mergeRequestsUrl: `${browserRemoteUrl}/pulls`
+    };
+  }
+
+  return {
+    createMergeRequestUrl: `${browserRemoteUrl}/-/merge_requests/new?merge_request[source_branch]=${encodedSource}&merge_request[target_branch]=${encodedTarget}`,
+    mergeRequestsUrl: `${browserRemoteUrl}/-/merge_requests`
+  };
 };
 
 const getAuthModeLabel = (protocol) => {
@@ -128,11 +150,19 @@ const WorkspaceGit = ({ workspace }) => {
   const [collectionReconciliation, setCollectionReconciliation] = useState(null);
   const [authDiagnostics, setAuthDiagnostics] = useState(null);
   const [authTestResult, setAuthTestResult] = useState(null);
+  const [createBranchName, setCreateBranchName] = useState('');
+  const [createBranchBase, setCreateBranchBase] = useState('');
+  const [publishAfterCreate, setPublishAfterCreate] = useState(false);
 
   const gitRootPath = gitData?.gitRootPath;
-  const currentBranch = gitData?.currentGitBranch || gitData?.status?.current || '';
+  const currentBranch = gitData?.currentBranch || gitData?.currentGitBranch || gitData?.status?.current || '';
+  const trackingBranch = gitData?.trackingBranch || gitData?.status?.tracking || '';
+  const hasUpstream = Boolean(gitData?.hasUpstream || trackingBranch);
   const remote = gitData?.remotes?.find((item) => item.name === DEFAULT_REMOTE)?.name || gitData?.remotes?.[0]?.name || DEFAULT_REMOTE;
   const remoteUrl = gitData?.remotes?.find((item) => item.name === remote)?.refs?.fetch || '';
+  const remoteDefaultBranch = gitData?.remoteDefaultBranch || gitData?.defaultGitBranch || 'main';
+  const localBranches = gitData?.localBranches || gitData?.branches || [];
+  const remoteBranches = gitData?.remoteBranches || [];
   const changedFiles = gitData?.changedFiles || {};
   const staged = changedFiles.staged || [];
   const unstaged = changedFiles.unstaged || [];
@@ -143,7 +173,20 @@ const WorkspaceGit = ({ workspace }) => {
   const orphanCollections = collectionReconciliation?.orphanCollections || [];
   const missingCollections = collectionReconciliation?.missingCollections || [];
   const hasCommits = Boolean(gitData?.hasCommits);
+  const canPublishCurrentBranch = Boolean(hasCommits && (gitData?.canPublishCurrentBranch || (currentBranch && !hasUpstream)));
   const browserRemoteUrl = getBrowserRemoteUrl(remoteUrl);
+  const providerUrls = getProviderUrls({
+    browserRemoteUrl,
+    sourceBranch: currentBranch,
+    targetBranch: remoteDefaultBranch
+  });
+  const preferredBranchBase = useMemo(() => {
+    if (remoteDefaultBranch && remoteBranches.includes(remoteDefaultBranch)) {
+      return `${remote}/${remoteDefaultBranch}`;
+    }
+    return currentBranch || remoteDefaultBranch || 'main';
+  }, [currentBranch, remote, remoteBranches, remoteDefaultBranch]);
+  const branchBase = createBranchBase || preferredBranchBase;
   const auth = authDiagnostics || gitData?.auth;
   const authCommands = useMemo(() => getAuthCommands(auth), [auth]);
 
@@ -188,6 +231,14 @@ const WorkspaceGit = ({ workspace }) => {
       toast.error('Create the first commit before pushing or syncing');
       return;
     }
+    if (label === 'Publish branch' && !hasCommits) {
+      toast.error('Create the first commit before publishing this branch');
+      return;
+    }
+    if (['Pull', 'Push', 'Sync committed'].includes(label) && !hasUpstream && !payload.remoteBranch) {
+      toast.error('Publish this branch or set an upstream before syncing');
+      return;
+    }
     setOperation(label);
     setOutput('');
     try {
@@ -196,7 +247,6 @@ const WorkspaceGit = ({ workspace }) => {
         gitRootPath,
         processUid,
         remote,
-        remoteBranch: currentBranch,
         strategy: DEFAULT_PULL_STRATEGY,
         ...payload
       });
@@ -278,7 +328,6 @@ const WorkspaceGit = ({ workspace }) => {
         gitRootPath,
         processUid: uuid(),
         remote,
-        remoteBranch: currentBranch,
         strategy: DEFAULT_PULL_STRATEGY
       });
 
@@ -481,6 +530,60 @@ const WorkspaceGit = ({ workspace }) => {
     }
 
     window?.ipcRenderer?.openExternal(browserRemoteUrl);
+  };
+
+  const openCreateMergeRequest = () => {
+    if (!providerUrls.createMergeRequestUrl) {
+      copyCommand(`git push -u ${remote} ${currentBranch || '<branch>'}`);
+      setOutput('Could not detect a provider merge request URL. Publish the branch, then create a merge request in your Git provider.');
+      return;
+    }
+    window?.ipcRenderer?.openExternal(providerUrls.createMergeRequestUrl);
+  };
+
+  const openMergeRequests = () => {
+    if (!providerUrls.mergeRequestsUrl) {
+      setOutput('Could not detect a provider merge request URL for this remote.');
+      return;
+    }
+    window?.ipcRenderer?.openExternal(providerUrls.mergeRequestsUrl);
+  };
+
+  const checkoutBranch = (branchName) => {
+    if (!branchName || branchName === currentBranch) return null;
+    return runGitOperation('Checkout branch', 'renderer:checkout-workspace-git-branch', { branchName });
+  };
+
+  const checkoutRemoteBranch = (branchName) => {
+    if (!branchName) return null;
+    return runGitOperation('Checkout remote branch', 'renderer:checkout-workspace-git-remote-branch', { branchName });
+  };
+
+  const publishBranch = () => {
+    if (!currentBranch) {
+      toast.error('Current branch could not be detected');
+      return null;
+    }
+    return runGitOperation('Publish branch', 'renderer:publish-workspace-git-branch', { branchName: currentBranch });
+  };
+
+  const createBranch = async () => {
+    const branchName = createBranchName.trim();
+    if (!branchName) {
+      toast.error('Branch name is required');
+      return;
+    }
+
+    await runGitOperation('Create branch', 'renderer:create-workspace-git-branch', {
+      branchName,
+      startPoint: branchBase
+    });
+    setCreateBranchName('');
+    setCreateBranchBase('');
+
+    if (publishAfterCreate) {
+      await runGitOperation('Publish branch', 'renderer:publish-workspace-git-branch', { branchName });
+    }
   };
 
   const selectFile = async (file, stagedDiff = false) => {
@@ -694,7 +797,14 @@ const WorkspaceGit = ({ workspace }) => {
             <div className="section-title">Repository</div>
             <div className="meta-grid">
               <span className="meta-label">Branch</span>
-              <span className="flex items-center gap-1"><IconGitBranch size={14} />{currentBranch || 'unknown'}</span>
+              <span className="flex items-center gap-1">
+                <IconGitBranch size={14} />
+                {currentBranch || 'unknown'}
+              </span>
+              <span className="meta-label">Upstream</span>
+              <span>{hasUpstream ? `${currentBranch} -> ${trackingBranch}` : `${currentBranch || 'branch'} (not published)`}</span>
+              <span className="meta-label">Default</span>
+              <span>{remoteDefaultBranch || 'main'}</span>
               <span className="meta-label">Remote</span>
               <span className="remote-value">
                 {remoteUrl ? (
@@ -726,12 +836,102 @@ const WorkspaceGit = ({ workspace }) => {
                 Make the first commit before using Push or Sync committed.
               </div>
             )}
+            {hasCommits && remoteUrl && !hasUpstream && (
+              <div className="mt-3 workspace-warning">
+                This branch is not published yet. Publish it before pull, push, or sync.
+              </div>
+            )}
             {hasConflicts && (
               <div className="mt-3 text-red-500 flex items-center gap-2">
                 <IconGitMerge size={16} /> Merge conflict resolution is required.
               </div>
             )}
           </div>
+
+          {remoteUrl && (
+            <div className="panel">
+              <div className="section-title">Branches</div>
+              <div className="branch-controls">
+                <select
+                  className="textbox"
+                  value={currentBranch}
+                  onChange={(event) => checkoutBranch(event.target.value)}
+                  disabled={operation === 'Checkout branch'}
+                >
+                  {localBranches.map((branch) => (
+                    <option key={branch} value={branch}>{branch}</option>
+                  ))}
+                </select>
+                <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={operation === 'Fetch'} onClick={() => runGitOperation('Fetch', 'renderer:fetch-workspace-git')}>
+                  Fetch
+                </Button>
+                {canPublishCurrentBranch && (
+                  <Button size="sm" color="primary" icon={<IconCloudUpload size={14} />} loading={operation === 'Publish branch'} onClick={publishBranch}>
+                    Publish branch
+                  </Button>
+                )}
+              </div>
+
+              {remoteBranches.length > 0 && (
+                <div className="mt-3">
+                  <div className="text-sm text-muted mb-1">Checkout remote branch</div>
+                  <div className="branch-controls">
+                    <select
+                      className="textbox"
+                      defaultValue=""
+                      onChange={(event) => {
+                        checkoutRemoteBranch(event.target.value);
+                        event.target.value = '';
+                      }}
+                    >
+                      <option value="" disabled>Select remote branch...</option>
+                      {remoteBranches.map((branch) => (
+                        <option key={branch} value={branch}>{remote}/{branch}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-3">
+                <div className="text-sm text-muted mb-1">Create branch</div>
+                <div className="branch-create-form">
+                  <input
+                    className="textbox"
+                    value={createBranchName}
+                    onChange={(event) => setCreateBranchName(event.target.value)}
+                    placeholder="feature/workspace-sync"
+                  />
+                  <input
+                    className="textbox"
+                    value={branchBase}
+                    onChange={(event) => setCreateBranchBase(event.target.value)}
+                    placeholder="Base branch"
+                  />
+                  <Button size="sm" color="primary" icon={<IconPlus size={14} />} disabled={!createBranchName.trim()} loading={operation === 'Create branch'} onClick={createBranch}>
+                    Create
+                  </Button>
+                </div>
+                <label className="branch-checkbox mt-2">
+                  <input
+                    type="checkbox"
+                    checked={publishAfterCreate}
+                    onChange={(event) => setPublishAfterCreate(event.target.checked)}
+                  />
+                  <span>Publish to {remote} after create</span>
+                </label>
+              </div>
+
+              <div className="flex flex-wrap gap-2 mt-3">
+                <Button size="sm" color="light" icon={<IconExternalLink size={14} />} disabled={!browserRemoteUrl} onClick={openCreateMergeRequest}>
+                  Create merge request
+                </Button>
+                <Button size="sm" color="light" icon={<IconExternalLink size={14} />} disabled={!browserRemoteUrl} onClick={openMergeRequests}>
+                  Open merge requests
+                </Button>
+              </div>
+            </div>
+          )}
 
           {(orphanCollections.length > 0 || missingCollections.length > 0) && (
             <div className="panel warning-panel">
@@ -942,16 +1142,17 @@ const WorkspaceGit = ({ workspace }) => {
             <div className="flex flex-wrap gap-2">
               <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={loading} onClick={() => refresh({ fetchRemote: true })}>Refresh</Button>
               <Button size="sm" color="light" icon={<IconDownload size={14} />} loading={operation === 'Fetch'} onClick={() => runGitOperation('Fetch', 'renderer:fetch-workspace-git')}>Fetch</Button>
-              <Button size="sm" color="light" icon={<IconArrowDown size={14} />} loading={operation === 'Pull'} onClick={() => runGitOperation('Pull', 'renderer:pull-workspace-git')}>Pull</Button>
-              <Button size="sm" color="light" icon={<IconArrowUp size={14} />} disabled={!hasCommits} loading={operation === 'Push'} onClick={() => runGitOperation('Push', 'renderer:push-workspace-git')}>Push</Button>
-              <Button size="sm" color="light" icon={<IconUpload size={14} />} disabled={!remoteUrl || !hasCommits} loading={operation === 'Sync committed'} onClick={() => runGitOperation('Sync committed', 'renderer:sync-workspace-git')}>Sync committed</Button>
-              <Button size="sm" color="primary" icon={<IconUpload size={14} />} disabled={!remoteUrl || hasConflicts || ((staged.length || unstaged.length) && !commitMessage.trim()) || (!hasCommits && !staged.length && !unstaged.length)} loading={operation === 'Sync Full'} onClick={syncFull}>Sync Full</Button>
+              <Button size="sm" color="light" icon={<IconArrowDown size={14} />} disabled={!hasUpstream} loading={operation === 'Pull'} onClick={() => runGitOperation('Pull', 'renderer:pull-workspace-git')}>Pull</Button>
+              <Button size="sm" color="light" icon={<IconArrowUp size={14} />} disabled={!hasCommits || (!hasUpstream && !remoteUrl)} loading={operation === 'Push' || operation === 'Publish branch'} onClick={() => hasUpstream ? runGitOperation('Push', 'renderer:push-workspace-git') : publishBranch()}>{hasUpstream ? 'Push' : 'Publish branch'}</Button>
+              <Button size="sm" color="light" icon={<IconUpload size={14} />} disabled={!remoteUrl || !hasCommits || !hasUpstream} loading={operation === 'Sync committed'} onClick={() => runGitOperation('Sync committed', 'renderer:sync-workspace-git')}>Sync committed</Button>
+              <Button size="sm" color="primary" icon={<IconUpload size={14} />} disabled={!remoteUrl || !hasUpstream || hasConflicts || ((staged.length || unstaged.length) && !commitMessage.trim()) || (!hasCommits && !staged.length && !unstaged.length)} loading={operation === 'Sync Full'} onClick={syncFull}>Sync Full</Button>
             </div>
             <div className="action-help mt-3">
               <div><strong>Refresh</strong> fetches remote metadata, then rereads Git status.</div>
               <div><strong>Fetch</strong> downloads remote metadata without changing files.</div>
               <div><strong>Pull</strong> brings remote commits into this workspace.</div>
               <div><strong>Push</strong> uploads committed local changes.</div>
+              <div><strong>Publish branch</strong> runs `git push -u {remote} {currentBranch || '<branch>'}` for a branch without upstream.</div>
               <div><strong>Sync committed</strong> fetches, pulls if behind, then pushes committed local changes.</div>
               <div><strong>Sync Full</strong> stages local changes, commits them with the message below, then runs Sync committed.</div>
               <div><strong>Environment files</strong> are ignored by default because they may contain secrets.</div>

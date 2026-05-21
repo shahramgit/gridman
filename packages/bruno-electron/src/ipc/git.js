@@ -16,6 +16,10 @@ const {
   pullGitChanges,
   pushGitChanges,
   syncGitChanges,
+  checkoutGitBranch,
+  checkoutRemoteGitBranch,
+  publishGitBranch,
+  setGitBranchUpstream,
   abortConflictResolution,
   continueMerge,
   continueResolvedMerge,
@@ -123,6 +127,37 @@ const registerGitIpc = (mainWindow) => {
 
   ipcMain.handle('renderer:sync-workspace-git', async (event, { gitRootPath, processUid, remote = 'origin', remoteBranch, strategy = '--no-rebase' }) => {
     return withWorkspaceGitOperationLock(gitRootPath, 'sync', () => syncGitChanges(mainWindow, { gitRootPath, processUid, remote, remoteBranch, strategy }));
+  });
+
+  ipcMain.handle('renderer:checkout-workspace-git-branch', async (event, { gitRootPath, processUid, branchName }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'checkout branch', () => checkoutGitBranch(mainWindow, { gitRootPath, processUid, branchName }));
+  });
+
+  ipcMain.handle('renderer:create-workspace-git-branch', async (event, { gitRootPath, processUid, branchName, startPoint = '' }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'create branch', () => checkoutGitBranch(mainWindow, {
+      gitRootPath,
+      processUid,
+      branchName,
+      shouldCreate: true,
+      startPoint
+    }));
+  });
+
+  ipcMain.handle('renderer:checkout-workspace-git-remote-branch', async (event, { gitRootPath, processUid, remote = 'origin', branchName }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'checkout remote branch', () => checkoutRemoteGitBranch(mainWindow, {
+      gitRootPath,
+      processUid,
+      remoteName: remote,
+      branchName
+    }));
+  });
+
+  ipcMain.handle('renderer:publish-workspace-git-branch', async (event, { gitRootPath, processUid, remote = 'origin', branchName }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'publish branch', () => publishGitBranch(mainWindow, { gitRootPath, processUid, remote, branchName }));
+  });
+
+  ipcMain.handle('renderer:set-workspace-git-upstream', async (event, { gitRootPath, remote = 'origin', branchName, remoteBranch }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'set upstream', () => setGitBranchUpstream({ gitRootPath, remote, branchName, remoteBranch }));
   });
 
   ipcMain.handle('renderer:abort-workspace-git-merge', async (event, { gitRootPath }) => {

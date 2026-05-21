@@ -906,12 +906,81 @@ const getDefaultGitBranch = async (gitRootPath) => {
   });
 };
 
-const checkoutGitBranch = async (win, { gitRootPath, branchName, processUid, shouldCreate = false }) => {
+const getRemoteDefaultBranch = async ({ gitRootPath, remote = 'origin' }) => {
+  if (!remote) {
+    return '';
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+
+  try {
+    const branch = await git.raw(['symbolic-ref', '--quiet', '--short', `refs/remotes/${remote}/HEAD`]);
+    return branch.trim().replace(new RegExp(`^${remote}/`), '');
+  } catch (_) {
+  }
+
+  try {
+    const remoteInfo = await git.raw(['ls-remote', '--symref', remote, 'HEAD']);
+    const match = remoteInfo.match(/ref:\s+refs\/heads\/([^\s]+)\s+HEAD/);
+    return match?.[1] || '';
+  } catch (_) {
+    return '';
+  }
+};
+
+const getGitBranchMetadata = async ({ gitRootPath, remote = 'origin' }) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  const [status, localBranches, remoteBranches, remoteDefaultBranch] = await Promise.all([
+    getGitStatus(gitRootPath),
+    getCollectionGitBranches(gitRootPath).catch(() => []),
+    fetchRemoteBranches({ gitRootPath, remote }).catch(() => []),
+    getRemoteDefaultBranch({ gitRootPath, remote }).catch(() => '')
+  ]);
+  const currentBranch = status.current || await getCurrentGitBranch(gitRootPath).catch(() => '');
+  const trackingBranch = status.tracking || '';
+
+  return {
+    currentBranch,
+    trackingBranch,
+    remoteDefaultBranch: remoteDefaultBranch || 'main',
+    localBranches,
+    remoteBranches,
+    hasUpstream: Boolean(trackingBranch),
+    canPublishCurrentBranch: Boolean(currentBranch && !trackingBranch),
+    upstreamRemote: trackingBranch.includes('/') ? trackingBranch.split('/')[0] : remote,
+    upstreamBranch: trackingBranch.includes('/') ? trackingBranch.split('/').slice(1).join('/') : ''
+  };
+};
+
+const getTrackingTarget = async ({ gitRootPath, remote = 'origin', remoteBranch }) => {
+  const status = await getGitStatus(gitRootPath);
+  const currentBranch = status.current || await getCurrentGitBranch(gitRootPath).catch(() => '');
+
+  if (remoteBranch) {
+    return { remote, branch: remoteBranch, currentBranch, trackingBranch: status.tracking || '' };
+  }
+
+  if (status.tracking) {
+    const [trackingRemote, ...trackingBranchParts] = status.tracking.split('/');
+    return {
+      remote: trackingRemote || remote,
+      branch: trackingBranchParts.join('/'),
+      currentBranch,
+      trackingBranch: status.tracking
+    };
+  }
+
+  throw new Error(`Branch ${currentBranch || 'HEAD'} is not published. Publish the branch or set an upstream before pulling, pushing, or syncing.`);
+};
+
+const checkoutGitBranch = async (win, { gitRootPath, branchName, processUid, shouldCreate = false, startPoint = '' }) => {
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
     git.outputHandler(handleGitOutput({ win, processUid }));
 
-    const checkoutArgs = shouldCreate ? ['-b', branchName, '--progress'] : branchName;
+    const checkoutArgs = shouldCreate
+      ? ['--progress', '--no-track', '-b', branchName, ...(startPoint ? [startPoint] : [])]
+      : branchName;
     git.checkout(checkoutArgs, (err, res) => {
       if (err) {
         reject(err);
@@ -920,6 +989,26 @@ const checkoutGitBranch = async (win, { gitRootPath, branchName, processUid, sho
       resolve(res);
     });
   });
+};
+
+const publishGitBranch = async (win, { gitRootPath, processUid, remote = 'origin', branchName }) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true }));
+  const branch = branchName || await getCurrentGitBranch(gitRootPath);
+  if (!branch) {
+    throw new Error('Current branch could not be detected.');
+  }
+  return git.push(['--set-upstream', remote, branch]);
+};
+
+const setGitBranchUpstream = async ({ gitRootPath, remote = 'origin', branchName, remoteBranch }) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  const localBranch = branchName || await getCurrentGitBranch(gitRootPath);
+  const targetBranch = remoteBranch || localBranch;
+  if (!localBranch || !targetBranch) {
+    throw new Error('Local and remote branch are required to set upstream.');
+  }
+  return git.raw(['branch', '--set-upstream-to', `${remote}/${targetBranch}`, localBranch]);
 };
 
 const checkoutRemoteGitBranch = async (win, { gitRootPath, remoteName, branchName, processUid }) => {
@@ -1088,12 +1177,13 @@ const canPush = async (gitRootPath) => {
   return true;
 };
 
-const pushGitChanges = async (win, { gitRootPath, processUid, remote, remoteBranch }) => {
+const pushGitChanges = async (win, { gitRootPath, processUid, remote = 'origin', remoteBranch }) => {
   return new Promise(async (resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
     git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true }));
 
     try {
+      const trackingTarget = await getTrackingTarget({ gitRootPath, remote, remoteBranch });
       // Check if the local branch is tracking a remote branch
       git.branch((err, branchSummary) => {
         if (err) {
@@ -1101,34 +1191,20 @@ const pushGitChanges = async (win, { gitRootPath, processUid, remote, remoteBran
           return;
         }
 
-        const currentBranch = branchSummary.branches[remoteBranch];
+        const currentBranch = branchSummary.branches[trackingTarget.currentBranch];
 
         if (!currentBranch) {
-          reject(new Error(`Branch ${remoteBranch} does not exist.`));
+          reject(new Error(`Branch ${trackingTarget.currentBranch} does not exist.`));
           return;
         }
 
-        const trackingBranch = currentBranch.tracking;
-
-        if (!trackingBranch) {
-          // Set the upstream tracking branch
-          git.push(['--set-upstream', remote, remoteBranch], (err, res) => {
-            if (err) {
-              reject(err);
-            } else {
-              resolve(res);
-            }
-          });
-        } else {
-          // Push the local branch to the remote
-          git.push(remote, remoteBranch, (err, res) => {
-            if (err) {
-              reject(err);
-            } else {
-              resolve(res);
-            }
-          });
-        }
+        git.push(trackingTarget.remote, trackingTarget.branch, (err, res) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve(res);
+          }
+        });
       });
     } catch (error) {
       reject(error);
@@ -1161,12 +1237,14 @@ const pullGitChanges = async (win, data) => {
     return null;
   };
 
+  const trackingTarget = await getTrackingTarget({ gitRootPath, remote, remoteBranch });
+
   const pull = (git, args) => new Promise((resolve, reject) => {
     const command = ['-c', 'core.quotePath=false'];
     if (process.platform === 'win32') {
       command.push('-c', 'core.longpaths=true');
     }
-    command.push('pull', remote, remoteBranch, ...args);
+    command.push('pull', trackingTarget.remote, trackingTarget.branch, ...args);
 
     git.raw(command, (err, res) => {
       if (err) {
@@ -1783,10 +1861,20 @@ const getWorkspaceGitData = async (input) => {
     await fetchChanges(gitRootPath, remoteToFetch);
   }
 
-  const [status, remotesForClient, branches, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits, auth] = await Promise.all([
+  const [status, remotesForClient, branchMetadata, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits, auth] = await Promise.all([
     getGitStatus(gitRootPath),
     Promise.resolve(remotes),
-    getCollectionGitBranches(gitRootPath).catch(() => []),
+    getGitBranchMetadata({ gitRootPath, remote: remoteToFetch || remote }).catch(() => ({
+      currentBranch: '',
+      trackingBranch: '',
+      remoteDefaultBranch: 'main',
+      localBranches: [],
+      remoteBranches: [],
+      hasUpstream: false,
+      canPublishCurrentBranch: false,
+      upstreamRemote: remoteToFetch || remote,
+      upstreamBranch: ''
+    })),
     getCurrentGitBranch(gitRootPath).catch(() => ''),
     getDefaultGitBranch(gitRootPath).catch(() => ''),
     getAheadBehindCount(gitRootPath).catch(() => ({ ahead: 0, behind: 0, aheadCommits: [], behindCommits: [] })),
@@ -1804,9 +1892,18 @@ const getWorkspaceGitData = async (input) => {
     status: getWorkspaceGitStatusForClient(status),
     changedFiles,
     remotes: getRemotesForClient(remotesForClient),
-    branches,
-    currentGitBranch: currentGitBranch || defaultGitBranch || 'main',
-    defaultGitBranch: defaultGitBranch || 'main',
+    branches: branchMetadata.localBranches,
+    localBranches: branchMetadata.localBranches,
+    remoteBranches: branchMetadata.remoteBranches,
+    currentGitBranch: branchMetadata.currentBranch || currentGitBranch || defaultGitBranch || branchMetadata.remoteDefaultBranch || 'main',
+    currentBranch: branchMetadata.currentBranch || currentGitBranch || defaultGitBranch || branchMetadata.remoteDefaultBranch || 'main',
+    defaultGitBranch: branchMetadata.remoteDefaultBranch || defaultGitBranch || 'main',
+    remoteDefaultBranch: branchMetadata.remoteDefaultBranch || defaultGitBranch || 'main',
+    trackingBranch: branchMetadata.trackingBranch,
+    hasUpstream: branchMetadata.hasUpstream,
+    canPublishCurrentBranch: branchMetadata.canPublishCurrentBranch,
+    upstreamRemote: branchMetadata.upstreamRemote,
+    upstreamBranch: branchMetadata.upstreamBranch,
     hasCommits,
     aheadBehind: getAheadBehindForClient(aheadBehind),
     auth,
@@ -1817,8 +1914,10 @@ const getWorkspaceGitData = async (input) => {
 const syncGitChanges = async (win, { gitRootPath, processUid, remote = 'origin', remoteBranch, strategy = '--no-rebase' }) => {
   await fetchChanges(gitRootPath, remote);
   const status = await getGitStatus(gitRootPath);
-  const branch = remoteBranch || status.current;
-  const shouldPull = status.behind > 0 || (!status.tracking && await remoteBranchExists({ gitRootPath, remote, branch }));
+  const trackingTarget = await getTrackingTarget({ gitRootPath, remote, remoteBranch });
+  const branch = trackingTarget.branch;
+  const targetRemote = trackingTarget.remote;
+  const shouldPull = status.behind > 0 || await remoteBranchExists({ gitRootPath, remote: targetRemote, branch });
   const result = {
     fetched: true,
     pulled: false,
@@ -1826,7 +1925,7 @@ const syncGitChanges = async (win, { gitRootPath, processUid, remote = 'origin',
   };
 
   if (shouldPull) {
-    const pullResult = await pullGitChanges(win, { gitRootPath, processUid, remote, remoteBranch: branch, strategy });
+    const pullResult = await pullGitChanges(win, { gitRootPath, processUid, remote: targetRemote, remoteBranch: branch, strategy });
     result.pulled = true;
 
     if (pullResult?.mergeInProgress) {
@@ -1839,8 +1938,8 @@ const syncGitChanges = async (win, { gitRootPath, processUid, remote = 'origin',
   }
 
   const nextStatus = await getGitStatus(gitRootPath);
-  if (!nextStatus.tracking || nextStatus.ahead > 0) {
-    await pushGitChanges(win, { gitRootPath, processUid, remote, remoteBranch: branch });
+  if (nextStatus.ahead > 0) {
+    await pushGitChanges(win, { gitRootPath, processUid, remote: targetRemote, remoteBranch: branch });
     result.pushed = true;
   }
 
@@ -1856,6 +1955,7 @@ const fetchRemoteBranches = ({ gitRootPath, remote }) => {
       } else {
         const branchNames = branches?.all
           .filter((branch) => branch.startsWith(`${remote}/`))
+          .filter((branch) => !branch.includes(' -> '))
           .map((branch) => branch.slice(remote.length + 1));
         resolve(branchNames);
       }
@@ -2954,6 +3054,8 @@ module.exports = {
   fetchRemotes,
   fetchRemoteBranches,
   checkoutRemoteGitBranch,
+  publishGitBranch,
+  setGitBranchUpstream,
   getGitVersion,
   addRemote,
   upsertRemote,
