@@ -2587,51 +2587,68 @@ export const openScratchCollectionEvent = (uid, pathname, brunoConfig) => (dispa
   });
 };
 
-export const openCollectionEvent = (uid, pathname, brunoConfig) => (dispatch, getState) => {
+export const openCollectionEvent = (uid, pathname, brunoConfig, sourceWorkspacePath) => (dispatch, getState) => {
   const { ipcRenderer } = window;
 
   return new Promise((resolve, reject) => {
     const state = getState();
     const activeWorkspace = state.workspaces.workspaces.find((w) => w.uid === state.workspaces.activeWorkspaceUid);
-    const workspaceProcessEnvVariables = activeWorkspace?.processEnvVariables || {};
+    const sourceWorkspace = sourceWorkspacePath
+      ? state.workspaces.workspaces.find((w) => w.pathname && normalizePath(w.pathname) === normalizePath(sourceWorkspacePath))
+      : null;
+    const targetWorkspace = sourceWorkspacePath ? sourceWorkspace : activeWorkspace;
+    if (!targetWorkspace) {
+      resolve();
+      return;
+    }
+    const isActiveWorkspaceTarget = targetWorkspace?.uid === activeWorkspace?.uid;
+    const workspaceProcessEnvVariables = targetWorkspace?.processEnvVariables || {};
 
     const existingCollection = state.collections.collections.find(
       (c) => normalizePath(c.pathname) === normalizePath(pathname)
     );
 
-    const isAlreadyInWorkspace = activeWorkspace?.collections?.some(
+    const isAlreadyInWorkspace = targetWorkspace?.collections?.some(
       (c) => normalizePath(c.path) === normalizePath(pathname)
     );
 
     if (existingCollection && isAlreadyInWorkspace) {
-      toast.success('Collection is already opened');
+      if (isActiveWorkspaceTarget) {
+        toast.success('Collection is already opened');
+      }
       resolve();
       return;
     }
 
     if (existingCollection) {
-      if (state.app.sidebarCollapsed) {
+      if (isActiveWorkspaceTarget && state.app.sidebarCollapsed) {
         dispatch(toggleSidebarCollapse());
       }
 
-      if (activeWorkspace) {
+      if (targetWorkspace) {
         const workspaceCollection = {
           name: brunoConfig.name,
           path: pathname
         };
 
         ipcRenderer
-          .invoke('renderer:add-collection-to-workspace', activeWorkspace.pathname, workspaceCollection)
+          .invoke('renderer:add-collection-to-workspace', targetWorkspace.pathname, workspaceCollection)
           .then(() => {
-            toast.success('Collection added to workspace');
+            if (isActiveWorkspaceTarget) {
+              toast.success('Collection added to workspace');
+            }
           })
           .catch((err) => {
             console.error('Failed to add collection to workspace', err);
-            toast.error('Failed to add collection to workspace');
+            if (isActiveWorkspaceTarget) {
+              toast.error('Failed to add collection to workspace');
+            }
           });
       }
 
-      dispatch(workspaceEnvUpdateEvent({ processEnvVariables: workspaceProcessEnvVariables }));
+      if (isActiveWorkspaceTarget) {
+        dispatch(workspaceEnvUpdateEvent({ processEnvVariables: workspaceProcessEnvVariables }));
+      }
 
       resolve();
       return;
@@ -2654,18 +2671,26 @@ export const openCollectionEvent = (uid, pathname, brunoConfig) => (dispatch, ge
         .then(() => dispatch(_createCollection({ ...collection, securityConfig })))
         .then(() => {
           const currentState = getState();
-          if (currentState.app.sidebarCollapsed) {
+          const currentActiveWorkspace = currentState.workspaces.workspaces.find(
+            (w) => w.uid === currentState.workspaces.activeWorkspaceUid
+          );
+          const currentTargetWorkspace = sourceWorkspacePath
+            ? currentState.workspaces.workspaces.find((w) => w.pathname && normalizePath(w.pathname) === normalizePath(sourceWorkspacePath))
+            : currentActiveWorkspace;
+          if (!currentTargetWorkspace) {
+            resolve();
+            return;
+          }
+          const isCurrentActiveWorkspaceTarget = currentTargetWorkspace?.uid === currentActiveWorkspace?.uid;
+
+          if (isCurrentActiveWorkspaceTarget && currentState.app.sidebarCollapsed) {
             dispatch(toggleSidebarCollapse());
           }
 
-          const currentWorkspace = currentState.workspaces.workspaces.find(
-            (w) => w.uid === currentState.workspaces.activeWorkspaceUid
-          );
+          if (currentTargetWorkspace) {
+            ipcRenderer.invoke('renderer:set-collection-workspace', uid, currentTargetWorkspace.pathname);
 
-          if (currentWorkspace) {
-            ipcRenderer.invoke('renderer:set-collection-workspace', uid, currentWorkspace.pathname);
-
-            const alreadyInWorkspace = currentWorkspace.collections?.some(
+            const alreadyInWorkspace = currentTargetWorkspace.collections?.some(
               (c) => normalizePath(c.path) === normalizePath(pathname)
             );
 
@@ -2676,10 +2701,12 @@ export const openCollectionEvent = (uid, pathname, brunoConfig) => (dispatch, ge
               };
 
               ipcRenderer
-                .invoke('renderer:add-collection-to-workspace', currentWorkspace.pathname, workspaceCollection)
+                .invoke('renderer:add-collection-to-workspace', currentTargetWorkspace.pathname, workspaceCollection)
                 .catch((err) => {
                   console.error('Failed to add collection to workspace', err);
-                  toast.error('Failed to add collection to workspace');
+                  if (isCurrentActiveWorkspaceTarget) {
+                    toast.error('Failed to add collection to workspace');
+                  }
                 });
             }
           }

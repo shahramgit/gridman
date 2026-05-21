@@ -134,7 +134,7 @@ const openCollection = async (win, watcher, collectionPath, options = {}) => {
       const { size, filesCount } = await getCollectionStats(collectionPath);
       brunoConfig.size = size;
       brunoConfig.filesCount = filesCount;
-      win.webContents.send('main:collection-opened', collectionPath, uid, brunoConfig);
+      win.webContents.send('main:collection-opened', collectionPath, uid, brunoConfig, options.workspacePath);
     } catch (err) {
       if (!options.dontSendDisplayErrors) {
         win.webContents.send('main:display-error', {
@@ -160,7 +160,7 @@ const openCollection = async (win, watcher, collectionPath, options = {}) => {
     brunoConfig.size = size;
     brunoConfig.filesCount = filesCount;
 
-    win.webContents.send('main:collection-opened', collectionPath, uid, brunoConfig);
+    win.webContents.send('main:collection-opened', collectionPath, uid, brunoConfig, options.workspacePath);
     ipcMain.emit('main:collection-opened', win, collectionPath, uid, brunoConfig);
   } catch (err) {
     if (!options.dontSendDisplayErrors) {

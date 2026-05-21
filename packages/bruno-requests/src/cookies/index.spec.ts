@@ -50,6 +50,25 @@ describe('Bruno Cookie Jar Wrapper - API Examples', () => {
       expect(cookie.secure).toBe(true);
     });
 
+    test('createCookieString handles session-cookie Infinity dates without moment warnings', () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const cookieString = cookiesModule.createCookieString({
+        key: 'sessionId',
+        value: 'abc123',
+        domain: 'api.example.com',
+        path: '/',
+        expires: Infinity,
+        creation: Infinity,
+        lastAccessed: Infinity
+      });
+
+      expect(cookieString).toContain('sessionId=abc123');
+      expect(warnSpy).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+
     test('getCookie returns null for non-existent cookie', async () => {
       const cookie = await jar.getCookie(testUrl, 'nonexistent');
       expect(cookie).toBeNull();

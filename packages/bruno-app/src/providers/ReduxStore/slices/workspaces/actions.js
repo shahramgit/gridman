@@ -389,13 +389,24 @@ export const switchWorkspace = (workspaceUid) => {
       const globalEnvironments = result?.globalEnvironments || [];
       const activeGlobalEnvironmentUid = result?.activeGlobalEnvironmentUid || null;
 
+      if (getState().workspaces.activeWorkspaceUid !== workspaceUid) {
+        return;
+      }
+
       dispatch(updateGlobalEnvironments({ globalEnvironments, activeGlobalEnvironmentUid }));
     } catch (error) {
+      if (getState().workspaces.activeWorkspaceUid !== workspaceUid) {
+        return;
+      }
       dispatch(updateGlobalEnvironments({ globalEnvironments: [], activeGlobalEnvironmentUid: null }));
     }
 
     const scratchCollection = await dispatch(mountScratchCollection(workspaceUid));
     await loadWorkspaceCollectionsForSwitch(dispatch, workspace);
+
+    if (getState().workspaces.activeWorkspaceUid !== workspaceUid) {
+      return;
+    }
 
     if (scratchCollection?.uid) {
       const overviewTabUid = `${scratchCollection.uid}-overview`;
