@@ -11,6 +11,7 @@ let collectionPathToGitRootPathMap = new Map();
 let gitBinaryPath;
 
 const simpleGitInstances = new Map();
+const windowsLongPathsConfiguredRoots = new Set();
 
 const getGitInstallHelpMessage = () => {
   if (process.platform === 'win32') {
@@ -135,6 +136,41 @@ const createGitError = (err, fallback) => {
   const error = new Error(getGitErrorMessage(err, fallback));
   error.cause = err;
   return error;
+};
+
+const isWindowsLongPathError = (message = '') => {
+  return process.platform === 'win32'
+    && /filename too long|file name too long|path too long|cannot create directory at/i.test(message);
+};
+
+const getWindowsLongPathsHelpMessage = (message) => {
+  return [
+    message,
+    '',
+    'Windows blocked Git because this repository contains long nested collection paths.',
+    'Gridman already enabled Git long paths for this workspace. If this still fails, Windows long paths are disabled at the OS level.',
+    '',
+    'Ask an administrator to run PowerShell as Administrator and execute:',
+    'New-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force',
+    '',
+    'Then reopen Gridman and try again. If Git still reports long paths, also run:',
+    'git config --system core.longpaths true'
+  ].join('\n');
+};
+
+const ensureWindowsGitLongPaths = async (gitRootPath) => {
+  if (process.platform !== 'win32' || !gitRootPath || windowsLongPathsConfiguredRoots.has(gitRootPath)) {
+    return;
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+
+  await new Promise((resolve) => {
+    git.raw(['config', 'core.longpaths', 'true'], () => {
+      windowsLongPathsConfiguredRoots.add(gitRootPath);
+      resolve();
+    });
+  });
 };
 
 const handleGitOutput = ({ win, processUid, sendStdout = false }) => (command, stdout, stderr) => {
@@ -1126,7 +1162,13 @@ const pullGitChanges = async (win, data) => {
   };
 
   const pull = (git, args) => new Promise((resolve, reject) => {
-    git.raw(['-c', 'core.quotePath=false', 'pull', remote, remoteBranch, ...args], (err, res) => {
+    const command = ['-c', 'core.quotePath=false'];
+    if (process.platform === 'win32') {
+      command.push('-c', 'core.longpaths=true');
+    }
+    command.push('pull', remote, remoteBranch, ...args);
+
+    git.raw(command, (err, res) => {
       if (err) {
         reject(err);
       } else {
@@ -1137,6 +1179,7 @@ const pullGitChanges = async (win, data) => {
 
   const git = getSimpleGitInstanceForPath(gitRootPath);
   git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true }));
+  await ensureWindowsGitLongPaths(gitRootPath);
 
   let allowUnrelatedHistories = false;
   const safetyCommitFiles = [];
@@ -1178,6 +1221,11 @@ const pullGitChanges = async (win, data) => {
         : result;
     } catch (err) {
       const message = getGitErrorMessage(err);
+
+      if (isWindowsLongPathError(message)) {
+        await ensureWindowsGitLongPaths(gitRootPath);
+        throw new Error(getWindowsLongPathsHelpMessage(message));
+      }
 
       if (strategy === '--no-rebase' && message.includes('refusing to merge unrelated histories') && !allowUnrelatedHistories) {
         allowUnrelatedHistories = true;

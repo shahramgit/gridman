@@ -94,6 +94,19 @@ const isLinux = process.platform === 'linux';
 let mainWindow;
 let appProtocolUrl;
 
+const getAppIconPath = () => {
+  const packagedIconRoot = path.join(process.resourcesPath || '', 'icons');
+  const sourceIconRoot = path.join(__dirname, '../resources/icons');
+  const candidates = [
+    isWindows && path.join(packagedIconRoot, 'win', 'icon.ico'),
+    path.join(packagedIconRoot, 'png', '256x256.png'),
+    isWindows && path.join(sourceIconRoot, 'win', 'icon.ico'),
+    path.join(sourceIconRoot, 'png', '256x256.png')
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => fs.existsSync(candidate));
+};
+
 // Helper function to save zoom percentage to preferences and notify renderer
 const saveZoomPreferences = async (percentage) => {
   if (!mainWindow) return;
@@ -239,7 +252,7 @@ app.on('ready', async () => {
       webviewTag: true
     },
     title: 'Gridman',
-    icon: path.join(__dirname, '../resources/icons/png/256x256.png'),
+    icon: getAppIconPath(),
     titleBarStyle: isMac ? 'hiddenInset' : isWindows ? 'hidden' : undefined,
     frame: isLinux ? false : true,
     trafficLightPosition: isMac ? { x: 12, y: 10 } : undefined
