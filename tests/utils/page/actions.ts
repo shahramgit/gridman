@@ -1,5 +1,6 @@
 import { test, expect, Page } from '../../../playwright';
 import process from 'node:process';
+import * as path from 'path';
 import { buildCommonLocators, buildScriptErrorLocators } from './locators';
 
 type SandboxMode = 'safe' | 'developer';
@@ -64,7 +65,12 @@ const openCollection = async (page, collectionName: string) => {
  *
  * @returns void
  */
-const createCollection = async (page, collectionName: string, collectionLocation: string) => {
+const createCollection = async (
+  page,
+  collectionName: string,
+  collectionLocation: string,
+  format?: 'bru' | 'yml'
+) => {
   await test.step(`Create collection "${collectionName}"`, async () => {
     await page.getByTestId('collections-header-add-menu').click();
     await page.locator('.tippy-box .dropdown-item').filter({ hasText: 'Create collection' }).click();
@@ -93,6 +99,15 @@ const createCollection = async (page, collectionName: string, collectionLocation
     await nameInput.fill(collectionName);
     // Verify the name is correct before creating
     await expect(nameInput).toHaveValue(collectionName, { timeout: 2000 });
+
+    if (format) {
+      await createCollectionModal.locator('.advanced-options .btn-advanced').click();
+      await page.locator('.tippy-box .dropdown-item').filter({ hasText: 'Show File Format' }).click();
+      const formatSelect = createCollectionModal.locator('#format');
+      await formatSelect.waitFor({ state: 'visible', timeout: 5000 });
+      await formatSelect.selectOption(format);
+    }
+
     await createCollectionModal.getByRole('button', { name: 'Create', exact: true }).click();
 
     await createCollectionModal.waitFor({ state: 'detached', timeout: 15000 });
@@ -854,6 +869,50 @@ const selectRequestPaneTab = async (page: Page, tabName: string) => {
   await selectPaneTab(page, '[data-testid="request-pane"] > .px-4', tabName);
 };
 
+const selectRequestBodyMode = async (page: Page, mode: string) => {
+  await test.step(`Select request body mode "${mode}"`, async () => {
+    await selectRequestPaneTab(page, 'Body');
+    const locators = buildCommonLocators(page);
+    await locators.request.bodyModeSelector().click();
+    await locators.dropdown.item(mode).click();
+  });
+};
+
+const mockBrowseFiles = async (electronApp: ElectronApplication, filePaths: string[]) => {
+  await electronApp.evaluate(({ dialog }, selectedPaths: string[]) => {
+    const originalShowOpenDialog = dialog.showOpenDialog;
+    dialog.showOpenDialog = async (...args) => {
+      dialog.showOpenDialog = originalShowOpenDialog;
+      return {
+        canceled: false,
+        filePaths: selectedPaths
+      };
+    };
+  }, filePaths);
+};
+
+const addMultipartFileToLastRow = async (page: Page, electronApp: ElectronApplication, filePath: string) => {
+  await test.step(`Add multipart file "${path.basename(filePath)}"`, async () => {
+    await mockBrowseFiles(electronApp, [filePath]);
+
+    const table = buildCommonLocators(page).table('editable-table');
+    const lastRow = table.allRows().last();
+
+    await expect(lastRow.locator('.upload-btn')).toBeVisible();
+    await lastRow.locator('.upload-btn').click();
+    await expect(lastRow.locator('.file-value-cell')).toContainText(path.basename(filePath));
+  });
+};
+
+const removeFirstMultipartFile = async (page: Page) => {
+  await test.step('Remove first multipart file', async () => {
+    const table = buildCommonLocators(page).table('editable-table');
+    await expect(table.allRows().locator('.file-value-cell').first()).toBeVisible();
+    await table.allRows().first().locator('.clear-file-btn').click();
+    await expect(table.allRows().first().locator('.upload-btn')).toBeVisible();
+  });
+};
+
 /**
  * Verify response contains specific text
  * @param page - The page object
@@ -1198,6 +1257,82 @@ const sendAndWaitForResponse = async (page: Page) => {
   });
 };
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const fieldEditor = (page: Page, labelText: string) =>
+  page
+    .locator('label')
+    .filter({ hasText: new RegExp(`^${escapeRegExp(labelText)}$`) })
+    .locator('..')
+    .locator('.single-line-editor-wrapper .CodeMirror');
+
+/**
+ * Open the auth mode dropdown and pick a mode by its visible label.
+ * @param page - The page object
+ * @param modeLabel - Dropdown item text (e.g. 'Bearer Token', 'Basic Auth')
+ */
+const selectAuthMode = async (page: Page, modeLabel: string) => {
+  await page.locator('.auth-mode-label').click();
+  await page.locator('.dropdown-item').filter({ hasText: modeLabel }).click();
+};
+
+/**
+ * Type into a single-line CodeMirror editor identified by its sibling label.
+ * @param page - The page object
+ * @param labelText - Exact label text next to the editor
+ * @param value - The text to type
+ */
+const typeIntoField = async (page: Page, labelText: string, value: string) => {
+  await fieldEditor(page, labelText).click();
+  await page.keyboard.type(value);
+};
+
+/**
+ * Read the current value of a single-line CodeMirror editor identified by its sibling label.
+ * @param page - The page object
+ * @param labelText - Exact label text next to the editor
+ */
+const readField = async (page: Page, labelText: string): Promise<string> => {
+  const editor = fieldEditor(page, labelText).first();
+  await editor.waitFor({ state: 'visible' });
+  return editor.evaluate((el: any) => (el as any).CodeMirror?.getValue() ?? '');
+};
+
+const createExampleFromSidebar = async (page: Page, requestName: string, exampleName: string, description: string = '') => {
+  const requestRow = page.locator('.collection-item-name').filter({ hasText: requestName }).first();
+
+  await requestRow.hover();
+  await requestRow.locator('..').locator('.menu-icon').click({ force: true });
+  await page.locator('.dropdown-item').filter({ hasText: 'Create Example' }).click();
+
+  const exampleInput = page.getByTestId('create-example-name-input');
+  await expect(exampleInput).toBeVisible();
+  await exampleInput.clear();
+  await exampleInput.fill(exampleName);
+  const descriptionInput = page.getByTestId('create-example-description-input');
+  await descriptionInput.clear();
+  await descriptionInput.fill(description);
+  await page.getByRole('button', { name: 'Create Example' }).click();
+  await expect(page.locator('text=Create Response Example')).not.toBeAttached();
+};
+
+const openExampleFromSidebar = async (page: Page, requestName: string, exampleName: string, index: number = 0) => {
+  const requestRow = page.locator('.collection-item-name').filter({ hasText: requestName }).first();
+  const requestBranch = requestRow.locator('..');
+  const exampleRow = requestBranch
+    .locator('.collection-item-name')
+    .filter({ has: page.locator('.example-icon') })
+    .getByText(exampleName, { exact: true })
+    .nth(index);
+
+  if (!(await exampleRow.isVisible())) {
+    await requestRow.getByTestId('request-item-chevron').click();
+  }
+
+  await expect(exampleRow).toBeVisible();
+  await exampleRow.click();
+};
+
 export {
   closeAllCollections,
   openCollection,
@@ -1224,7 +1359,11 @@ export {
   getResponseBody,
   expectResponseContains,
   selectRequestPaneTab,
+  selectRequestBodyMode,
   selectResponsePaneTab,
+  mockBrowseFiles,
+  addMultipartFileToLastRow,
+  removeFirstMultipartFile,
   sendRequestAndWaitForResponse,
   switchResponseFormat,
   switchToPreviewTab,
@@ -1243,7 +1382,12 @@ export {
   addPostResponseScript,
   addTestScript,
   sendAndWaitForErrorCard,
-  sendAndWaitForResponse
+  sendAndWaitForResponse,
+  selectAuthMode,
+  typeIntoField,
+  readField,
+  createExampleFromSidebar,
+  openExampleFromSidebar
 };
 
 export type { SandboxMode, EnvironmentType, EnvironmentVariable, ImportCollectionOptions, CreateRequestOptions, CreateUntitledRequestOptions, CreateTransientRequestOptions, AssertionInput };
