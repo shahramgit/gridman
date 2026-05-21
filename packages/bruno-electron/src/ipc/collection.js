@@ -316,8 +316,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         brunoConfig.size = size;
         brunoConfig.filesCount = filesCount;
 
-        mainWindow.webContents.send('main:collection-opened', dirPath, uid, brunoConfig);
-        ipcMain.emit('main:collection-opened', mainWindow, dirPath, uid, brunoConfig);
+        mainWindow.webContents.send('main:collection-opened', dirPath, uid, brunoConfig, options.workspaceId);
+        ipcMain.emit('main:collection-opened', mainWindow, dirPath, uid, brunoConfig, options.workspaceId);
       } catch (error) {
         return Promise.reject(error);
       }
@@ -393,7 +393,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       brunoConfig.filesCount = filesCount;
 
       mainWindow.webContents.send('main:collection-opened', dirPath, uid, brunoConfig);
-      ipcMain.emit('main:collection-opened', mainWindow, dirPath, uid);
+      ipcMain.emit('main:collection-opened', mainWindow, dirPath, uid, brunoConfig);
     }
   );
   // rename collection
@@ -1415,8 +1415,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         brunoConfig.size = size;
         brunoConfig.filesCount = filesCount;
 
-        mainWindow.webContents.send('main:collection-opened', collectionPath, uid, brunoConfig);
-        ipcMain.emit('main:collection-opened', mainWindow, collectionPath, uid, brunoConfig);
+        mainWindow.webContents.send('main:collection-opened', collectionPath, uid, brunoConfig, options.workspaceId);
+        ipcMain.emit('main:collection-opened', mainWindow, collectionPath, uid, brunoConfig, options.workspaceId);
 
         await registerCollectionInWorkspace(mainWindow, options.workspaceId, collectionPath, coll.name);
 
@@ -2571,8 +2571,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         brunoConfig.size = size;
         brunoConfig.filesCount = filesCount;
 
-        mainWindow.webContents.send('main:collection-opened', finalCollectionPath, uid, brunoConfig);
-        ipcMain.emit('main:collection-opened', mainWindow, finalCollectionPath, uid, brunoConfig);
+        mainWindow.webContents.send('main:collection-opened', finalCollectionPath, uid, brunoConfig, options.workspaceId);
+        ipcMain.emit('main:collection-opened', mainWindow, finalCollectionPath, uid, brunoConfig, options.workspaceId);
 
         await registerCollectionInWorkspace(mainWindow, options.workspaceId, finalCollectionPath, collectionName);
 

@@ -11,6 +11,7 @@ import {
   brunoConfigUpdateEvent,
   collectionAddDirectoryEvent,
   collectionAddFileEvent,
+  collectionTreeBatchUpdatedEvent,
   collectionChangeFileEvent,
   collectionRenamedEvent,
   collectionUnlinkDirectoryEvent,
@@ -32,7 +33,7 @@ import {
 } from 'providers/ReduxStore/slices/workspaces/actions';
 import { workspaceDotEnvUpdateEvent, setWorkspaceDotEnvVariables } from 'providers/ReduxStore/slices/workspaces';
 import toast from 'react-hot-toast';
-import { useDispatch, useStore } from 'react-redux';
+import { batch, useDispatch, useStore } from 'react-redux';
 import { isElectron } from 'utils/common/platform';
 import { globalEnvironmentsUpdateEvent, updateGlobalEnvironments } from 'providers/ReduxStore/slices/global-environments';
 import { collectionAddOauth2CredentialsByUrl, collectionClearOauth2CredentialsByCredentialsId, updateCollectionLoadingState } from 'providers/ReduxStore/slices/collections/index';
@@ -50,12 +51,10 @@ const useIpcEvents = () => {
     }
 
     const { ipcRenderer } = window;
+    const collectionTreeQueue = [];
+    let collectionTreeFlushTimer = null;
 
-    const _collectionTreeUpdated = (type, val) => {
-      if (window.__IS_DEV__) {
-        console.log(type);
-        console.log(val);
-      }
+    const dispatchCollectionTreeUpdate = (type, val) => {
       if (type === 'addDir') {
         dispatch(
           collectionAddDirectoryEvent({
@@ -78,13 +77,11 @@ const useIpcEvents = () => {
         );
       }
       if (type === 'unlink') {
-        setTimeout(() => {
-          dispatch(
-            collectionUnlinkFileEvent({
-              file: val
-            })
-          );
-        }, 100);
+        dispatch(
+          collectionUnlinkFileEvent({
+            file: val
+          })
+        );
       }
       if (type === 'unlinkDir') {
         dispatch(
@@ -99,6 +96,48 @@ const useIpcEvents = () => {
       if (type === 'unlinkEnvironmentFile') {
         dispatch(collectionUnlinkEnvFileEvent(val));
       }
+    };
+
+    const flushCollectionTreeQueue = () => {
+      collectionTreeFlushTimer = null;
+      const updates = collectionTreeQueue.splice(0, collectionTreeQueue.length);
+      if (!updates.length) {
+        return;
+      }
+
+      const batchableUpdates = updates.filter(({ type }) => type === 'addDir' || type === 'addFile');
+      const otherUpdates = updates.filter(({ type }) => type !== 'addDir' && type !== 'addFile');
+
+      batch(() => {
+        if (batchableUpdates.length) {
+          dispatch(collectionTreeBatchUpdatedEvent({ updates: batchableUpdates }));
+        }
+        otherUpdates.forEach(({ type, val }) => dispatchCollectionTreeUpdate(type, val));
+      });
+    };
+
+    const queueCollectionTreeUpdate = (type, val) => {
+      collectionTreeQueue.push({ type, val });
+
+      if (!collectionTreeFlushTimer) {
+        collectionTreeFlushTimer = setTimeout(flushCollectionTreeQueue, 50);
+      }
+    };
+
+    const _collectionTreeUpdated = (type, val) => {
+      if (window.__IS_DEV__) {
+        console.log(type);
+        console.log(val);
+      }
+
+      if (type === 'unlink') {
+        setTimeout(() => {
+          queueCollectionTreeUpdate(type, val);
+        }, 100);
+        return;
+      }
+
+      queueCollectionTreeUpdate(type, val);
     };
 
     const _apiSpecTreeUpdated = (type, val) => {
@@ -120,8 +159,8 @@ const useIpcEvents = () => {
 
     const removeApiSpecTreeUpdateListener = ipcRenderer.on('main:apispec-tree-updated', _apiSpecTreeUpdated);
 
-    const removeOpenCollectionListener = ipcRenderer.on('main:collection-opened', (pathname, uid, brunoConfig) => {
-      dispatch(openCollectionEvent(uid, pathname, brunoConfig));
+    const removeOpenCollectionListener = ipcRenderer.on('main:collection-opened', (pathname, uid, brunoConfig, sourceWorkspacePath) => {
+      dispatch(openCollectionEvent(uid, pathname, brunoConfig, sourceWorkspacePath));
     });
 
     const removeOpenWorkspaceListener = ipcRenderer.on('main:workspace-opened', (workspacePath, workspaceUid, workspaceConfig) => {
@@ -371,6 +410,10 @@ const useIpcEvents = () => {
       removePersistentEnvVariablesUpdateListener();
       removeSystemResourcesListener();
       gitVersionListener();
+      if (collectionTreeFlushTimer) {
+        clearTimeout(collectionTreeFlushTimer);
+      }
+      collectionTreeQueue.splice(0, collectionTreeQueue.length);
     };
   }, [isElectron]);
 };

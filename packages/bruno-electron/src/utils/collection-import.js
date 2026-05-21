@@ -120,8 +120,8 @@ async function importCollection(collection, collectionLocation, mainWindow, uniq
 
   // Send collection-opened event unless caller wants to handle it themselves (e.g., during onboarding)
   if (!options.skipOpenEvent) {
-    mainWindow.webContents.send('main:collection-opened', collectionPath, uid, brunoConfig);
-    ipcMain.emit('main:collection-opened', mainWindow, collectionPath, uid, brunoConfig);
+    mainWindow.webContents.send('main:collection-opened', collectionPath, uid, brunoConfig, options.workspaceId);
+    ipcMain.emit('main:collection-opened', mainWindow, collectionPath, uid, brunoConfig, options.workspaceId);
   }
 
   // create folder and files based on collection

@@ -10,6 +10,22 @@ const cookieJar = new CookieJar();
 // so we must not set domain explicitly for these cookies.
 const hasHostPrefix = (cookieName: string): boolean => cookieName.startsWith('__Host-');
 
+const toFiniteDateOrNull = (value: any): Date | null => {
+  if (!value || value === Infinity || value === -Infinity || value === 'Infinity' || value === '-Infinity') {
+    return null;
+  }
+
+  const timestamp = value instanceof Date ? value.getTime() : Number(value);
+  if (typeof value === 'number' && !Number.isFinite(value)) {
+    return null;
+  }
+  if (typeof value === 'string' && value.trim() && Number.isFinite(timestamp)) {
+    return new Date(timestamp);
+  }
+
+  return moment(value).isValid() ? new Date(value) : null;
+};
+
 const addCookieToJar = (setCookieHeader: string, requestUrl: string): void => {
   const cookie = Cookie.parse(setCookieHeader, { loose: true });
   if (!cookie) return;
@@ -90,30 +106,32 @@ const deleteCookiesForDomain = (domain: string): Promise<void> => {
 };
 
 const updateCookieObj = (cookieObj: any, oldCookie: Cookie) => {
+  const expires = toFiniteDateOrNull(cookieObj?.expires);
+  const creation = toFiniteDateOrNull(oldCookie?.creation);
+  const lastAccessed = toFiniteDateOrNull(oldCookie?.lastAccessed);
+
   return {
     ...cookieObj,
     path: oldCookie.path,
     key: oldCookie.key,
     domain: oldCookie.domain,
-    expires: cookieObj?.expires && moment(cookieObj.expires).isValid() ? new Date(cookieObj.expires) : Infinity,
-    creation: oldCookie?.creation && moment(oldCookie.creation).isValid() ? new Date(oldCookie.creation) : new Date(),
-    lastAccessed:
-      oldCookie?.lastAccessed && moment(oldCookie.lastAccessed).isValid()
-        ? new Date(oldCookie.lastAccessed)
-        : new Date()
+    expires: expires || Infinity,
+    creation: creation || new Date(),
+    lastAccessed: lastAccessed || new Date()
   } as any;
 };
 
 const createCookieObj = (cookieObj: any) => {
+  const expires = toFiniteDateOrNull(cookieObj?.expires);
+  const creation = toFiniteDateOrNull(cookieObj?.creation);
+  const lastAccessed = toFiniteDateOrNull(cookieObj?.lastAccessed);
+
   return {
     ...cookieObj,
     path: cookieObj.path,
-    expires: cookieObj?.expires && moment(cookieObj.expires).isValid() ? new Date(cookieObj.expires) : Infinity,
-    creation: cookieObj?.creation && moment(cookieObj.creation).isValid() ? new Date(cookieObj.creation) : new Date(),
-    lastAccessed:
-      cookieObj?.lastAccessed && moment(cookieObj.lastAccessed).isValid()
-        ? new Date(cookieObj.lastAccessed)
-        : new Date()
+    expires: expires || Infinity,
+    creation: creation || new Date(),
+    lastAccessed: lastAccessed || new Date()
   } as any;
 };
 

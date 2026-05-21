@@ -330,35 +330,21 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
     }
 
     try {
-      // we need to send a partial file info to the UI
-      // so that the UI can display the file in the collection tree
-      file.data = {
-        name: path.basename(pathname),
-        type: 'http-request'
-      };
-
       const metaJson = parseFileMeta(content, format);
-      file.data = metaJson;
-      file.partial = true;
-      file.loading = false;
       file.size = sizeInMB(fileStats?.size);
-      hydrateRequestWithUuid(file.data, pathname);
-      win.webContents.send('main:collection-tree-updated', 'addFile', file);
 
       if (fileStats.size < MAX_FILE_SIZE) {
-        // This is to update the loading indicator in the UI
-        file.data = metaJson;
-        file.partial = false;
-        file.loading = true;
-        hydrateRequestWithUuid(file.data, pathname);
-        win.webContents.send('main:collection-tree-updated', 'addFile', file);
-
-        // This is to update the file info in the UI
         file.data = await parseRequestViaWorker(content, {
           format,
           filename: pathname
         });
         file.partial = false;
+        file.loading = false;
+        hydrateRequestWithUuid(file.data, pathname);
+        win.webContents.send('main:collection-tree-updated', 'addFile', file);
+      } else {
+        file.data = metaJson;
+        file.partial = true;
         file.loading = false;
         hydrateRequestWithUuid(file.data, pathname);
         win.webContents.send('main:collection-tree-updated', 'addFile', file);
