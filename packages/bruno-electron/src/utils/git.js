@@ -296,6 +296,29 @@ const runGitCommand = (args, options = {}) => {
   });
 };
 
+const runSystemCommand = (command, args = [], options = {}) => {
+  return new Promise((resolve) => {
+    execFile(command, args, {
+      cwd: options.cwd,
+      timeout: options.timeout || 15000,
+      env: {
+        ...process.env,
+        ...options.env
+      }
+    }, (error, stdout = '', stderr = '') => {
+      const timedOut = error?.signal === 'SIGTERM' && !stderr && !stdout;
+      resolve({
+        ok: !error,
+        code: error?.code ?? 0,
+        signal: error?.signal || null,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        message: timedOut ? 'Command timed out before completing.' : (stderr || stdout || error?.message || '').trim()
+      });
+    });
+  });
+};
+
 const detectRemoteProtocol = (remoteUrl = '') => {
   const value = remoteUrl.trim();
 
@@ -305,6 +328,45 @@ const detectRemoteProtocol = (remoteUrl = '') => {
   if (/^file:\/\//i.test(value) || path.isAbsolute(value)) return 'file';
 
   return 'unknown';
+};
+
+const getRemoteConnectionInfo = (remoteUrl = '') => {
+  const value = remoteUrl.trim();
+  const protocol = detectRemoteProtocol(value);
+  const result = {
+    protocol,
+    host: '',
+    port: '',
+    user: '',
+    path: '',
+    url: value
+  };
+
+  if (!value) {
+    return result;
+  }
+
+  try {
+    if (/^https?:\/\//i.test(value) || /^ssh:\/\//i.test(value)) {
+      const parsed = new URL(value);
+      result.host = parsed.hostname;
+      result.port = parsed.port || (parsed.protocol === 'ssh:' ? '22' : '');
+      result.user = decodeURIComponent(parsed.username || '');
+      result.path = parsed.pathname.replace(/^\/+/, '');
+      return result;
+    }
+  } catch (_) {
+  }
+
+  const scpStyleMatch = value.match(/^(?:(?<user>[^@]+)@)?(?<host>[^:]+):(?<path>.+)$/);
+  if (scpStyleMatch?.groups) {
+    result.host = scpStyleMatch.groups.host;
+    result.port = '22';
+    result.user = scpStyleMatch.groups.user || '';
+    result.path = scpStyleMatch.groups.path || '';
+  }
+
+  return result;
 };
 
 const getRemoteHost = (remoteUrl = '') => {
@@ -409,6 +471,91 @@ const getSshKeyStatus = () => {
   };
 };
 
+const getPublicSshKey = async () => {
+  const ssh = getSshKeyStatus();
+  const key = ssh.keys.find((item) => item.name === 'id_ed25519' && item.hasPublicKey)
+    || ssh.keys.find((item) => item.hasPublicKey);
+
+  if (!key) {
+    return '';
+  }
+
+  return fs.promises.readFile(key.publicKeyPath, 'utf8').then((value) => value.trim()).catch(() => '');
+};
+
+const getSshVersion = async () => {
+  const result = await runSystemCommand('ssh', ['-V'], { timeout: 5000 });
+
+  return {
+    available: result.ok || /openssh/i.test(result.message),
+    version: result.message || result.stderr || result.stdout || '',
+    message: result.message
+  };
+};
+
+const getKnownHostStatus = async ({ host, port }) => {
+  if (!host) {
+    return {
+      checked: false,
+      configured: false,
+      host: '',
+      port: '',
+      message: 'No SSH host detected.'
+    };
+  }
+
+  const lookupHost = port && port !== '22' ? `[${host}]:${port}` : host;
+  const args = ['-F', lookupHost, '-f', path.join(os.homedir(), '.ssh', 'known_hosts')];
+
+  const result = await runSystemCommand('ssh-keygen', args, { timeout: 5000 });
+
+  return {
+    checked: true,
+    configured: result.ok,
+    host,
+    port: port || '22',
+    message: result.ok ? 'Host key is already trusted.' : 'Host key is not in known_hosts.'
+  };
+};
+
+const getWindowsLongPathsStatus = async () => {
+  if (process.platform !== 'win32') {
+    return {
+      platform: process.platform,
+      checked: false,
+      enabled: null,
+      requiresAdmin: false,
+      message: 'Windows long paths are only relevant on Windows.'
+    };
+  }
+
+  const result = await runSystemCommand('reg', [
+    'query',
+    'HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem',
+    '/v',
+    'LongPathsEnabled'
+  ], { timeout: 5000 });
+
+  const enabled = /\bLongPathsEnabled\b[\s\S]*0x1\b/i.test(`${result.stdout}\n${result.stderr}`);
+
+  return {
+    platform: process.platform,
+    checked: result.ok,
+    enabled,
+    requiresAdmin: !enabled,
+    message: enabled ? 'Windows long paths are enabled.' : 'Windows long paths are disabled or could not be verified.'
+  };
+};
+
+const getGitConfigValue = async (gitRootPath, scope, key) => {
+  const result = await runGitCommand(['config', scope, '--get', key], { cwd: gitRootPath });
+  return {
+    configured: Boolean(result.stdout),
+    value: result.stdout || '',
+    message: result.stdout || result.message
+  };
+};
+
 const classifyAuthError = (message = '') => {
   const lower = message.toLowerCase();
 
@@ -480,6 +627,265 @@ const testGitAuthentication = async ({ gitRootPath, remote = 'origin', remoteUrl
     errorType: result.ok ? null : classifyAuthError(result.message),
     message: result.ok ? 'Connection test succeeded.' : (result.message || 'Connection test failed.')
   };
+};
+
+const getWorkspaceGitSetupDiagnostics = async ({ gitRootPath, remote = 'origin', remoteUrl = '' }) => {
+  const remotes = gitRootPath ? await fetchRemotes(gitRootPath).catch(() => []) : [];
+  const selectedRemote = remotes.find((item) => item.name === remote) || remotes[0];
+  const url = remoteUrl || selectedRemote?.refs?.fetch || '';
+  const remoteInfo = getRemoteConnectionInfo(url);
+  const provider = detectGitProvider(url);
+  const isSshRemote = remoteInfo.protocol === 'ssh';
+
+  const [
+    gitVersion,
+    sshVersion,
+    ssh,
+    publicKey,
+    gitUserName,
+    gitUserEmail,
+    gitLongPathsGlobal,
+    gitLongPathsSystem,
+    windowsLongPaths
+  ] = await Promise.all([
+    getGitVersion(),
+    getSshVersion(),
+    Promise.resolve(getSshKeyStatus()),
+    getPublicSshKey(),
+    getGitConfigValue(gitRootPath, '--global', 'user.name'),
+    getGitConfigValue(gitRootPath, '--global', 'user.email'),
+    getGitConfigValue(gitRootPath, '--global', 'core.longpaths'),
+    getGitConfigValue(gitRootPath, '--system', 'core.longpaths'),
+    getWindowsLongPathsStatus()
+  ]);
+
+  const knownHost = isSshRemote
+    ? await getKnownHostStatus({ host: remoteInfo.host, port: remoteInfo.port })
+    : {
+        checked: false,
+        configured: true,
+        host: '',
+        port: '',
+        message: 'Known hosts are only needed for SSH remotes.'
+      };
+
+  const gitLongPathsEnabled = /^true$/i.test(gitLongPathsGlobal.value) || /^true$/i.test(gitLongPathsSystem.value);
+  const gitAvailable = Boolean(gitVersion);
+
+  return {
+    platform: process.platform,
+    remote,
+    remoteUrl: url,
+    remoteInfo,
+    protocol: remoteInfo.protocol,
+    provider,
+    helpLinks: getProviderHelpLinks(provider.id),
+    git: {
+      available: gitAvailable,
+      version: gitVersion || '',
+      message: gitAvailable ? gitVersion : getGitInstallHelpMessage()
+    },
+    sshClient: {
+      available: sshVersion.available,
+      version: sshVersion.version,
+      required: isSshRemote,
+      message: sshVersion.available ? sshVersion.version : 'OpenSSH client was not found.'
+    },
+    sshKey: {
+      ...ssh,
+      required: isSshRemote,
+      publicKey,
+      preferredPublicKeyPath: path.join(os.homedir(), '.ssh', 'id_ed25519.pub')
+    },
+    knownHost: {
+      ...knownHost,
+      required: isSshRemote
+    },
+    gitIdentity: {
+      name: gitUserName.value,
+      email: gitUserEmail.value,
+      configured: Boolean(gitUserName.value && gitUserEmail.value),
+      message: gitUserName.value && gitUserEmail.value ? 'Git identity is configured.' : 'Git user.name and user.email are required for commits.'
+    },
+    gitLongPaths: {
+      configured: gitLongPathsEnabled,
+      global: gitLongPathsGlobal.value,
+      system: gitLongPathsSystem.value,
+      message: gitLongPathsEnabled ? 'Git long paths are enabled.' : 'Git long paths are not enabled.'
+    },
+    windowsLongPaths,
+    connectionTest: {
+      ready: Boolean(url && gitAvailable && (!isSshRemote || (sshVersion.available && ssh.hasKeys && knownHost.configured))),
+      protocol: remoteInfo.protocol
+    },
+    adminCommands: [
+      'Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0',
+      'New-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force',
+      'git config --system core.longpaths true'
+    ]
+  };
+};
+
+const createGitSshKey = async ({ email = '' } = {}) => {
+  const sshDir = path.join(os.homedir(), '.ssh');
+  const privateKeyPath = path.join(sshDir, 'id_ed25519');
+  const publicKeyPath = `${privateKeyPath}.pub`;
+
+  if (fs.existsSync(privateKeyPath) || fs.existsSync(publicKeyPath)) {
+    return {
+      created: false,
+      privateKeyPath,
+      publicKeyPath,
+      publicKey: await fs.promises.readFile(publicKeyPath, 'utf8').then((value) => value.trim()).catch(() => ''),
+      message: 'An id_ed25519 SSH key already exists. Gridman did not overwrite it.'
+    };
+  }
+
+  await fs.promises.mkdir(sshDir, { recursive: true, mode: 0o700 });
+
+  const result = await runSystemCommand('ssh-keygen', [
+    '-t',
+    'ed25519',
+    '-C',
+    email || 'gridman-user',
+    '-f',
+    privateKeyPath,
+    '-N',
+    ''
+  ], { timeout: 20000 });
+
+  if (!result.ok) {
+    throw new Error(result.message || 'Failed to create SSH key.');
+  }
+
+  return {
+    created: true,
+    privateKeyPath,
+    publicKeyPath,
+    publicKey: await fs.promises.readFile(publicKeyPath, 'utf8').then((value) => value.trim()).catch(() => ''),
+    message: 'SSH key created.'
+  };
+};
+
+const scanGitKnownHost = async ({ host, port }) => {
+  if (!host) {
+    throw new Error('SSH host is required.');
+  }
+
+  const args = [];
+  if (port && port !== '22') {
+    args.push('-p', String(port));
+  }
+  args.push(host);
+
+  const result = await runSystemCommand('ssh-keyscan', args, { timeout: 15000 });
+
+  if (!result.ok || !result.stdout) {
+    throw new Error(result.message || 'Failed to scan SSH host key.');
+  }
+
+  return {
+    host,
+    port: port || '22',
+    hostKey: result.stdout
+  };
+};
+
+const addGitKnownHost = async ({ host, port, hostKey }) => {
+  const scan = hostKey ? { host, port: port || '22', hostKey } : await scanGitKnownHost({ host, port });
+  const sshDir = path.join(os.homedir(), '.ssh');
+  const knownHostsPath = path.join(sshDir, 'known_hosts');
+  const currentContent = await fs.promises.readFile(knownHostsPath, 'utf8').catch(() => '');
+  const nextLines = scan.hostKey
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !currentContent.includes(line));
+
+  if (!nextLines.length) {
+    return {
+      added: false,
+      knownHostsPath,
+      message: 'Host key is already present in known_hosts.'
+    };
+  }
+
+  await fs.promises.mkdir(sshDir, { recursive: true, mode: 0o700 });
+  await fs.promises.appendFile(
+    knownHostsPath,
+    `${currentContent.endsWith('\n') || !currentContent ? '' : '\n'}${nextLines.join('\n')}\n`,
+    'utf8'
+  );
+
+  return {
+    added: true,
+    knownHostsPath,
+    message: 'Host key added to known_hosts.'
+  };
+};
+
+const setGitIdentity = async ({ gitRootPath, name, email }) => {
+  const trimmedName = String(name || '').trim();
+  const trimmedEmail = String(email || '').trim();
+
+  if (!trimmedName || !trimmedEmail) {
+    throw new Error('Git user name and email are required.');
+  }
+
+  const nameResult = await runGitCommand(['config', '--global', 'user.name', trimmedName], { cwd: gitRootPath });
+  const emailResult = await runGitCommand(['config', '--global', 'user.email', trimmedEmail], { cwd: gitRootPath });
+
+  if (!nameResult.ok || !emailResult.ok) {
+    throw new Error(nameResult.message || emailResult.message || 'Failed to save Git identity.');
+  }
+
+  return {
+    name: trimmedName,
+    email: trimmedEmail,
+    message: 'Git identity saved.'
+  };
+};
+
+const enableGitGlobalLongPaths = async ({ gitRootPath }) => {
+  const result = await runGitCommand(['config', '--global', 'core.longpaths', 'true'], { cwd: gitRootPath });
+
+  if (!result.ok) {
+    throw new Error(result.message || 'Failed to enable Git long paths.');
+  }
+
+  return {
+    message: 'Git global core.longpaths enabled.'
+  };
+};
+
+const testGitSshConnection = async ({ gitRootPath, remote = 'origin', remoteUrl = '' }) => {
+  const diagnostics = await getWorkspaceGitSetupDiagnostics({ gitRootPath, remote, remoteUrl });
+
+  if (!diagnostics.remoteUrl) {
+    return { ...diagnostics, ok: false, errorType: 'no-remote', message: 'Remote URL is not configured.' };
+  }
+
+  if (diagnostics.protocol === 'ssh') {
+    const { host, port, user } = diagnostics.remoteInfo;
+    const args = ['-T', '-o', 'BatchMode=yes'];
+    if (port && port !== '22') {
+      args.push('-p', String(port));
+    }
+    args.push(`${user || 'git'}@${host}`);
+
+    const result = await runSystemCommand('ssh', args, { cwd: gitRootPath, timeout: 20000 });
+    const message = result.message || result.stderr || result.stdout || '';
+    const accepted = result.ok || /successfully authenticated|welcome|authenticated/i.test(message);
+
+    return {
+      ...diagnostics,
+      ok: accepted,
+      errorType: accepted ? null : classifyAuthError(message),
+      message: accepted ? 'SSH connection test succeeded.' : (message || 'SSH connection test failed.')
+    };
+  }
+
+  return testGitAuthentication({ gitRootPath, remote, remoteUrl: diagnostics.remoteUrl });
 };
 
 const getWorkspaceGitTargetPath = ({ workspacePath }) => {
@@ -1009,6 +1415,36 @@ const setGitBranchUpstream = async ({ gitRootPath, remote = 'origin', branchName
     throw new Error('Local and remote branch are required to set upstream.');
   }
   return git.raw(['branch', '--set-upstream-to', `${remote}/${targetBranch}`, localBranch]);
+};
+
+const ensureWorkspaceGitBranch = async ({ gitRootPath, branchName }) => {
+  const branch = String(branchName || '').trim();
+  if (!branch) {
+    return null;
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  await git.raw(['check-ref-format', '--branch', branch]);
+
+  const currentBranch = await getCurrentGitBranch(gitRootPath).catch(() => '');
+  if (currentBranch === branch) {
+    return currentBranch;
+  }
+
+  const hasCommits = await hasGitCommits(gitRootPath);
+  if (!hasCommits) {
+    await git.raw(['branch', '-M', branch]);
+    return branch;
+  }
+
+  const localBranches = await getCollectionGitBranches(gitRootPath).catch(() => []);
+  if (localBranches.includes(branch)) {
+    await git.checkout(branch);
+    return branch;
+  }
+
+  await git.checkout(['-b', branch]);
+  return branch;
 };
 
 const checkoutRemoteGitBranch = async (win, { gitRootPath, remoteName, branchName, processUid }) => {
@@ -1802,6 +2238,49 @@ const createSafetyCommitForFiles = async (gitRootPath, files, message = 'Save lo
   };
 };
 
+const adoptExistingRemoteWorkspace = async (win, { gitRootPath, processUid, remote = 'origin', remoteBranch }) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true }));
+
+  const branch = remoteBranch || await getRemoteDefaultBranch({ gitRootPath, remote }).catch(() => '') || 'main';
+  const currentBranch = await getCurrentGitBranch(gitRootPath).catch(() => '') || branch;
+  await fetchChanges(gitRootPath, remote);
+
+  const localStatus = await git.raw(['-c', 'core.quotePath=false', 'status', '--porcelain', '-z', '--untracked-files=all']);
+  const localFiles = parsePorcelainStatusPaths(localStatus).filter((filePath) => {
+    return filePath && filePath !== '.git' && !filePath.startsWith('.git/');
+  });
+  const localBackup = backupFilesBeforePull(gitRootPath, localFiles);
+
+  if (localBackup.skippedFiles.length) {
+    throw new Error([
+      'Gridman could not back up local starter files before pulling the existing workspace.',
+      'Move, delete, or manually commit these files before pulling:',
+      ...localBackup.skippedFiles
+    ].join('\n'));
+  }
+
+  await git.raw(['checkout', '-B', currentBranch, `${remote}/${branch}`]);
+  await setGitBranchUpstream({
+    gitRootPath,
+    remote,
+    branchName: currentBranch,
+    remoteBranch: branch
+  }).catch(() => {});
+
+  notifyWorkspaceConfigUpdated(win, gitRootPath);
+
+  return {
+    pulled: true,
+    localFilesBackedUp: Boolean(localBackup.files.length),
+    localBackupFiles: localBackup.files,
+    localBackupPath: localBackup.backupPath,
+    message: localBackup.files.length
+      ? `Existing remote workspace pulled. Local starter files were backed up at: ${localBackup.backupPath}`
+      : 'Existing remote workspace pulled.'
+  };
+};
+
 const getWorkspaceGitStatusForClient = (status = {}) => ({
   current: status.current || '',
   tracking: status.tracking || null,
@@ -1861,7 +2340,7 @@ const getWorkspaceGitData = async (input) => {
     await fetchChanges(gitRootPath, remoteToFetch);
   }
 
-  const [status, remotesForClient, branchMetadata, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits, auth] = await Promise.all([
+  const [status, remotesForClient, branchMetadata, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits, auth, remoteBranchNamesFromRemote] = await Promise.all([
     getGitStatus(gitRootPath),
     Promise.resolve(remotes),
     getGitBranchMetadata({ gitRootPath, remote: remoteToFetch || remote }).catch(() => ({
@@ -1879,7 +2358,8 @@ const getWorkspaceGitData = async (input) => {
     getDefaultGitBranch(gitRootPath).catch(() => ''),
     getAheadBehindCount(gitRootPath).catch(() => ({ ahead: 0, behind: 0, aheadCommits: [], behindCommits: [] })),
     hasGitCommits(gitRootPath),
-    getGitAuthDiagnostics({ gitRootPath, remote: remoteToFetch || remote }).catch(() => null)
+    getGitAuthDiagnostics({ gitRootPath, remote: remoteToFetch || remote }).catch(() => null),
+    fetchRemoteBranchNamesFromRemote({ gitRootPath, remote: remoteToFetch || remote }).catch(() => [])
   ]);
 
   const changedFiles = await getChangedFilesInCollectionGit(gitRootPath, gitRootPath);
@@ -1905,6 +2385,8 @@ const getWorkspaceGitData = async (input) => {
     upstreamRemote: branchMetadata.upstreamRemote,
     upstreamBranch: branchMetadata.upstreamBranch,
     hasCommits,
+    remoteHasBranches: remoteBranchNamesFromRemote.length > 0,
+    remoteBranchNames: remoteBranchNamesFromRemote,
     aheadBehind: getAheadBehindForClient(aheadBehind),
     auth,
     mergeInProgress
@@ -1946,6 +2428,123 @@ const syncGitChanges = async (win, { gitRootPath, processUid, remote = 'origin',
   return result;
 };
 
+const performGuidedWorkspaceGitAction = async (win, {
+  gitRootPath,
+  processUid,
+  remote = 'origin',
+  action,
+  message = '',
+  remoteBranch = '',
+  strategy = '--no-rebase'
+}) => {
+  if (!gitRootPath) {
+    throw new Error('Git root path is required.');
+  }
+
+  const commitMessage = String(message || '').trim();
+  const currentBranch = await getCurrentGitBranch(gitRootPath).catch(() => '');
+  const result = {
+    action,
+    committed: false,
+    commitFiles: [],
+    skippedProtectedFiles: [],
+    pulled: false,
+    pushed: false,
+    published: false,
+    mergeInProgress: false,
+    message: ''
+  };
+
+  const shouldCommit = ['save', 'publish-workspace', 'sync-full'].includes(action);
+  if (shouldCommit) {
+    if (!commitMessage) {
+      throw new Error('Commit message is required.');
+    }
+
+    const safeFiles = await getLocalWorkspaceFilesForSafetyCommit(gitRootPath);
+    const allStatus = await getSimpleGitInstanceForPath(gitRootPath)
+      .raw(['-c', 'core.quotePath=false', 'status', '--porcelain', '-z', '--untracked-files=all']);
+    const allFiles = parsePorcelainStatusPaths(allStatus);
+    const protectedFiles = allFiles.filter(isProtectedWorkspaceGitPath);
+
+    result.skippedProtectedFiles = protectedFiles;
+
+    if (!safeFiles.length) {
+      result.message = protectedFiles.length
+        ? 'Only protected local environment files changed. Nothing was committed.'
+        : 'No workspace changes to commit.';
+    } else {
+      const commitResult = await createSafetyCommitForFiles(gitRootPath, safeFiles, commitMessage);
+      result.committed = Boolean(commitResult.committed);
+      result.commitFiles = commitResult.files || [];
+      result.skippedProtectedFiles = [...new Set([
+        ...protectedFiles,
+        ...(commitResult.skippedFiles || [])
+      ])];
+    }
+  }
+
+  if (action === 'publish-workspace' || action === 'publish-branch') {
+    await publishGitBranch(win, { gitRootPath, processUid, remote, branchName: currentBranch });
+    result.published = true;
+    result.pushed = true;
+  } else if (action === 'push') {
+    await pushGitChanges(win, { gitRootPath, processUid, remote });
+    result.pushed = true;
+  } else if (action === 'pull' || action === 'pull-existing') {
+    const targetRemoteBranch = action === 'pull-existing'
+      ? (remoteBranch || await getRemoteDefaultBranch({ gitRootPath, remote }).catch(() => '') || 'main')
+      : remoteBranch;
+
+    const pullResult = action === 'pull-existing' && !await hasGitCommits(gitRootPath)
+      ? await adoptExistingRemoteWorkspace(win, {
+          gitRootPath,
+          processUid,
+          remote,
+          remoteBranch: targetRemoteBranch
+        })
+      : await pullGitChanges(win, { gitRootPath, processUid, remote, remoteBranch: targetRemoteBranch, strategy });
+
+    result.pulled = true;
+    result.localFilesBackedUp = Boolean(pullResult?.localFilesBackedUp);
+    result.localBackupFiles = pullResult?.localBackupFiles || [];
+    result.localBackupPath = pullResult?.localBackupPath || '';
+
+    if (pullResult?.mergeInProgress) {
+      result.mergeInProgress = true;
+      result.message = pullResult.message || 'Merge conflicts need to be resolved.';
+    } else if (pullResult?.message) {
+      result.message = pullResult.message;
+    } else if (action === 'pull-existing') {
+      await setGitBranchUpstream({
+        gitRootPath,
+        remote,
+        branchName: currentBranch || targetRemoteBranch,
+        remoteBranch: targetRemoteBranch
+      }).catch(() => {});
+    }
+  } else if (action === 'sync' || action === 'sync-full') {
+    const syncResult = await syncGitChanges(win, { gitRootPath, processUid, remote, strategy });
+    result.pulled = Boolean(syncResult?.pulled);
+    result.pushed = Boolean(syncResult?.pushed);
+    if (syncResult?.mergeInProgress) {
+      result.mergeInProgress = true;
+      result.message = syncResult.message || 'Merge conflicts need to be resolved.';
+    }
+  }
+
+  if (!result.message) {
+    const parts = [];
+    if (result.committed) parts.push('committed');
+    if (result.pulled) parts.push('pulled');
+    if (result.published) parts.push('published');
+    else if (result.pushed) parts.push('pushed');
+    result.message = parts.length ? `Guided Git action completed: ${parts.join(', ')}.` : 'Guided Git action completed.';
+  }
+
+  return result;
+};
+
 const fetchRemoteBranches = ({ gitRootPath, remote }) => {
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
@@ -1961,6 +2560,28 @@ const fetchRemoteBranches = ({ gitRootPath, remote }) => {
       }
     });
   });
+};
+
+const fetchRemoteBranchNamesFromRemote = async ({ gitRootPath, remote }) => {
+  if (!gitRootPath || !remote) {
+    return [];
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  try {
+    const result = await git.raw(['ls-remote', '--heads', remote]);
+    return result
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const match = line.match(/refs\/heads\/(.+)$/);
+        return match?.[1] || '';
+      })
+      .filter(Boolean);
+  } catch (_) {
+    return [];
+  }
 };
 
 const remoteBranchExists = async ({ gitRootPath, remote, branch }) => {
@@ -1992,7 +2613,7 @@ const addRemote = ({ gitRootPath, remoteName, remoteUrl }) => {
   });
 };
 
-const upsertRemote = async ({ gitRootPath, remoteName = 'origin', remoteUrl }) => {
+const upsertRemote = async ({ gitRootPath, remoteName = 'origin', remoteUrl, branchName = '' }) => {
   if (!remoteUrl?.trim()) {
     throw new Error('Remote URL is required');
   }
@@ -2006,6 +2627,8 @@ const upsertRemote = async ({ gitRootPath, remoteName = 'origin', remoteUrl }) =
   } else {
     await git.addRemote(remoteName, remoteUrl.trim());
   }
+
+  await ensureWorkspaceGitBranch({ gitRootPath, branchName });
 
   const remotes = await fetchRemotes(gitRootPath);
   return getRemotesForClient(remotes);
@@ -3051,6 +3674,7 @@ module.exports = {
   cloneGitRepository,
   fetchChanges,
   syncGitChanges,
+  performGuidedWorkspaceGitAction,
   fetchRemotes,
   fetchRemoteBranches,
   checkoutRemoteGitBranch,
@@ -3062,6 +3686,13 @@ module.exports = {
   removeRemote,
   getGitAuthDiagnostics,
   testGitAuthentication,
+  getWorkspaceGitSetupDiagnostics,
+  createGitSshKey,
+  scanGitKnownHost,
+  addGitKnownHost,
+  setGitIdentity,
+  enableGitGlobalLongPaths,
+  testGitSshConnection,
   getAheadBehindCount,
   getAheadCount,
   getBehindCount,

@@ -6,9 +6,8 @@ const StyledWrapper = styled.div`
   padding: 18px 24px;
 
   .git-layout {
-    display: grid;
-    grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
-    gap: 18px;
+    max-width: 1280px;
+    margin: 0 auto;
   }
 
   .empty-state-grid {
@@ -31,6 +30,108 @@ const StyledWrapper = styled.div`
     border-radius: ${(props) => props.theme.border.radius.sm};
     padding: 12px;
     background: ${(props) => props.theme.tabs.secondary.active.bg};
+  }
+
+  .git-assistant-panel {
+    border-color: ${(props) => props.theme.colors.text.orange};
+  }
+
+  .assistant-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .assistant-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .assistant-description {
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 13px;
+    line-height: 1.45;
+    margin: 0;
+  }
+
+  .assistant-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
+  }
+
+  .assistant-facts span {
+    padding: 4px 7px;
+    border: 1px solid ${(props) => props.theme.border.border1};
+    border-radius: 999px;
+    color: ${(props) => props.theme.colors.text.muted};
+    background: ${(props) => props.theme.input.bg};
+    font-size: 12px;
+  }
+
+  .assistant-note {
+    margin-top: 10px;
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .advanced-details,
+  .nested-advanced-details {
+    border: 1px solid ${(props) => props.theme.border.border1};
+    border-radius: ${(props) => props.theme.border.radius.sm};
+    background: ${(props) => props.theme.bg};
+  }
+
+  .advanced-details > summary,
+  .nested-advanced-details > summary {
+    cursor: pointer;
+    padding: 10px 12px;
+    color: ${(props) => props.theme.text};
+    font-weight: 600;
+    list-style-position: inside;
+  }
+
+  .advanced-details > summary:hover,
+  .nested-advanced-details > summary:hover {
+    background: ${(props) => props.theme.tabs.secondary.active.bg};
+  }
+
+  .advanced-content {
+    display: grid;
+    gap: 16px;
+    padding: 0 12px 12px;
+  }
+
+  .changes-diff-content {
+    display: grid;
+    grid-template-columns: minmax(300px, 38%) minmax(0, 1fr);
+    gap: 16px;
+    padding: 0 12px 12px;
+    align-items: stretch;
+  }
+
+  .changes-panel,
+  .diff-panel {
+    min-height: 360px;
+  }
+
+  .changes-scroll {
+    max-height: 520px;
+    overflow: auto;
+    padding-right: 4px;
+  }
+
+  .nested-advanced-details {
+    border-style: dashed;
+  }
+
+  .nested-advanced-details .panel {
+    border: none;
+    padding-top: 0;
   }
 
   .outside-list {
@@ -82,9 +183,10 @@ const StyledWrapper = styled.div`
 
   .meta-grid {
     display: grid;
-    grid-template-columns: 88px 1fr;
+    grid-template-columns: 88px minmax(0, 760px);
     gap: 8px 10px;
     font-size: 13px;
+    align-items: center;
   }
 
   .meta-label {
@@ -130,9 +232,15 @@ const StyledWrapper = styled.div`
   .remote-value {
     min-width: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, max-content) auto;
     align-items: center;
     gap: 6px;
+    justify-content: start;
+  }
+
+  .remote-value-empty {
+    grid-template-columns: max-content auto;
+    gap: 10px;
   }
 
   .remote-link,
@@ -195,8 +303,9 @@ const StyledWrapper = styled.div`
   }
 
   .diff-box {
-    min-height: 420px;
-    max-height: 620px;
+    height: 520px;
+    min-height: 320px;
+    max-height: 520px;
   }
 
   .output-box {
@@ -277,9 +386,23 @@ const StyledWrapper = styled.div`
 
   .remote-form {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(120px, 180px) auto;
     gap: 8px;
     align-items: center;
+  }
+
+  .repository-branch-select {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(180px, 280px);
+    align-items: center;
+    gap: 6px;
+    justify-content: start;
+  }
+
+  .repository-branch-select .textbox {
+    min-width: 0;
+    width: 100%;
   }
 
   .branch-controls,
@@ -310,13 +433,102 @@ const StyledWrapper = styled.div`
     line-height: 1.45;
   }
 
+  .setup-checklist {
+    display: grid;
+    gap: 8px;
+  }
+
+  .setup-row {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: start;
+    padding: 9px 10px;
+    border: 1px solid ${(props) => props.theme.border.border1};
+    border-radius: ${(props) => props.theme.border.radius.sm};
+    background: ${(props) => props.theme.input.bg};
+  }
+
+  .setup-status-icon {
+    display: flex;
+    justify-content: center;
+    color: ${(props) => props.theme.colors.text.muted};
+    padding-top: 2px;
+  }
+
+  .setup-row-title {
+    font-weight: 600;
+  }
+
+  .setup-row-fa,
+  .setup-row-detail {
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 12px;
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .setup-badge {
+    padding: 3px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    border: 1px solid ${(props) => props.theme.border.border1};
+  }
+
+  .setup-ok {
+    color: ${(props) => props.theme.colors.text.green || props.theme.text};
+  }
+
+  .setup-warning,
+  .setup-admin,
+  .setup-missing {
+    color: ${(props) => props.theme.colors.text.orange};
+  }
+
+  .setup-unknown {
+    color: ${(props) => props.theme.colors.text.muted};
+  }
+
+  .setup-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .setup-form {
+    display: grid;
+    gap: 8px;
+  }
+
+  .setup-two-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .setup-input-label {
+    display: grid;
+    gap: 4px;
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 12px;
+  }
+
   @media (max-width: 1100px) {
-    .git-layout,
+    .changes-diff-content,
     .empty-state-grid {
       grid-template-columns: 1fr;
     }
 
-    .branch-create-form {
+    .assistant-header {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .branch-create-form,
+    .remote-form,
+    .setup-two-columns {
       grid-template-columns: 1fr;
     }
   }

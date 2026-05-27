@@ -7,7 +7,6 @@ import {
   IconChevronDown,
   IconFolder,
   IconGitBranch,
-  IconGitCommit,
   IconGitFork,
   IconHome,
   IconPin,
@@ -18,7 +17,6 @@ import {
   IconSettings,
   IconMinus,
   IconSquare,
-  IconUpload,
   IconX,
   IconCopy,
   IconExternalLink
@@ -116,27 +114,99 @@ const getProviderUrls = ({ browserRemoteUrl, sourceBranch, targetBranch }) => {
   };
 };
 
-const getSyncCommittedLabel = ({ hasRemote, hasUpstream, hasCommits, operation }) => {
-  if (!hasRemote) return 'Sync committed (set origin first)';
-  if (!hasUpstream) return 'Sync committed (publish branch first)';
-  if (!hasCommits) return 'Sync committed (commit first)';
-  if (operation === 'Sync committed') return 'Syncing committed changes...';
-  return 'Sync committed';
-};
+const getTitlebarGuidedGitAction = ({ summary, operation }) => {
+  if (!summary.isGitRepository) {
+    return {
+      type: 'init',
+      label: operation === 'Initialize Git' ? 'Initializing Git...' : 'Initialize Git',
+      icon: IconGitFork,
+      disabled: operation === 'Initialize Git'
+    };
+  }
 
-const getPullLabel = ({ hasRemote, hasUpstream, operation }) => {
-  if (!hasRemote) return 'Pull (set origin first)';
-  if (!hasUpstream) return 'Pull (publish branch first)';
-  if (operation === 'Pull') return 'Pulling...';
-  return 'Pull';
-};
+  if (summary.hasConflicts) {
+    return {
+      type: 'resolve',
+      label: 'Resolve conflicts in Git tab',
+      icon: IconGitBranch
+    };
+  }
 
-const getPushLabel = ({ hasRemote, hasUpstream, hasCommits, operation }) => {
-  if (!hasRemote) return 'Push (set origin first)';
-  if (!hasUpstream) return 'Publish branch';
-  if (!hasCommits) return 'Push (commit first)';
-  if (operation === 'Push') return 'Pushing...';
-  return 'Push';
+  if (!summary.hasRemote) {
+    return {
+      type: 'connect-remote',
+      label: 'Connect remote in Git tab',
+      icon: IconBrandGit
+    };
+  }
+
+  if (!summary.hasCommits && summary.remoteHasBranches) {
+    return {
+      type: 'pull-existing',
+      label: operation === 'Pull existing workspace' ? 'Pulling existing workspace...' : 'Pull existing workspace',
+      icon: IconDownload,
+      disabled: operation === 'Pull existing workspace'
+    };
+  }
+
+  if (!summary.hasCommits) {
+    return {
+      type: 'publish-workspace',
+      label: 'Publish workspace in Git tab',
+      icon: IconBrandGit
+    };
+  }
+
+  if (summary.changeCount > 0) {
+    return {
+      type: 'save',
+      label: 'Save changes in Git tab',
+      icon: IconGitBranch
+    };
+  }
+
+  if (!summary.hasUpstream) {
+    return {
+      type: 'publish-branch',
+      label: operation === 'Publish branch' ? 'Publishing branch...' : 'Publish branch',
+      icon: IconBrandGit,
+      disabled: operation === 'Publish branch'
+    };
+  }
+
+  if (summary.ahead > 0 && summary.behind > 0) {
+    return {
+      type: 'sync',
+      label: operation === 'Sync changes' ? 'Syncing changes...' : 'Sync changes',
+      icon: IconRefresh,
+      disabled: operation === 'Sync changes'
+    };
+  }
+
+  if (summary.behind > 0) {
+    return {
+      type: 'pull',
+      label: operation === 'Pull updates' ? 'Pulling updates...' : 'Pull updates',
+      icon: IconDownload,
+      disabled: operation === 'Pull updates'
+    };
+  }
+
+  if (summary.ahead > 0) {
+    return {
+      type: 'push',
+      label: operation === 'Push to remote' ? 'Pushing to remote...' : 'Push to remote',
+      icon: IconBrandGit,
+      disabled: operation === 'Push to remote'
+    };
+  }
+
+  return {
+    type: 'synced',
+    label: 'Workspace is synced',
+    icon: IconCheck,
+    disabled: true
+  };
 };
 
 const AppTitleBar = () => {
@@ -310,47 +380,39 @@ const AppTitleBar = () => {
     dispatch(focusTab({ uid: tabUid }));
   }, [activeWorkspace?.scratchCollectionUid, dispatch]);
 
-  const runWorkspaceGitOperation = useCallback(async (label, invokeName, payload = {}) => {
+  const runGuidedWorkspaceGitAction = useCallback(async (action, label) => {
     if (!workspaceGitData?.gitRootPath) {
       handleOpenWorkspaceGit();
       return;
     }
 
-    const currentBranch = workspaceGitData.currentBranch || workspaceGitData.currentGitBranch || workspaceGitData.status?.current || '';
     const remote = workspaceGitData.remotes?.find((item) => item.name === 'origin')?.name || workspaceGitData.remotes?.[0]?.name || 'origin';
 
     setWorkspaceGitOperation(label);
     try {
-      const result = await window.ipcRenderer.invoke(invokeName, {
+      const result = await window.ipcRenderer.invoke('renderer:guided-workspace-git-action', {
         gitRootPath: workspaceGitData.gitRootPath,
         processUid: uuid(),
         remote,
-        strategy: '--no-rebase',
-        ...payload
+        action,
+        remoteBranch: workspaceGitData.remoteDefaultBranch || workspaceGitData.defaultGitBranch || 'main',
+        strategy: '--no-rebase'
       });
+
       if (result?.mergeInProgress) {
         toast.error('Merge conflicts need to be resolved in the Git tab');
         handleOpenWorkspaceGit();
       } else {
-        toast.success(`${label} completed`);
+        toast.success(result?.message || `${label} completed`);
       }
-      await refreshWorkspaceGitStatus({ silent: true });
+      await refreshWorkspaceGitStatus({ silent: true, fetchRemote: ['pull', 'pull-existing', 'sync'].includes(action) });
     } catch (error) {
-      toast.error(error?.message || `${label} failed`);
+      toast.error(getIpcErrorMessage(error, `${label} failed`));
       await refreshWorkspaceGitStatus({ silent: true });
     } finally {
       setWorkspaceGitOperation(null);
     }
   }, [handleOpenWorkspaceGit, refreshWorkspaceGitStatus, workspaceGitData]);
-
-  const publishWorkspaceGitBranch = useCallback(() => {
-    const currentBranch = workspaceGitData?.currentBranch || workspaceGitData?.currentGitBranch || workspaceGitData?.status?.current || '';
-    if (!currentBranch) {
-      toast.error('Current branch could not be detected');
-      return;
-    }
-    return runWorkspaceGitOperation('Publish branch', 'renderer:publish-workspace-git-branch', { branchName: currentBranch });
-  }, [runWorkspaceGitOperation, workspaceGitData]);
 
   const initializeWorkspaceGit = useCallback(async () => {
     if (!activeWorkspace?.pathname) return;
@@ -505,6 +567,7 @@ const AppTitleBar = () => {
     const hasConflicts = Boolean(workspaceGitData?.mergeInProgress || changedFiles.conflicted?.length);
     const hasCommits = Boolean(workspaceGitData?.hasCommits);
     const hasUpstream = Boolean(workspaceGitData?.hasUpstream || workspaceGitData?.trackingBranch || workspaceGitData?.status?.tracking);
+    const remoteHasBranches = Boolean(workspaceGitData?.remoteHasBranches || workspaceGitData?.remoteBranchNames?.length || workspaceGitData?.remoteBranches?.length);
     const currentBranch = workspaceGitData?.currentBranch || workspaceGitData?.currentGitBranch || workspaceGitData?.status?.current || '';
     const remoteUrl = workspaceGitData?.remotes?.find((item) => item.name === 'origin')?.refs?.fetch || workspaceGitData?.remotes?.[0]?.refs?.fetch || '';
     const browserRemoteUrl = getBrowserRemoteUrl(remoteUrl);
@@ -522,6 +585,7 @@ const AppTitleBar = () => {
       hasCommits,
       hasUpstream,
       hasConflicts,
+      remoteHasBranches,
       currentBranch,
       trackingBranch: workspaceGitData?.trackingBranch || workspaceGitData?.status?.tracking || '',
       providerUrls,
@@ -530,40 +594,47 @@ const AppTitleBar = () => {
   }, [workspaceGitData]);
 
   const workspaceGitMenuItems = useMemo(() => {
-    if (!workspaceGitSummary.isGitRepository) {
-      return [
-        {
-          id: 'init-workspace-git',
-          leftSection: IconGitFork,
-          label: workspaceGitOperation === 'Initialize Git' ? 'Initializing...' : 'Initialize Git',
-          onClick: initializeWorkspaceGit
-        },
-        {
-          id: 'open-workspace-git',
-          leftSection: IconBrandGit,
-          label: 'Open Git tab',
-          onClick: handleOpenWorkspaceGit
-        },
-        {
-          id: 'refresh-workspace-git',
-          leftSection: IconRefresh,
-          label: 'Refresh status',
-          onClick: () => refreshWorkspaceGitStatus({ fetchRemote: true })
-        }
-      ];
-    }
+    const primaryAction = getTitlebarGuidedGitAction({
+      summary: workspaceGitSummary,
+      operation: workspaceGitOperation
+    });
+    const runPrimaryAction = () => {
+      if (primaryAction.type === 'init') {
+        return initializeWorkspaceGit();
+      }
 
-    return [
+      if (['connect-remote', 'publish-workspace', 'save', 'resolve'].includes(primaryAction.type)) {
+        return handleOpenWorkspaceGit();
+      }
+
+      if (primaryAction.type === 'synced') {
+        return null;
+      }
+
+      return runGuidedWorkspaceGitAction(primaryAction.type, primaryAction.label);
+    };
+
+    const items = [
       {
         type: 'label',
-        label: workspaceGitSummary.hasUpstream
+        label: workspaceGitSummary.isGitRepository && workspaceGitSummary.hasUpstream
           ? `${workspaceGitSummary.currentBranch} -> ${workspaceGitSummary.trackingBranch}`
-          : `${workspaceGitSummary.currentBranch || 'Branch'} (not published)`
+          : workspaceGitSummary.isGitRepository
+            ? `${workspaceGitSummary.currentBranch || 'Branch'} (not published)`
+            : 'Git is not initialized'
       },
+      {
+        id: 'workspace-git-primary-action',
+        leftSection: primaryAction.icon,
+        label: primaryAction.label,
+        disabled: primaryAction.disabled,
+        onClick: runPrimaryAction
+      },
+      { type: 'divider', id: 'workspace-git-primary-divider' },
       {
         id: 'open-workspace-git',
         leftSection: IconBrandGit,
-        label: 'View changes in Git tab',
+        label: 'View Git tab',
         onClick: handleOpenWorkspaceGit
       },
       {
@@ -571,50 +642,6 @@ const AppTitleBar = () => {
         leftSection: IconRefresh,
         label: 'Refresh status',
         onClick: () => refreshWorkspaceGitStatus({ fetchRemote: true })
-      },
-      { type: 'divider', id: 'workspace-git-actions-divider' },
-      {
-        id: 'sync-workspace-git',
-        leftSection: IconUpload,
-        label: getSyncCommittedLabel({
-          hasRemote: workspaceGitSummary.hasRemote,
-          hasUpstream: workspaceGitSummary.hasUpstream,
-          hasCommits: workspaceGitSummary.hasCommits,
-          operation: workspaceGitOperation
-        }),
-        disabled: !workspaceGitSummary.hasRemote || !workspaceGitSummary.hasCommits || !workspaceGitSummary.hasUpstream,
-        onClick: () => runWorkspaceGitOperation('Sync committed', 'renderer:sync-workspace-git')
-      },
-      {
-        id: 'sync-full-workspace-git',
-        leftSection: IconGitCommit,
-        label: 'Sync Full (use Git tab)',
-        onClick: handleOpenWorkspaceGit
-      },
-      {
-        id: 'pull-workspace-git',
-        leftSection: IconArrowDown,
-        label: getPullLabel({
-          hasRemote: workspaceGitSummary.hasRemote,
-          hasUpstream: workspaceGitSummary.hasUpstream,
-          operation: workspaceGitOperation
-        }),
-        disabled: !workspaceGitSummary.hasRemote || !workspaceGitSummary.hasUpstream,
-        onClick: () => runWorkspaceGitOperation('Pull', 'renderer:pull-workspace-git')
-      },
-      {
-        id: 'push-workspace-git',
-        leftSection: IconArrowUp,
-        label: getPushLabel({
-          hasRemote: workspaceGitSummary.hasRemote,
-          hasUpstream: workspaceGitSummary.hasUpstream,
-          hasCommits: workspaceGitSummary.hasCommits,
-          operation: workspaceGitOperation
-        }),
-        disabled: !workspaceGitSummary.hasRemote || !workspaceGitSummary.hasCommits,
-        onClick: () => workspaceGitSummary.hasUpstream
-          ? runWorkspaceGitOperation('Push', 'renderer:push-workspace-git')
-          : publishWorkspaceGitBranch()
       },
       { type: 'divider', id: 'workspace-git-mr-divider' },
       {
@@ -632,16 +659,26 @@ const AppTitleBar = () => {
         onClick: () => window?.ipcRenderer?.openExternal(workspaceGitSummary.providerUrls.mergeRequestsUrl)
       }
     ];
+
+    if (!workspaceGitSummary.providerUrls.createMergeRequestUrl && !workspaceGitSummary.providerUrls.mergeRequestsUrl) {
+      return items.filter((item) => !['workspace-git-mr-divider', 'create-merge-request', 'open-merge-requests'].includes(item.id));
+    }
+
+    return items;
   }, [
     handleOpenWorkspaceGit,
     initializeWorkspaceGit,
     refreshWorkspaceGitStatus,
-    runWorkspaceGitOperation,
-    publishWorkspaceGitBranch,
+    runGuidedWorkspaceGitAction,
     workspaceGitOperation,
     workspaceGitSummary.hasCommits,
+    workspaceGitSummary.remoteHasBranches,
     workspaceGitSummary.hasRemote,
     workspaceGitSummary.hasUpstream,
+    workspaceGitSummary.hasConflicts,
+    workspaceGitSummary.changeCount,
+    workspaceGitSummary.ahead,
+    workspaceGitSummary.behind,
     workspaceGitSummary.isGitRepository,
     workspaceGitSummary.currentBranch,
     workspaceGitSummary.trackingBranch,

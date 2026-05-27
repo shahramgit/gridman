@@ -16,6 +16,7 @@ const {
   pullGitChanges,
   pushGitChanges,
   syncGitChanges,
+  performGuidedWorkspaceGitAction,
   checkoutGitBranch,
   checkoutRemoteGitBranch,
   publishGitBranch,
@@ -28,7 +29,14 @@ const {
   getUnstagedFileDiff,
   upsertRemote,
   getGitAuthDiagnostics,
-  testGitAuthentication
+  testGitAuthentication,
+  getWorkspaceGitSetupDiagnostics,
+  createGitSshKey,
+  scanGitKnownHost,
+  addGitKnownHost,
+  setGitIdentity,
+  enableGitGlobalLongPaths,
+  testGitSshConnection
 } = require('../utils/git');
 const { createDirectory, removeDirectory } = require('../utils/filesystem');
 
@@ -87,8 +95,8 @@ const registerGitIpc = (mainWindow) => {
     return withWorkspaceGitOperationLock(workspacePath, 'Git init', () => initWorkspaceGit({ workspacePath, collectionPaths, preferCollectionParent }));
   });
 
-  ipcMain.handle('renderer:set-workspace-git-remote', async (event, { gitRootPath, remoteName = 'origin', remoteUrl }) => {
-    return withWorkspaceGitOperationLock(gitRootPath, 'set origin', () => upsertRemote({ gitRootPath, remoteName, remoteUrl }));
+  ipcMain.handle('renderer:set-workspace-git-remote', async (event, { gitRootPath, remoteName = 'origin', remoteUrl, branchName = '' }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'set origin', () => upsertRemote({ gitRootPath, remoteName, remoteUrl, branchName }));
   });
 
   ipcMain.handle('renderer:get-workspace-git-auth-diagnostics', async (event, { gitRootPath, remote = 'origin', remoteUrl = '' }) => {
@@ -97,6 +105,34 @@ const registerGitIpc = (mainWindow) => {
 
   ipcMain.handle('renderer:test-workspace-git-auth', async (event, { gitRootPath, remote = 'origin', remoteUrl = '' }) => {
     return testGitAuthentication({ gitRootPath, remote, remoteUrl });
+  });
+
+  ipcMain.handle('renderer:get-workspace-git-setup-diagnostics', async (event, { gitRootPath, remote = 'origin', remoteUrl = '' }) => {
+    return getWorkspaceGitSetupDiagnostics({ gitRootPath, remote, remoteUrl });
+  });
+
+  ipcMain.handle('renderer:create-git-ssh-key', async (event, { email = '' }) => {
+    return createGitSshKey({ email });
+  });
+
+  ipcMain.handle('renderer:scan-git-known-host', async (event, { host, port }) => {
+    return scanGitKnownHost({ host, port });
+  });
+
+  ipcMain.handle('renderer:add-git-known-host', async (event, { host, port, hostKey }) => {
+    return addGitKnownHost({ host, port, hostKey });
+  });
+
+  ipcMain.handle('renderer:set-git-identity', async (event, { gitRootPath, name, email }) => {
+    return setGitIdentity({ gitRootPath, name, email });
+  });
+
+  ipcMain.handle('renderer:enable-git-global-longpaths', async (event, { gitRootPath }) => {
+    return enableGitGlobalLongPaths({ gitRootPath });
+  });
+
+  ipcMain.handle('renderer:test-git-ssh-connection', async (event, { gitRootPath, remote = 'origin', remoteUrl = '' }) => {
+    return testGitSshConnection({ gitRootPath, remote, remoteUrl });
   });
 
   ipcMain.handle('renderer:stage-workspace-git-files', async (event, { gitRootPath, files }) => {
@@ -127,6 +163,17 @@ const registerGitIpc = (mainWindow) => {
 
   ipcMain.handle('renderer:sync-workspace-git', async (event, { gitRootPath, processUid, remote = 'origin', remoteBranch, strategy = '--no-rebase' }) => {
     return withWorkspaceGitOperationLock(gitRootPath, 'sync', () => syncGitChanges(mainWindow, { gitRootPath, processUid, remote, remoteBranch, strategy }));
+  });
+
+  ipcMain.handle('renderer:guided-workspace-git-action', async (event, { gitRootPath, processUid, remote = 'origin', action, message, strategy = '--no-rebase' }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'guided Git action', () => performGuidedWorkspaceGitAction(mainWindow, {
+      gitRootPath,
+      processUid,
+      remote,
+      action,
+      message,
+      strategy
+    }));
   });
 
   ipcMain.handle('renderer:checkout-workspace-git-branch', async (event, { gitRootPath, processUid, branchName }) => {
