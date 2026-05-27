@@ -1717,12 +1717,13 @@ export const collectionsSlice = createSlice({
       if (!item.draft) {
         item.draft = cloneDeep(item);
       }
-      item.draft.request.body.multipartForm = map(params, ({ uid, name = '', value = '', contentType = '', type = 'text', enabled = true }) => ({
+      item.draft.request.body.multipartForm = map(params, ({ uid, name = '', value = '', contentType = '', type = 'text', description = '', enabled = true }) => ({
         uid: uid || uuid(),
         name,
         value,
         contentType,
         type,
+        description,
         enabled
       }));
     },

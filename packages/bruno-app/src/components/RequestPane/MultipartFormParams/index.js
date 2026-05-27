@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import get from 'lodash/get';
 import { useDispatch, useSelector } from 'react-redux';
 import { useTheme } from 'providers/Theme';
@@ -13,6 +13,7 @@ import SingleLineEditor from 'components/SingleLineEditor';
 import { sendRequest, saveRequest } from 'providers/ReduxStore/slices/collections/actions';
 import { updateTableColumnWidths } from 'providers/ReduxStore/slices/tabs';
 import EditableTable from 'components/EditableTable';
+import BulkEditor from 'components/BulkEditor';
 import StyledWrapper from './StyledWrapper';
 import { getRelativePathWithinBasePath } from 'utils/common/path';
 import { usePersistedState } from 'hooks/usePersistedState';
@@ -28,6 +29,7 @@ const MultipartFormParams = ({ item, collection }) => {
   const tabs = useSelector((state) => state.tabs.tabs);
   const activeTabUid = useSelector((state) => state.tabs.activeTabUid);
   const params = item.draft ? get(item, 'draft.request.body.multipartForm') : get(item, 'request.body.multipartForm');
+  const [isBulkEditMode, setIsBulkEditMode] = useState(false);
 
   // Get column widths from Redux
   const focusedTab = tabs?.find((t) => t.uid === activeTabUid);
@@ -47,6 +49,36 @@ const MultipartFormParams = ({ item, collection }) => {
       params: updatedParams
     }));
   }, [dispatch, collection.uid, item.uid]);
+
+  const textParams = useMemo(() => {
+    return (params || []).filter((param) => param.type !== 'file');
+  }, [params]);
+
+  const handleBulkParamsChange = useCallback((updatedParams) => {
+    const currentParams = params || [];
+    const mergedTextParams = updatedParams.map((param, index) => ({
+      ...textParams[index],
+      ...param,
+      type: 'text'
+    }));
+    let textIndex = 0;
+    const nextParams = currentParams.reduce((acc, param) => {
+      if (param.type === 'file') {
+        acc.push(param);
+        return acc;
+      }
+
+      if (textIndex < mergedTextParams.length) {
+        acc.push(mergedTextParams[textIndex]);
+      }
+      textIndex += 1;
+      return acc;
+    }, []);
+
+    nextParams.push(...mergedTextParams.slice(textIndex));
+
+    handleParamsChange(nextParams);
+  }, [handleParamsChange, params, textParams]);
 
   const handleParamDrag = useCallback(({ updateReorderedItem }) => {
     dispatch(moveMultipartFormParam({
@@ -241,6 +273,29 @@ const MultipartFormParams = ({ item, collection }) => {
     type: 'text'
   };
 
+  const toggleBulkEditMode = () => {
+    setIsBulkEditMode(!isBulkEditMode);
+  };
+
+  if (isBulkEditMode) {
+    return (
+      <StyledWrapper className="w-full mt-3">
+        <BulkEditor
+          params={textParams}
+          onChange={handleBulkParamsChange}
+          onToggle={toggleBulkEditMode}
+          onSave={onSave}
+          onRun={handleRun}
+        />
+        {(params || []).some((param) => param.type === 'file') && (
+          <div className="text-muted text-xs mt-2">
+            File rows are kept unchanged and are not shown in Bulk Edit.
+          </div>
+        )}
+      </StyledWrapper>
+    );
+  }
+
   return (
     <StyledWrapper className="w-full" ref={wrapperRef}>
       <EditableTable
@@ -255,6 +310,11 @@ const MultipartFormParams = ({ item, collection }) => {
         onColumnWidthsChange={(widths) => handleColumnWidthsChange('multipart-form', widths)}
         initialScroll={scroll}
       />
+      <div className="bulk-edit-bar flex justify-end mt-2">
+        <button className="btn-action text-link select-none" onClick={toggleBulkEditMode}>
+          Bulk Edit
+        </button>
+      </div>
     </StyledWrapper>
   );
 };
