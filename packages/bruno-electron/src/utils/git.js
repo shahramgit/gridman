@@ -1417,6 +1417,36 @@ const setGitBranchUpstream = async ({ gitRootPath, remote = 'origin', branchName
   return git.raw(['branch', '--set-upstream-to', `${remote}/${targetBranch}`, localBranch]);
 };
 
+const ensureWorkspaceGitBranch = async ({ gitRootPath, branchName }) => {
+  const branch = String(branchName || '').trim();
+  if (!branch) {
+    return null;
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  await git.raw(['check-ref-format', '--branch', branch]);
+
+  const currentBranch = await getCurrentGitBranch(gitRootPath).catch(() => '');
+  if (currentBranch === branch) {
+    return currentBranch;
+  }
+
+  const hasCommits = await hasGitCommits(gitRootPath);
+  if (!hasCommits) {
+    await git.raw(['branch', '-M', branch]);
+    return branch;
+  }
+
+  const localBranches = await getCollectionGitBranches(gitRootPath).catch(() => []);
+  if (localBranches.includes(branch)) {
+    await git.checkout(branch);
+    return branch;
+  }
+
+  await git.checkout(['-b', branch]);
+  return branch;
+};
+
 const checkoutRemoteGitBranch = async (win, { gitRootPath, remoteName, branchName, processUid }) => {
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
@@ -2208,6 +2238,49 @@ const createSafetyCommitForFiles = async (gitRootPath, files, message = 'Save lo
   };
 };
 
+const adoptExistingRemoteWorkspace = async (win, { gitRootPath, processUid, remote = 'origin', remoteBranch }) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true }));
+
+  const branch = remoteBranch || await getRemoteDefaultBranch({ gitRootPath, remote }).catch(() => '') || 'main';
+  const currentBranch = await getCurrentGitBranch(gitRootPath).catch(() => '') || branch;
+  await fetchChanges(gitRootPath, remote);
+
+  const localStatus = await git.raw(['-c', 'core.quotePath=false', 'status', '--porcelain', '-z', '--untracked-files=all']);
+  const localFiles = parsePorcelainStatusPaths(localStatus).filter((filePath) => {
+    return filePath && filePath !== '.git' && !filePath.startsWith('.git/');
+  });
+  const localBackup = backupFilesBeforePull(gitRootPath, localFiles);
+
+  if (localBackup.skippedFiles.length) {
+    throw new Error([
+      'Gridman could not back up local starter files before pulling the existing workspace.',
+      'Move, delete, or manually commit these files before pulling:',
+      ...localBackup.skippedFiles
+    ].join('\n'));
+  }
+
+  await git.raw(['checkout', '-B', currentBranch, `${remote}/${branch}`]);
+  await setGitBranchUpstream({
+    gitRootPath,
+    remote,
+    branchName: currentBranch,
+    remoteBranch: branch
+  }).catch(() => {});
+
+  notifyWorkspaceConfigUpdated(win, gitRootPath);
+
+  return {
+    pulled: true,
+    localFilesBackedUp: Boolean(localBackup.files.length),
+    localBackupFiles: localBackup.files,
+    localBackupPath: localBackup.backupPath,
+    message: localBackup.files.length
+      ? `Existing remote workspace pulled. Local starter files were backed up at: ${localBackup.backupPath}`
+      : 'Existing remote workspace pulled.'
+  };
+};
+
 const getWorkspaceGitStatusForClient = (status = {}) => ({
   current: status.current || '',
   tracking: status.tracking || null,
@@ -2267,7 +2340,7 @@ const getWorkspaceGitData = async (input) => {
     await fetchChanges(gitRootPath, remoteToFetch);
   }
 
-  const [status, remotesForClient, branchMetadata, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits, auth] = await Promise.all([
+  const [status, remotesForClient, branchMetadata, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits, auth, remoteBranchNamesFromRemote] = await Promise.all([
     getGitStatus(gitRootPath),
     Promise.resolve(remotes),
     getGitBranchMetadata({ gitRootPath, remote: remoteToFetch || remote }).catch(() => ({
@@ -2285,7 +2358,8 @@ const getWorkspaceGitData = async (input) => {
     getDefaultGitBranch(gitRootPath).catch(() => ''),
     getAheadBehindCount(gitRootPath).catch(() => ({ ahead: 0, behind: 0, aheadCommits: [], behindCommits: [] })),
     hasGitCommits(gitRootPath),
-    getGitAuthDiagnostics({ gitRootPath, remote: remoteToFetch || remote }).catch(() => null)
+    getGitAuthDiagnostics({ gitRootPath, remote: remoteToFetch || remote }).catch(() => null),
+    fetchRemoteBranchNamesFromRemote({ gitRootPath, remote: remoteToFetch || remote }).catch(() => [])
   ]);
 
   const changedFiles = await getChangedFilesInCollectionGit(gitRootPath, gitRootPath);
@@ -2311,6 +2385,8 @@ const getWorkspaceGitData = async (input) => {
     upstreamRemote: branchMetadata.upstreamRemote,
     upstreamBranch: branchMetadata.upstreamBranch,
     hasCommits,
+    remoteHasBranches: remoteBranchNamesFromRemote.length > 0,
+    remoteBranchNames: remoteBranchNamesFromRemote,
     aheadBehind: getAheadBehindForClient(aheadBehind),
     auth,
     mergeInProgress
@@ -2358,6 +2434,7 @@ const performGuidedWorkspaceGitAction = async (win, {
   remote = 'origin',
   action,
   message = '',
+  remoteBranch = '',
   strategy = '--no-rebase'
 }) => {
   if (!gitRootPath) {
@@ -2414,12 +2491,37 @@ const performGuidedWorkspaceGitAction = async (win, {
   } else if (action === 'push') {
     await pushGitChanges(win, { gitRootPath, processUid, remote });
     result.pushed = true;
-  } else if (action === 'pull') {
-    const pullResult = await pullGitChanges(win, { gitRootPath, processUid, remote, strategy });
+  } else if (action === 'pull' || action === 'pull-existing') {
+    const targetRemoteBranch = action === 'pull-existing'
+      ? (remoteBranch || await getRemoteDefaultBranch({ gitRootPath, remote }).catch(() => '') || 'main')
+      : remoteBranch;
+
+    const pullResult = action === 'pull-existing' && !await hasGitCommits(gitRootPath)
+      ? await adoptExistingRemoteWorkspace(win, {
+          gitRootPath,
+          processUid,
+          remote,
+          remoteBranch: targetRemoteBranch
+        })
+      : await pullGitChanges(win, { gitRootPath, processUid, remote, remoteBranch: targetRemoteBranch, strategy });
+
     result.pulled = true;
+    result.localFilesBackedUp = Boolean(pullResult?.localFilesBackedUp);
+    result.localBackupFiles = pullResult?.localBackupFiles || [];
+    result.localBackupPath = pullResult?.localBackupPath || '';
+
     if (pullResult?.mergeInProgress) {
       result.mergeInProgress = true;
       result.message = pullResult.message || 'Merge conflicts need to be resolved.';
+    } else if (pullResult?.message) {
+      result.message = pullResult.message;
+    } else if (action === 'pull-existing') {
+      await setGitBranchUpstream({
+        gitRootPath,
+        remote,
+        branchName: currentBranch || targetRemoteBranch,
+        remoteBranch: targetRemoteBranch
+      }).catch(() => {});
     }
   } else if (action === 'sync' || action === 'sync-full') {
     const syncResult = await syncGitChanges(win, { gitRootPath, processUid, remote, strategy });
@@ -2460,6 +2562,28 @@ const fetchRemoteBranches = ({ gitRootPath, remote }) => {
   });
 };
 
+const fetchRemoteBranchNamesFromRemote = async ({ gitRootPath, remote }) => {
+  if (!gitRootPath || !remote) {
+    return [];
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  try {
+    const result = await git.raw(['ls-remote', '--heads', remote]);
+    return result
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const match = line.match(/refs\/heads\/(.+)$/);
+        return match?.[1] || '';
+      })
+      .filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+};
+
 const remoteBranchExists = async ({ gitRootPath, remote, branch }) => {
   if (!remote || !branch) {
     return false;
@@ -2489,7 +2613,7 @@ const addRemote = ({ gitRootPath, remoteName, remoteUrl }) => {
   });
 };
 
-const upsertRemote = async ({ gitRootPath, remoteName = 'origin', remoteUrl }) => {
+const upsertRemote = async ({ gitRootPath, remoteName = 'origin', remoteUrl, branchName = '' }) => {
   if (!remoteUrl?.trim()) {
     throw new Error('Remote URL is required');
   }
@@ -2503,6 +2627,8 @@ const upsertRemote = async ({ gitRootPath, remoteName = 'origin', remoteUrl }) =
   } else {
     await git.addRemote(remoteName, remoteUrl.trim());
   }
+
+  await ensureWorkspaceGitBranch({ gitRootPath, branchName });
 
   const remotes = await fetchRemotes(gitRootPath);
   return getRemotesForClient(remotes);

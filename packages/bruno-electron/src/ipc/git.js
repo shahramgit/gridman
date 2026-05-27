@@ -95,8 +95,8 @@ const registerGitIpc = (mainWindow) => {
     return withWorkspaceGitOperationLock(workspacePath, 'Git init', () => initWorkspaceGit({ workspacePath, collectionPaths, preferCollectionParent }));
   });
 
-  ipcMain.handle('renderer:set-workspace-git-remote', async (event, { gitRootPath, remoteName = 'origin', remoteUrl }) => {
-    return withWorkspaceGitOperationLock(gitRootPath, 'set origin', () => upsertRemote({ gitRootPath, remoteName, remoteUrl }));
+  ipcMain.handle('renderer:set-workspace-git-remote', async (event, { gitRootPath, remoteName = 'origin', remoteUrl, branchName = '' }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'set origin', () => upsertRemote({ gitRootPath, remoteName, remoteUrl, branchName }));
   });
 
   ipcMain.handle('renderer:get-workspace-git-auth-diagnostics', async (event, { gitRootPath, remote = 'origin', remoteUrl = '' }) => {

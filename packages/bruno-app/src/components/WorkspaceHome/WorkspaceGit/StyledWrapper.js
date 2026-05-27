@@ -6,9 +6,8 @@ const StyledWrapper = styled.div`
   padding: 18px 24px;
 
   .git-layout {
-    display: grid;
-    grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
-    gap: 18px;
+    max-width: 1280px;
+    margin: 0 auto;
   }
 
   .empty-state-grid {
@@ -107,6 +106,25 @@ const StyledWrapper = styled.div`
     padding: 0 12px 12px;
   }
 
+  .changes-diff-content {
+    display: grid;
+    grid-template-columns: minmax(300px, 38%) minmax(0, 1fr);
+    gap: 16px;
+    padding: 0 12px 12px;
+    align-items: stretch;
+  }
+
+  .changes-panel,
+  .diff-panel {
+    min-height: 360px;
+  }
+
+  .changes-scroll {
+    max-height: 520px;
+    overflow: auto;
+    padding-right: 4px;
+  }
+
   .nested-advanced-details {
     border-style: dashed;
   }
@@ -114,12 +132,6 @@ const StyledWrapper = styled.div`
   .nested-advanced-details .panel {
     border: none;
     padding-top: 0;
-  }
-
-  .guided-commit-message {
-    width: 100%;
-    min-height: 100px;
-    resize: vertical;
   }
 
   .outside-list {
@@ -171,9 +183,10 @@ const StyledWrapper = styled.div`
 
   .meta-grid {
     display: grid;
-    grid-template-columns: 88px 1fr;
+    grid-template-columns: 88px minmax(0, 760px);
     gap: 8px 10px;
     font-size: 13px;
+    align-items: center;
   }
 
   .meta-label {
@@ -219,9 +232,15 @@ const StyledWrapper = styled.div`
   .remote-value {
     min-width: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, max-content) auto;
     align-items: center;
     gap: 6px;
+    justify-content: start;
+  }
+
+  .remote-value-empty {
+    grid-template-columns: max-content auto;
+    gap: 10px;
   }
 
   .remote-link,
@@ -284,8 +303,9 @@ const StyledWrapper = styled.div`
   }
 
   .diff-box {
-    min-height: 420px;
-    max-height: 620px;
+    height: 520px;
+    min-height: 320px;
+    max-height: 520px;
   }
 
   .output-box {
@@ -366,9 +386,23 @@ const StyledWrapper = styled.div`
 
   .remote-form {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(120px, 180px) auto;
     gap: 8px;
     align-items: center;
+  }
+
+  .repository-branch-select {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(180px, 280px);
+    align-items: center;
+    gap: 6px;
+    justify-content: start;
+  }
+
+  .repository-branch-select .textbox {
+    min-width: 0;
+    width: 100%;
   }
 
   .branch-controls,
@@ -482,7 +516,7 @@ const StyledWrapper = styled.div`
   }
 
   @media (max-width: 1100px) {
-    .git-layout,
+    .changes-diff-content,
     .empty-state-grid {
       grid-template-columns: 1fr;
     }
@@ -493,6 +527,7 @@ const StyledWrapper = styled.div`
     }
 
     .branch-create-form,
+    .remote-form,
     .setup-two-columns {
       grid-template-columns: 1fr;
     }

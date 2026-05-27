@@ -208,6 +208,18 @@ const getWindowsSetupItems = (setup) => {
   ];
 };
 
+const getGuidedActionIcon = (type) => {
+  if (type === 'pull') return <IconArrowDown size={14} />;
+  if (type === 'pull-existing') return <IconArrowDown size={14} />;
+  if (type === 'push') return <IconArrowUp size={14} />;
+  if (type === 'synced') return <IconRefresh size={14} />;
+  if (type === 'save' || type === 'publish-workspace' || type === 'publish-branch') return <IconCloudUpload size={14} />;
+  if (type === 'init') return <IconGitBranch size={14} />;
+  if (type === 'connect-remote') return <IconCloudUpload size={14} />;
+  if (type === 'resolve') return <IconGitMerge size={14} />;
+  return <IconRefresh size={14} />;
+};
+
 const getWorkspaceGitPayload = (workspace) => ({
   workspacePath: workspace?.pathname,
   collectionPaths: (workspace?.collections || []).map((collection) => collection.path).filter(Boolean)
@@ -223,6 +235,10 @@ const WorkspaceGit = ({ workspace }) => {
   const [diff, setDiff] = useState('');
   const [output, setOutput] = useState('');
   const [remoteUrlInput, setRemoteUrlInput] = useState('');
+  const [remoteBranchInput, setRemoteBranchInput] = useState('main');
+  const [connectRemoteModalOpen, setConnectRemoteModalOpen] = useState(false);
+  const [connectRemoteTestResult, setConnectRemoteTestResult] = useState(null);
+  const [preferredRemoteBranch, setPreferredRemoteBranch] = useState('');
   const [editingRemote, setEditingRemote] = useState(false);
   const [reconcilingCollections, setReconcilingCollections] = useState(false);
   const [collectionReconciliation, setCollectionReconciliation] = useState(null);
@@ -261,6 +277,7 @@ const WorkspaceGit = ({ workspace }) => {
   const orphanCollections = collectionReconciliation?.orphanCollections || [];
   const missingCollections = collectionReconciliation?.missingCollections || [];
   const hasCommits = Boolean(gitData?.hasCommits);
+  const remoteHasBranches = Boolean(gitData?.remoteHasBranches || gitData?.remoteBranchNames?.length || remoteBranches.length);
   const ahead = Number(gitData?.aheadBehind?.ahead || 0);
   const behind = Number(gitData?.aheadBehind?.behind || 0);
   const hasLocalChanges = Boolean(fileCount > 0 || tooManyFiles);
@@ -277,6 +294,7 @@ const WorkspaceGit = ({ workspace }) => {
     }
     return currentBranch || remoteDefaultBranch || 'main';
   }, [currentBranch, remote, remoteBranches, remoteDefaultBranch]);
+  const guidedRemoteBranch = preferredRemoteBranch || currentBranch || remoteDefaultBranch || 'main';
   const branchBase = createBranchBase || preferredBranchBase;
   const auth = authDiagnostics || gitData?.auth;
   const authCommands = useMemo(() => getAuthCommands(auth), [auth]);
@@ -311,6 +329,16 @@ const WorkspaceGit = ({ workspace }) => {
         title: 'Connect a Git remote',
         description: 'Paste the repository URL once. After that Gridman can publish or sync this workspace.',
         primaryLabel: 'Connect remote',
+        needsCommitMessage: false
+      };
+    }
+
+    if (!hasCommits && remoteHasBranches) {
+      return {
+        type: 'pull-existing',
+        title: 'Pull existing workspace',
+        description: 'This remote already has commits. Pull the existing workspace before publishing local changes.',
+        primaryLabel: 'Pull existing workspace',
         needsCommitMessage: false
       };
     }
@@ -384,7 +412,7 @@ const WorkspaceGit = ({ workspace }) => {
       primaryLabel: 'Refresh status',
       needsCommitMessage: false
     };
-  }, [ahead, behind, gitData?.isGitRepository, hasCommits, hasConflicts, hasLocalChanges, hasUpstream, remoteUrl]);
+  }, [ahead, behind, gitData?.isGitRepository, hasCommits, hasConflicts, hasLocalChanges, hasUpstream, remoteHasBranches, remoteUrl]);
 
   const refresh = useCallback(async ({ fetchRemote = false } = {}) => {
     if (!workspace?.pathname) return;
@@ -531,6 +559,7 @@ const WorkspaceGit = ({ workspace }) => {
         remote,
         action,
         message,
+        remoteBranch: guidedRemoteBranch,
         strategy: DEFAULT_PULL_STRATEGY
       });
 
@@ -545,7 +574,7 @@ const WorkspaceGit = ({ workspace }) => {
       }
       setGuidedCommitAction(null);
       setGuidedCommitMessage('');
-      await refresh({ fetchRemote: ['pull', 'sync', 'sync-full'].includes(action) });
+      await refresh({ fetchRemote: ['pull', 'pull-existing', 'sync', 'sync-full'].includes(action) });
     } catch (error) {
       const message = getIpcErrorMessage(error, 'Git action failed');
       setOutput(message);
@@ -569,8 +598,10 @@ const WorkspaceGit = ({ workspace }) => {
     }
 
     if (guidedAction.type === 'connect-remote') {
-      setEditingRemote(true);
-      setOutput('Paste your Git remote URL in the Origin section, then click Set origin.');
+      setRemoteUrlInput(remoteUrl || '');
+      setRemoteBranchInput(preferredRemoteBranch || currentBranch || remoteDefaultBranch || 'main');
+      setConnectRemoteTestResult(null);
+      setConnectRemoteModalOpen(true);
       return null;
     }
 
@@ -754,6 +785,7 @@ const WorkspaceGit = ({ workspace }) => {
 
   const setRemote = async () => {
     const nextRemoteUrl = remoteUrlInput.trim();
+    const nextBranch = remoteBranchInput.trim() || 'main';
     if (!nextRemoteUrl) {
       toast.error('Remote URL is required');
       return;
@@ -761,23 +793,61 @@ const WorkspaceGit = ({ workspace }) => {
 
     await runGitOperation('Set remote', 'renderer:set-workspace-git-remote', {
       remoteName: DEFAULT_REMOTE,
-      remoteUrl: nextRemoteUrl
+      remoteUrl: nextRemoteUrl,
+      branchName: nextBranch
     });
+    setPreferredRemoteBranch(nextBranch);
+    await refresh({ fetchRemote: true });
     setRemoteUrlInput('');
+    setRemoteBranchInput('main');
     setEditingRemote(false);
+    setConnectRemoteModalOpen(false);
+    setConnectRemoteTestResult(null);
     setAuthTestResult(null);
-    toast.success('Origin changed. Test the connection before syncing.');
+    toast.success(`Origin connected for branch ${nextBranch}.`);
   };
 
   const startEditingRemote = () => {
     setRemoteUrlInput(remoteUrl || '');
+    setRemoteBranchInput(preferredRemoteBranch || currentBranch || remoteDefaultBranch || 'main');
     setEditingRemote(true);
     setAuthTestResult(null);
   };
 
   const cancelEditingRemote = () => {
     setRemoteUrlInput('');
+    setRemoteBranchInput('main');
     setEditingRemote(false);
+  };
+
+  const testRemoteConnectionInput = async () => {
+    const nextRemoteUrl = remoteUrlInput.trim();
+    if (!gitRootPath || !nextRemoteUrl) {
+      toast.error('Remote URL is required');
+      return;
+    }
+
+    setOperation('Test connection');
+    setConnectRemoteTestResult(null);
+    try {
+      const result = await window.ipcRenderer.invoke('renderer:test-workspace-git-auth', {
+        gitRootPath,
+        remote,
+        remoteUrl: nextRemoteUrl
+      });
+      setConnectRemoteTestResult(result);
+      if (result.ok) {
+        toast.success('Git connection succeeded');
+      } else {
+        toast.error(result.message || 'Git connection failed');
+      }
+    } catch (error) {
+      const result = { ok: false, message: getIpcErrorMessage(error, 'Git connection failed') };
+      setConnectRemoteTestResult(result);
+      toast.error(result.message);
+    } finally {
+      setOperation(null);
+    }
   };
 
   const refreshAuthDiagnostics = async () => {
@@ -985,6 +1055,16 @@ const WorkspaceGit = ({ workspace }) => {
   const checkoutRemoteBranch = (branchName) => {
     if (!branchName) return null;
     return runGitOperation('Checkout remote branch', 'renderer:checkout-workspace-git-remote-branch', { branchName });
+  };
+
+  const handleRepositoryBranchChange = (value) => {
+    if (!value || value === currentBranch) return null;
+
+    if (value.startsWith(`${remote}/`)) {
+      return checkoutRemoteBranch(value.slice(remote.length + 1));
+    }
+
+    return checkoutBranch(value);
   };
 
   const publishBranch = () => {
@@ -1229,7 +1309,7 @@ const WorkspaceGit = ({ workspace }) => {
               <Button
                 size="sm"
                 color={guidedAction?.type === 'synced' ? 'light' : 'primary'}
-                icon={guidedAction?.type === 'pull' ? <IconArrowDown size={14} /> : guidedAction?.type === 'push' ? <IconArrowUp size={14} /> : <IconUpload size={14} />}
+                icon={getGuidedActionIcon(guidedAction?.type)}
                 loading={operation === guidedAction?.primaryLabel}
                 disabled={!guidedAction}
                 onClick={handleGuidedPrimaryAction}
@@ -1255,16 +1335,42 @@ const WorkspaceGit = ({ workspace }) => {
             <div className="section-title">Repository</div>
             <div className="meta-grid">
               <span className="meta-label">Branch</span>
-              <span className="flex items-center gap-1">
+              <span className="repository-branch-select">
                 <IconGitBranch size={14} />
-                {currentBranch || 'unknown'}
+                <select
+                  className="textbox"
+                  value={currentBranch || ''}
+                  disabled={!localBranches.length && !remoteBranches.length}
+                  onChange={(event) => handleRepositoryBranchChange(event.target.value)}
+                >
+                  {currentBranch && !localBranches.includes(currentBranch) && (
+                    <option value={currentBranch}>{currentBranch}</option>
+                  )}
+                  {localBranches.length > 0 && (
+                    <optgroup label="Local branches">
+                      {localBranches.map((branch) => (
+                        <option key={branch} value={branch}>{branch}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {remoteBranches.length > 0 && (
+                    <optgroup label="Remote branches">
+                      {remoteBranches.map((branch) => (
+                        <option key={`${remote}/${branch}`} value={`${remote}/${branch}`}>{remote}/{branch}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {!currentBranch && !localBranches.length && !remoteBranches.length && (
+                    <option value="">unknown</option>
+                  )}
+                </select>
               </span>
               <span className="meta-label">Upstream</span>
               <span>{hasUpstream ? `${currentBranch} -> ${trackingBranch}` : `${currentBranch || 'branch'} (not published)`}</span>
               <span className="meta-label">Default</span>
               <span>{remoteDefaultBranch || 'main'}</span>
               <span className="meta-label">Remote</span>
-              <span className="remote-value">
+              <span className={`remote-value ${!remoteUrl ? 'remote-value-empty' : ''}`}>
                 {remoteUrl ? (
                   <>
                     {browserRemoteUrl ? (
@@ -1279,7 +1385,22 @@ const WorkspaceGit = ({ workspace }) => {
                     </button>
                   </>
                 ) : (
-                  <span className="truncate remote-text">not configured</span>
+                  <>
+                    <span className="truncate remote-text">not configured</span>
+                    <Button
+                      size="sm"
+                      color="primary"
+                      icon={<IconCloudUpload size={14} />}
+                      onClick={() => {
+                        setRemoteUrlInput('');
+                        setRemoteBranchInput(currentBranch || remoteDefaultBranch || 'main');
+                        setConnectRemoteTestResult(null);
+                        setConnectRemoteModalOpen(true);
+                      }}
+                    >
+                      Connect remote
+                    </Button>
+                  </>
                 )}
               </span>
               <span className="meta-label">Sync</span>
@@ -1306,7 +1427,99 @@ const WorkspaceGit = ({ workspace }) => {
             )}
           </div>
 
-          <details className="advanced-details" open={!remoteUrl || editingRemote || hasConflicts}>
+          <details className="advanced-details changes-details" open={hasConflicts}>
+            <summary>Changed files and diff</summary>
+            <div className="changes-diff-content">
+              <div className="panel changes-panel">
+                <div className="section-title">Changes</div>
+                {tooManyFiles && (
+                  <div className="workspace-warning mb-3">
+                    Git has {totalChangedFiles} changed files. Gridman hides the full list for performance, but Pull can still create a safety commit for non-protected files.
+                  </div>
+                )}
+                <div className="changes-scroll">
+                  {conflicted.length > 0 && (
+                    <>
+                      <div className="font-semibold mb-1">Conflicts</div>
+                      {conflicted.map((file) => (
+                        <div key={`conflict-${file.path}`} className={`file-row ${selectedFile?.path === file.path ? 'active' : ''}`} onClick={() => selectFile(file)}>
+                          <span className="file-status">{file.status || `${file.fileIndex || ''}${file.working_dir || ''}`}</span>
+                          <span className="truncate">{file.path}</span>
+                          <div className="file-actions">
+                            <Button
+                              size="sm"
+                              color="light"
+                              onClick={(event) => {
+                                event.stopPropagation(); resolveConflict(file, 'ours');
+                              }}
+                            >Accept local
+                            </Button>
+                            <Button
+                              size="sm"
+                              color="light"
+                              onClick={(event) => {
+                                event.stopPropagation(); resolveConflict(file, 'theirs');
+                              }}
+                            >Accept remote
+                            </Button>
+                            <Button
+                              size="sm"
+                              color="light"
+                              onClick={(event) => {
+                                event.stopPropagation(); stageFiles([file]);
+                              }}
+                            >Mark resolved
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+
+                  <div className="font-semibold mt-3 mb-1">Staged</div>
+                  {staged.length === 0 && <div className="text-muted text-sm">No staged changes.</div>}
+                  {staged.map((file) => (
+                    <div key={`staged-${file.path}`} className={`file-row ${selectedFile?.path === file.path && selectedFile?.stagedDiff ? 'active' : ''}`} onClick={() => selectFile(file, true)}>
+                      <span className="file-status">{file.fileIndex}</span>
+                      <span className="truncate">{file.path}</span>
+                      <Button
+                        size="sm"
+                        color="light"
+                        onClick={(event) => {
+                          event.stopPropagation(); unstageFiles([file]);
+                        }}
+                      >Unstage
+                      </Button>
+                    </div>
+                  ))}
+
+                  <div className="font-semibold mt-3 mb-1">Unstaged</div>
+                  {unstaged.length === 0 && <div className="text-muted text-sm">No unstaged changes.</div>}
+                  {unstaged.map((file) => (
+                    <div key={`unstaged-${file.path}`} className={`file-row ${selectedFile?.path === file.path && !selectedFile?.stagedDiff ? 'active' : ''}`} onClick={() => selectFile(file)}>
+                      <span className="file-status">{file.working_dir || file.fileIndex}</span>
+                      <span className="truncate">{file.path}</span>
+                      <Button
+                        size="sm"
+                        color="light"
+                        onClick={(event) => {
+                          event.stopPropagation(); stageFiles([file]);
+                        }}
+                      >Stage
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="panel diff-panel">
+                <div className="section-title">Diff</div>
+                <pre className="diff-box">{selectedFile ? diff : 'Select a file to preview the diff.'}</pre>
+              </div>
+            </div>
+          </details>
+
+          <details className="advanced-details" open={editingRemote || hasConflicts}>
             <summary>Advanced Git</summary>
             <div className="advanced-content">
               {remoteUrl && (
@@ -1457,25 +1670,22 @@ const WorkspaceGit = ({ workspace }) => {
               {!remoteUrl && (
                 <div className="panel">
                   <div className="section-title">Remote</div>
-                  <p className="text-sm text-muted mb-2">Connect this local workspace repository to GitHub, GitLab, Bitbucket, or any Git remote.</p>
-                  <div className="remote-form">
-                    <input
-                      className="textbox"
-                      value={remoteUrlInput}
-                      onChange={(event) => setRemoteUrlInput(event.target.value)}
-                      placeholder="https://github.com/org/repo.git"
-                    />
-                    <Button
-                      size="sm"
-                      color="primary"
-                      icon={<IconCloudUpload size={14} />}
-                      disabled={!remoteUrlInput.trim()}
-                      loading={operation === 'Set remote'}
-                      onClick={setRemote}
-                    >
-                      Set origin
-                    </Button>
-                  </div>
+                  <p className="text-sm text-muted mb-2">
+                    Connect this workspace to a Git remote. Gridman will ask for the repository URL and branch in one step.
+                  </p>
+                  <Button
+                    size="sm"
+                    color="primary"
+                    icon={<IconCloudUpload size={14} />}
+                    onClick={() => {
+                      setRemoteUrlInput('');
+                      setRemoteBranchInput(currentBranch || remoteDefaultBranch || 'main');
+                      setConnectRemoteTestResult(null);
+                      setConnectRemoteModalOpen(true);
+                    }}
+                  >
+                    Connect remote
+                  </Button>
                   <div className="commands-list mt-3">
                     {['git remote add origin <url>', `git push -u origin ${currentBranch || 'main'}`].map((command) => (
                       <div className="command-row" key={command}>
@@ -1521,11 +1731,17 @@ const WorkspaceGit = ({ workspace }) => {
                           onChange={(event) => setRemoteUrlInput(event.target.value)}
                           placeholder="https://github.com/org/repo.git"
                         />
+                        <input
+                          className="textbox"
+                          value={remoteBranchInput}
+                          onChange={(event) => setRemoteBranchInput(event.target.value)}
+                          placeholder="main"
+                        />
                         <Button
                           size="sm"
                           color="primary"
                           icon={<IconCloudUpload size={14} />}
-                          disabled={!remoteUrlInput.trim() || remoteUrlInput.trim() === remoteUrl}
+                          disabled={!remoteUrlInput.trim() || (remoteUrlInput.trim() === remoteUrl && (remoteBranchInput.trim() || 'main') === (currentBranch || remoteDefaultBranch || 'main'))}
                           loading={operation === 'Set remote'}
                           onClick={setRemote}
                         >
@@ -1766,7 +1982,6 @@ const WorkspaceGit = ({ workspace }) => {
               </div>
             </div>
           </details>
-
           {hasConflicts && (
             <div className="panel">
               <div className="section-title">Conflicts</div>
@@ -1783,99 +1998,76 @@ const WorkspaceGit = ({ workspace }) => {
             </div>
           )}
         </div>
-
-        <div className="space-y-4">
-          <details className="advanced-details changes-details" open={hasConflicts}>
-            <summary>Changed files and diff</summary>
-            <div className="advanced-content">
-              <div className="panel">
-                <div className="section-title">Changes</div>
-                {tooManyFiles && (
-                  <div className="workspace-warning mb-3">
-                    Git has {totalChangedFiles} changed files. Gridman hides the full list for performance, but Pull can still create a safety commit for non-protected files.
-                  </div>
+      </div>
+      {connectRemoteModalOpen && (
+        <Portal>
+          <Modal
+            size="md"
+            title="Connect Git remote"
+            confirmText="Connect remote"
+            handleConfirm={setRemote}
+            handleCancel={() => {
+              setConnectRemoteModalOpen(false);
+              setRemoteUrlInput('');
+              setRemoteBranchInput('main');
+              setConnectRemoteTestResult(null);
+            }}
+          >
+            <div style={{ display: 'grid', gap: 16 }}>
+              <p style={{ margin: 0, lineHeight: 1.5 }}>
+                Paste the Git repository URL and choose the branch this workspace should use.
+              </p>
+              <label style={{ display: 'grid', gap: 8, fontSize: 13, fontWeight: 600 }}>
+                <span>Origin URL</span>
+                <input
+                  className="textbox"
+                  value={remoteUrlInput}
+                  onChange={(event) => {
+                    setRemoteUrlInput(event.target.value);
+                    setConnectRemoteTestResult(null);
+                  }}
+                  placeholder="https://github.com/org/repo.git"
+                  autoFocus
+                />
+              </label>
+              <label style={{ display: 'grid', gap: 8, fontSize: 13, fontWeight: 600 }}>
+                <span>Branch</span>
+                <input
+                  className="textbox"
+                  value={remoteBranchInput}
+                  onChange={(event) => setRemoteBranchInput(event.target.value)}
+                  placeholder="main"
+                />
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Button
+                  size="sm"
+                  color="light"
+                  icon={<IconRefresh size={14} />}
+                  disabled={!remoteUrlInput.trim()}
+                  loading={operation === 'Test connection'}
+                  onClick={testRemoteConnectionInput}
+                >
+                  Test connection
+                </Button>
+                {connectRemoteTestResult && (
+                  <span
+                    style={{
+                      fontSize: 12,
+                      color: connectRemoteTestResult.ok ? '#188038' : '#d93025'
+                    }}
+                  >
+                    {connectRemoteTestResult.ok ? 'Connection succeeded' : connectRemoteTestResult.message || 'Connection failed'}
+                  </span>
                 )}
-                {conflicted.length > 0 && (
-                  <>
-                    <div className="font-semibold mb-1">Conflicts</div>
-                    {conflicted.map((file) => (
-                      <div key={`conflict-${file.path}`} className={`file-row ${selectedFile?.path === file.path ? 'active' : ''}`} onClick={() => selectFile(file)}>
-                        <span className="file-status">{file.status || `${file.fileIndex || ''}${file.working_dir || ''}`}</span>
-                        <span className="truncate">{file.path}</span>
-                        <div className="file-actions">
-                          <Button
-                            size="sm"
-                            color="light"
-                            onClick={(event) => {
-                              event.stopPropagation(); resolveConflict(file, 'ours');
-                            }}
-                          >Accept local
-                          </Button>
-                          <Button
-                            size="sm"
-                            color="light"
-                            onClick={(event) => {
-                              event.stopPropagation(); resolveConflict(file, 'theirs');
-                            }}
-                          >Accept remote
-                          </Button>
-                          <Button
-                            size="sm"
-                            color="light"
-                            onClick={(event) => {
-                              event.stopPropagation(); stageFiles([file]);
-                            }}
-                          >Mark resolved
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </>
-                )}
-
-                <div className="font-semibold mt-3 mb-1">Staged</div>
-                {staged.length === 0 && <div className="text-muted text-sm">No staged changes.</div>}
-                {staged.map((file) => (
-                  <div key={`staged-${file.path}`} className={`file-row ${selectedFile?.path === file.path && selectedFile?.stagedDiff ? 'active' : ''}`} onClick={() => selectFile(file, true)}>
-                    <span className="file-status">{file.fileIndex}</span>
-                    <span className="truncate">{file.path}</span>
-                    <Button
-                      size="sm"
-                      color="light"
-                      onClick={(event) => {
-                        event.stopPropagation(); unstageFiles([file]);
-                      }}
-                    >Unstage
-                    </Button>
-                  </div>
-                ))}
-
-                <div className="font-semibold mt-3 mb-1">Unstaged</div>
-                {unstaged.length === 0 && <div className="text-muted text-sm">No unstaged changes.</div>}
-                {unstaged.map((file) => (
-                  <div key={`unstaged-${file.path}`} className={`file-row ${selectedFile?.path === file.path && !selectedFile?.stagedDiff ? 'active' : ''}`} onClick={() => selectFile(file)}>
-                    <span className="file-status">{file.working_dir || file.fileIndex}</span>
-                    <span className="truncate">{file.path}</span>
-                    <Button
-                      size="sm"
-                      color="light"
-                      onClick={(event) => {
-                        event.stopPropagation(); stageFiles([file]);
-                      }}
-                    >Stage
-                    </Button>
-                  </div>
-                ))}
               </div>
-
-              <div className="panel">
-                <div className="section-title">Diff</div>
-                <pre className="diff-box">{selectedFile ? diff : 'Select a file to preview the diff.'}</pre>
+              <div style={{ padding: '9px 10px', border: '1px solid #e5e5e5', borderRadius: 4, fontSize: 12, lineHeight: 1.45, color: '#777' }}>
+                If the remote already has files, Gridman will offer to pull the existing workspace after connecting.
               </div>
             </div>
-          </details>
-        </div>
-      </div>
+          </Modal>
+        </Portal>
+      )}
       {guidedCommitAction && (
         <Portal>
           <Modal
@@ -1888,19 +2080,20 @@ const WorkspaceGit = ({ workspace }) => {
               setGuidedCommitMessage('');
             }}
           >
-            <div className="space-y-3">
-              <p>{guidedCommitAction.description}</p>
-              <label className="setup-input-label">
-                Commit message
+            <div style={{ display: 'grid', gap: 16 }}>
+              <p style={{ margin: 0, lineHeight: 1.5 }}>{guidedCommitAction.description}</p>
+              <label style={{ display: 'grid', gap: 8, fontSize: 13, fontWeight: 600 }}>
+                <span>Commit message</span>
                 <textarea
-                  className="textbox guided-commit-message"
+                  className="textbox"
+                  style={{ width: '100%', minHeight: 104, resize: 'vertical', fontSize: 14 }}
                   value={guidedCommitMessage}
                   onChange={(event) => setGuidedCommitMessage(event.target.value)}
                   autoFocus
                 />
               </label>
-              <div className="assistant-note">
-                Environment files are excluded from Git.
+              <div style={{ padding: '9px 10px', border: '1px solid #e5e5e5', borderRadius: 4, fontSize: 12, lineHeight: 1.45, color: '#777' }}>
+                Environment files are excluded from Git because they may contain secrets.
               </div>
             </div>
           </Modal>
