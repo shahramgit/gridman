@@ -17,10 +17,14 @@ import {
   IconExternalLink,
   IconKey,
   IconEdit,
-  IconPlus
+  IconPlus,
+  IconCircleCheck,
+  IconAlertTriangle
 } from '@tabler/icons';
 
 import Button from 'ui/Button';
+import Modal from 'components/Modal';
+import Portal from 'components/Portal';
 import StyledWrapper from './StyledWrapper';
 import { uuid } from 'utils/common';
 
@@ -130,6 +134,80 @@ const getAuthCommands = (auth) => {
   return [`git ls-remote ${auth.remoteUrl}`];
 };
 
+const getSetupItemStatus = ({ ok, warning = false, admin = false, skipped = false }) => {
+  if (skipped) return { label: 'Unknown', className: 'setup-unknown' };
+  if (ok) return { label: 'OK', className: 'setup-ok' };
+  if (admin) return { label: 'Needs admin', className: 'setup-admin' };
+  if (warning) return { label: 'Warning', className: 'setup-warning' };
+  return { label: 'Needs setup', className: 'setup-missing' };
+};
+
+const getWindowsSetupItems = (setup) => {
+  if (!setup) return [];
+
+  const isSsh = setup.protocol === 'ssh';
+  const isHttps = setup.protocol === 'https';
+
+  return [
+    {
+      id: 'git',
+      title: 'Git executable',
+      fa: 'نصب بودن Git و قابل دسترس بودن آن برای Gridman.',
+      status: getSetupItemStatus({ ok: setup.git?.available }),
+      detail: setup.git?.message
+    },
+    {
+      id: 'ssh-client',
+      title: 'OpenSSH client',
+      fa: 'برای ریموت‌های SSH باید کلاینت OpenSSH نصب باشد.',
+      status: getSetupItemStatus({ ok: !isSsh || setup.sshClient?.available, skipped: !isSsh }),
+      detail: isSsh ? setup.sshClient?.message : 'Only needed for SSH remotes.'
+    },
+    {
+      id: 'ssh-key',
+      title: 'SSH key',
+      fa: 'کلید عمومی باید در Git provider اضافه شده باشد.',
+      status: getSetupItemStatus({ ok: !isSsh || setup.sshKey?.hasKeys, skipped: !isSsh }),
+      detail: isSsh ? (setup.sshKey?.hasKeys ? setup.sshKey.keys.map((key) => key.name).join(', ') : 'No common SSH key found.') : 'Only needed for SSH remotes.'
+    },
+    {
+      id: 'known-host',
+      title: 'Trusted SSH host',
+      fa: 'هاست ریموت باید در known_hosts ثبت شده باشد.',
+      status: getSetupItemStatus({ ok: !isSsh || setup.knownHost?.configured, skipped: !isSsh || !setup.remoteInfo?.host }),
+      detail: isSsh ? setup.knownHost?.message : 'Only needed for SSH remotes.'
+    },
+    {
+      id: 'identity',
+      title: 'Git user name and email',
+      fa: 'برای commit باید نام و ایمیل Git تنظیم شده باشد.',
+      status: getSetupItemStatus({ ok: setup.gitIdentity?.configured }),
+      detail: setup.gitIdentity?.configured ? `${setup.gitIdentity.name} <${setup.gitIdentity.email}>` : setup.gitIdentity?.message
+    },
+    {
+      id: 'git-longpaths',
+      title: 'Git long paths',
+      fa: 'برای collectionهای عمیق در ویندوز لازم است.',
+      status: getSetupItemStatus({ ok: setup.gitLongPaths?.configured }),
+      detail: setup.gitLongPaths?.message
+    },
+    {
+      id: 'windows-longpaths',
+      title: 'Windows long paths',
+      fa: 'این مورد نیاز به دسترسی Administrator دارد.',
+      status: getSetupItemStatus({ ok: setup.windowsLongPaths?.enabled, admin: !setup.windowsLongPaths?.enabled }),
+      detail: setup.windowsLongPaths?.message
+    },
+    {
+      id: 'https-credentials',
+      title: 'HTTPS credentials',
+      fa: 'برای HTTPS بهتر است Git Credential Manager فعال باشد.',
+      status: getSetupItemStatus({ ok: !isHttps || Boolean(setup.remoteUrl), skipped: !isHttps }),
+      detail: isHttps ? 'Gridman uses Git Credential Manager or your system Git credential helper.' : 'Only needed for HTTPS remotes.'
+    }
+  ];
+};
+
 const getWorkspaceGitPayload = (workspace) => ({
   workspacePath: workspace?.pathname,
   collectionPaths: (workspace?.collections || []).map((collection) => collection.path).filter(Boolean)
@@ -153,6 +231,13 @@ const WorkspaceGit = ({ workspace }) => {
   const [createBranchName, setCreateBranchName] = useState('');
   const [createBranchBase, setCreateBranchBase] = useState('');
   const [publishAfterCreate, setPublishAfterCreate] = useState(false);
+  const [setupDiagnostics, setSetupDiagnostics] = useState(null);
+  const [setupOperation, setSetupOperation] = useState(null);
+  const [setupResult, setSetupResult] = useState('');
+  const [confirmSetupAction, setConfirmSetupAction] = useState(null);
+  const [sshKeyEmail, setSshKeyEmail] = useState('');
+  const [gitIdentityName, setGitIdentityName] = useState('');
+  const [gitIdentityEmail, setGitIdentityEmail] = useState('');
 
   const gitRootPath = gitData?.gitRootPath;
   const currentBranch = gitData?.currentBranch || gitData?.currentGitBranch || gitData?.status?.current || '';
@@ -189,6 +274,8 @@ const WorkspaceGit = ({ workspace }) => {
   const branchBase = createBranchBase || preferredBranchBase;
   const auth = authDiagnostics || gitData?.auth;
   const authCommands = useMemo(() => getAuthCommands(auth), [auth]);
+  const windowsSetupItems = useMemo(() => getWindowsSetupItems(setupDiagnostics), [setupDiagnostics]);
+  const showWindowsGitSetup = setupDiagnostics?.platform === 'win32';
 
   const refresh = useCallback(async ({ fetchRemote = false } = {}) => {
     if (!workspace?.pathname) return;
@@ -224,6 +311,39 @@ const WorkspaceGit = ({ workspace }) => {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  const refreshSetupDiagnostics = useCallback(async ({ silent = false } = {}) => {
+    if (!gitRootPath) return;
+    if (!silent) {
+      setSetupOperation('Check Git setup');
+    }
+    try {
+      const result = await window.ipcRenderer.invoke('renderer:get-workspace-git-setup-diagnostics', {
+        gitRootPath,
+        remote,
+        remoteUrl
+      });
+      setSetupDiagnostics(result);
+      setGitIdentityName(result?.gitIdentity?.name || '');
+      setGitIdentityEmail(result?.gitIdentity?.email || '');
+      setSshKeyEmail(result?.gitIdentity?.email || '');
+      if (!silent) {
+        toast.success('Git setup checked');
+      }
+    } catch (error) {
+      if (!silent) {
+        toast.error(error?.message || 'Failed to check Git setup');
+      }
+    } finally {
+      if (!silent) {
+        setSetupOperation(null);
+      }
+    }
+  }, [gitRootPath, remote, remoteUrl]);
+
+  useEffect(() => {
+    refreshSetupDiagnostics({ silent: true });
+  }, [refreshSetupDiagnostics]);
 
   const runGitOperation = async (label, invokeName, payload = {}) => {
     if (!gitRootPath) return;
@@ -513,6 +633,124 @@ const WorkspaceGit = ({ workspace }) => {
     } finally {
       setOperation(null);
     }
+  };
+
+  const runSetupAction = async (label, invokeName, payload = {}) => {
+    setSetupOperation(label);
+    setSetupResult('');
+    try {
+      const result = await window.ipcRenderer.invoke(invokeName, payload);
+      setSetupResult(result?.message || JSON.stringify(result, null, 2));
+      if (result?.publicKey) {
+        setSetupResult(`${result.message}\n\nPublic key:\n${result.publicKey}`);
+      }
+      toast.success(`${label} completed`);
+      await refreshSetupDiagnostics({ silent: true });
+      return result;
+    } catch (error) {
+      const message = getIpcErrorMessage(error, `${label} failed`);
+      setSetupResult(message);
+      toast.error(message);
+      return null;
+    } finally {
+      setSetupOperation(null);
+      setConfirmSetupAction(null);
+    }
+  };
+
+  const confirmCreateSshKey = () => {
+    setConfirmSetupAction({
+      type: 'create-ssh-key',
+      title: 'Create SSH key',
+      confirmText: 'Create key',
+      body: 'Gridman will create ~/.ssh/id_ed25519 only if it does not already exist. It will not upload the key to your Git provider.',
+      bodyFa: 'Gridman فقط اگر کلید وجود نداشته باشد آن را می‌سازد و آن را جایی آپلود نمی‌کند.'
+    });
+  };
+
+  const confirmSetGitIdentity = () => {
+    setConfirmSetupAction({
+      type: 'set-git-identity',
+      title: 'Save Git identity',
+      confirmText: 'Save identity',
+      body: 'Gridman will write git config --global user.name and user.email for this Windows user.',
+      bodyFa: 'Gridman نام و ایمیل Git را به صورت global برای همین کاربر ذخیره می‌کند.'
+    });
+  };
+
+  const confirmEnableGitLongPaths = () => {
+    setConfirmSetupAction({
+      type: 'enable-git-longpaths',
+      title: 'Enable Git long paths',
+      confirmText: 'Enable',
+      body: 'Gridman will run git config --global core.longpaths true. This does not require administrator access.',
+      bodyFa: 'این تنظیم فقط برای Git کاربر فعلی اعمال می‌شود و نیاز به Administrator ندارد.'
+    });
+  };
+
+  const confirmAddKnownHost = async () => {
+    const host = setupDiagnostics?.remoteInfo?.host;
+    const port = setupDiagnostics?.remoteInfo?.port || '22';
+    if (!host) {
+      toast.error('SSH host could not be detected from the remote URL');
+      return;
+    }
+
+    setSetupOperation('Scan SSH host');
+    setSetupResult('');
+    try {
+      const scan = await window.ipcRenderer.invoke('renderer:scan-git-known-host', { host, port });
+      setConfirmSetupAction({
+        type: 'add-known-host',
+        title: 'Trust SSH host',
+        confirmText: 'Add host',
+        body: `Gridman will append this SSH host key to ~/.ssh/known_hosts for ${host}:${port}.`,
+        bodyFa: 'قبل از اضافه کردن کلید هاست، مقدار پیدا شده را بررسی کنید.',
+        payload: scan
+      });
+    } catch (error) {
+      const message = getIpcErrorMessage(error, 'Failed to scan SSH host');
+      setSetupResult(message);
+      toast.error(message);
+    } finally {
+      setSetupOperation(null);
+    }
+  };
+
+  const confirmSetupModalAction = async () => {
+    if (!confirmSetupAction) return;
+
+    if (confirmSetupAction.type === 'create-ssh-key') {
+      await runSetupAction('Create SSH key', 'renderer:create-git-ssh-key', { email: sshKeyEmail });
+      return;
+    }
+
+    if (confirmSetupAction.type === 'set-git-identity') {
+      await runSetupAction('Save Git identity', 'renderer:set-git-identity', {
+        gitRootPath,
+        name: gitIdentityName,
+        email: gitIdentityEmail
+      });
+      return;
+    }
+
+    if (confirmSetupAction.type === 'enable-git-longpaths') {
+      await runSetupAction('Enable Git long paths', 'renderer:enable-git-global-longpaths', { gitRootPath });
+      return;
+    }
+
+    if (confirmSetupAction.type === 'add-known-host') {
+      await runSetupAction('Add known host', 'renderer:add-git-known-host', confirmSetupAction.payload);
+    }
+  };
+
+  const testSetupConnection = async () => {
+    if (!gitRootPath) return;
+    await runSetupAction('Test Git connection', 'renderer:test-git-ssh-connection', {
+      gitRootPath,
+      remote,
+      remoteUrl
+    });
   };
 
   const copyCommand = async (command) => {
@@ -1137,6 +1375,128 @@ const WorkspaceGit = ({ workspace }) => {
             </div>
           </div>
 
+          {showWindowsGitSetup && (
+            <div className="panel">
+              <div className="section-title">Windows Git Setup</div>
+              <p className="text-sm text-muted mb-3">
+                Diagnose and fix common Windows Git setup issues. Safe user-level fixes require confirmation; administrator commands are copy-only.
+                <br />
+                راهنمای تنظیم Git در ویندوز؛ موارد حساس فقط با تایید شما انجام می‌شوند.
+              </p>
+
+              <div className="setup-checklist">
+                {windowsSetupItems.map((item) => (
+                  <div className="setup-row" key={item.id}>
+                    <div className="setup-status-icon">
+                      {item.status.className === 'setup-ok' ? <IconCircleCheck size={17} /> : <IconAlertTriangle size={17} />}
+                    </div>
+                    <div className="setup-row-body">
+                      <div className="setup-row-title">{item.title}</div>
+                      <div className="setup-row-fa">{item.fa}</div>
+                      {item.detail && <div className="setup-row-detail">{item.detail}</div>}
+                    </div>
+                    <span className={`setup-badge ${item.status.className}`}>{item.status.label}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="setup-actions mt-3">
+                <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={setupOperation === 'Check Git setup'} onClick={() => refreshSetupDiagnostics()}>
+                  Re-check
+                </Button>
+                <Button size="sm" color="primary" icon={<IconKey size={14} />} disabled={!remoteUrl} loading={setupOperation === 'Test Git connection'} onClick={testSetupConnection}>
+                  Test connection
+                </Button>
+              </div>
+
+              {setupDiagnostics?.protocol === 'ssh' && (
+                <div className="setup-form mt-3">
+                  <label className="setup-input-label">
+                    SSH key email/comment
+                    <input
+                      className="textbox"
+                      value={sshKeyEmail}
+                      onChange={(event) => setSshKeyEmail(event.target.value)}
+                      placeholder="you@example.com"
+                    />
+                  </label>
+                  <div className="setup-actions">
+                    <Button size="sm" color="light" icon={<IconKey size={14} />} disabled={setupDiagnostics?.sshKey?.hasKeys} loading={setupOperation === 'Create SSH key'} onClick={confirmCreateSshKey}>
+                      Create SSH key
+                    </Button>
+                    <Button size="sm" color="light" icon={<IconCopy size={14} />} disabled={!setupDiagnostics?.sshKey?.publicKey} onClick={() => copyCommand(setupDiagnostics?.sshKey?.publicKey)}>
+                      Copy public key
+                    </Button>
+                    <Button size="sm" color="light" icon={<IconKey size={14} />} disabled={!setupDiagnostics?.remoteInfo?.host || setupDiagnostics?.knownHost?.configured} loading={setupOperation === 'Scan SSH host' || setupOperation === 'Add known host'} onClick={confirmAddKnownHost}>
+                      Trust SSH host
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              <div className="setup-form mt-3">
+                <div className="setup-two-columns">
+                  <label className="setup-input-label">
+                    Git user name
+                    <input
+                      className="textbox"
+                      value={gitIdentityName}
+                      onChange={(event) => setGitIdentityName(event.target.value)}
+                      placeholder="Example User"
+                    />
+                  </label>
+                  <label className="setup-input-label">
+                    Git email
+                    <input
+                      className="textbox"
+                      value={gitIdentityEmail}
+                      onChange={(event) => setGitIdentityEmail(event.target.value)}
+                      placeholder="example@email.com"
+                    />
+                  </label>
+                </div>
+                <div className="setup-actions mt-2">
+                  <Button size="sm" color="light" icon={<IconEdit size={14} />} disabled={!gitIdentityName.trim() || !gitIdentityEmail.trim()} loading={setupOperation === 'Save Git identity'} onClick={confirmSetGitIdentity}>
+                    Save Git identity
+                  </Button>
+                  <Button size="sm" color="light" icon={<IconTerminal size={14} />} disabled={setupDiagnostics?.gitLongPaths?.configured} loading={setupOperation === 'Enable Git long paths'} onClick={confirmEnableGitLongPaths}>
+                    Enable Git long paths
+                  </Button>
+                </div>
+              </div>
+
+              {setupDiagnostics?.adminCommands?.length > 0 && (
+                <div className="mt-3">
+                  <div className="text-sm text-muted mb-2">
+                    Administrator-only fixes. Gridman will not run these commands for you.
+                    <br />
+                    این دستورها باید در PowerShell با دسترسی Administrator اجرا شوند.
+                  </div>
+                  <div className="commands-list">
+                    {setupDiagnostics.adminCommands.map((command) => (
+                      <div className="command-row" key={command}>
+                        <div><code>{command}</code></div>
+                        <button className="copy-command" onClick={() => copyCommand(command)} title="Copy command">
+                          <IconCopy size={14} strokeWidth={1.5} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {setupDiagnostics?.protocol === 'https' && (
+                <div className="workspace-warning mt-3">
+                  HTTPS remotes use Git Credential Manager or your configured Git credential helper.
+                  <br />
+                  برای HTTPS بهتر است Credential Manager فعال باشد و token/app password استفاده شود.
+                </div>
+              )}
+
+              {setupResult && <pre className="output-box mt-3">{setupResult}</pre>}
+            </div>
+          )}
+
           <div className="panel">
             <div className="section-title">Actions</div>
             <div className="flex flex-wrap gap-2">
@@ -1284,6 +1644,25 @@ const WorkspaceGit = ({ workspace }) => {
           </div>
         </div>
       </div>
+      {confirmSetupAction && (
+        <Portal>
+          <Modal
+            size="md"
+            title={confirmSetupAction.title}
+            confirmText={confirmSetupAction.confirmText}
+            handleConfirm={confirmSetupModalAction}
+            handleCancel={() => setConfirmSetupAction(null)}
+          >
+            <div className="space-y-3">
+              <p>{confirmSetupAction.body}</p>
+              <p className="text-muted">{confirmSetupAction.bodyFa}</p>
+              {confirmSetupAction.type === 'add-known-host' && (
+                <pre className="output-box">{confirmSetupAction.payload?.hostKey}</pre>
+              )}
+            </div>
+          </Modal>
+        </Portal>
+      )}
     </StyledWrapper>
   );
 };

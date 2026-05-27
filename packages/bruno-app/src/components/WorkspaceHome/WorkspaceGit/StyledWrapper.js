@@ -310,13 +310,96 @@ const StyledWrapper = styled.div`
     line-height: 1.45;
   }
 
+  .setup-checklist {
+    display: grid;
+    gap: 8px;
+  }
+
+  .setup-row {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: start;
+    padding: 9px 10px;
+    border: 1px solid ${(props) => props.theme.border.border1};
+    border-radius: ${(props) => props.theme.border.radius.sm};
+    background: ${(props) => props.theme.input.bg};
+  }
+
+  .setup-status-icon {
+    display: flex;
+    justify-content: center;
+    color: ${(props) => props.theme.colors.text.muted};
+    padding-top: 2px;
+  }
+
+  .setup-row-title {
+    font-weight: 600;
+  }
+
+  .setup-row-fa,
+  .setup-row-detail {
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 12px;
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .setup-badge {
+    padding: 3px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    border: 1px solid ${(props) => props.theme.border.border1};
+  }
+
+  .setup-ok {
+    color: ${(props) => props.theme.colors.text.green || props.theme.text};
+  }
+
+  .setup-warning,
+  .setup-admin,
+  .setup-missing {
+    color: ${(props) => props.theme.colors.text.orange};
+  }
+
+  .setup-unknown {
+    color: ${(props) => props.theme.colors.text.muted};
+  }
+
+  .setup-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .setup-form {
+    display: grid;
+    gap: 8px;
+  }
+
+  .setup-two-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .setup-input-label {
+    display: grid;
+    gap: 4px;
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 12px;
+  }
+
   @media (max-width: 1100px) {
     .git-layout,
     .empty-state-grid {
       grid-template-columns: 1fr;
     }
 
-    .branch-create-form {
+    .branch-create-form,
+    .setup-two-columns {
       grid-template-columns: 1fr;
     }
   }
