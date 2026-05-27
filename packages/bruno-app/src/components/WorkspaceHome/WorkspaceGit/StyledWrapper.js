@@ -33,6 +33,95 @@ const StyledWrapper = styled.div`
     background: ${(props) => props.theme.tabs.secondary.active.bg};
   }
 
+  .git-assistant-panel {
+    border-color: ${(props) => props.theme.colors.text.orange};
+  }
+
+  .assistant-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .assistant-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .assistant-description {
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 13px;
+    line-height: 1.45;
+    margin: 0;
+  }
+
+  .assistant-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
+  }
+
+  .assistant-facts span {
+    padding: 4px 7px;
+    border: 1px solid ${(props) => props.theme.border.border1};
+    border-radius: 999px;
+    color: ${(props) => props.theme.colors.text.muted};
+    background: ${(props) => props.theme.input.bg};
+    font-size: 12px;
+  }
+
+  .assistant-note {
+    margin-top: 10px;
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .advanced-details,
+  .nested-advanced-details {
+    border: 1px solid ${(props) => props.theme.border.border1};
+    border-radius: ${(props) => props.theme.border.radius.sm};
+    background: ${(props) => props.theme.bg};
+  }
+
+  .advanced-details > summary,
+  .nested-advanced-details > summary {
+    cursor: pointer;
+    padding: 10px 12px;
+    color: ${(props) => props.theme.text};
+    font-weight: 600;
+    list-style-position: inside;
+  }
+
+  .advanced-details > summary:hover,
+  .nested-advanced-details > summary:hover {
+    background: ${(props) => props.theme.tabs.secondary.active.bg};
+  }
+
+  .advanced-content {
+    display: grid;
+    gap: 16px;
+    padding: 0 12px 12px;
+  }
+
+  .nested-advanced-details {
+    border-style: dashed;
+  }
+
+  .nested-advanced-details .panel {
+    border: none;
+    padding-top: 0;
+  }
+
+  .guided-commit-message {
+    width: 100%;
+    min-height: 100px;
+    resize: vertical;
+  }
+
   .outside-list {
     display: flex;
     flex-direction: column;
@@ -396,6 +485,11 @@ const StyledWrapper = styled.div`
     .git-layout,
     .empty-state-grid {
       grid-template-columns: 1fr;
+    }
+
+    .assistant-header {
+      flex-direction: column;
+      align-items: stretch;
     }
 
     .branch-create-form,

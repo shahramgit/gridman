@@ -2352,6 +2352,97 @@ const syncGitChanges = async (win, { gitRootPath, processUid, remote = 'origin',
   return result;
 };
 
+const performGuidedWorkspaceGitAction = async (win, {
+  gitRootPath,
+  processUid,
+  remote = 'origin',
+  action,
+  message = '',
+  strategy = '--no-rebase'
+}) => {
+  if (!gitRootPath) {
+    throw new Error('Git root path is required.');
+  }
+
+  const commitMessage = String(message || '').trim();
+  const currentBranch = await getCurrentGitBranch(gitRootPath).catch(() => '');
+  const result = {
+    action,
+    committed: false,
+    commitFiles: [],
+    skippedProtectedFiles: [],
+    pulled: false,
+    pushed: false,
+    published: false,
+    mergeInProgress: false,
+    message: ''
+  };
+
+  const shouldCommit = ['save', 'publish-workspace', 'sync-full'].includes(action);
+  if (shouldCommit) {
+    if (!commitMessage) {
+      throw new Error('Commit message is required.');
+    }
+
+    const safeFiles = await getLocalWorkspaceFilesForSafetyCommit(gitRootPath);
+    const allStatus = await getSimpleGitInstanceForPath(gitRootPath)
+      .raw(['-c', 'core.quotePath=false', 'status', '--porcelain', '-z', '--untracked-files=all']);
+    const allFiles = parsePorcelainStatusPaths(allStatus);
+    const protectedFiles = allFiles.filter(isProtectedWorkspaceGitPath);
+
+    result.skippedProtectedFiles = protectedFiles;
+
+    if (!safeFiles.length) {
+      result.message = protectedFiles.length
+        ? 'Only protected local environment files changed. Nothing was committed.'
+        : 'No workspace changes to commit.';
+    } else {
+      const commitResult = await createSafetyCommitForFiles(gitRootPath, safeFiles, commitMessage);
+      result.committed = Boolean(commitResult.committed);
+      result.commitFiles = commitResult.files || [];
+      result.skippedProtectedFiles = [...new Set([
+        ...protectedFiles,
+        ...(commitResult.skippedFiles || [])
+      ])];
+    }
+  }
+
+  if (action === 'publish-workspace' || action === 'publish-branch') {
+    await publishGitBranch(win, { gitRootPath, processUid, remote, branchName: currentBranch });
+    result.published = true;
+    result.pushed = true;
+  } else if (action === 'push') {
+    await pushGitChanges(win, { gitRootPath, processUid, remote });
+    result.pushed = true;
+  } else if (action === 'pull') {
+    const pullResult = await pullGitChanges(win, { gitRootPath, processUid, remote, strategy });
+    result.pulled = true;
+    if (pullResult?.mergeInProgress) {
+      result.mergeInProgress = true;
+      result.message = pullResult.message || 'Merge conflicts need to be resolved.';
+    }
+  } else if (action === 'sync' || action === 'sync-full') {
+    const syncResult = await syncGitChanges(win, { gitRootPath, processUid, remote, strategy });
+    result.pulled = Boolean(syncResult?.pulled);
+    result.pushed = Boolean(syncResult?.pushed);
+    if (syncResult?.mergeInProgress) {
+      result.mergeInProgress = true;
+      result.message = syncResult.message || 'Merge conflicts need to be resolved.';
+    }
+  }
+
+  if (!result.message) {
+    const parts = [];
+    if (result.committed) parts.push('committed');
+    if (result.pulled) parts.push('pulled');
+    if (result.published) parts.push('published');
+    else if (result.pushed) parts.push('pushed');
+    result.message = parts.length ? `Guided Git action completed: ${parts.join(', ')}.` : 'Guided Git action completed.';
+  }
+
+  return result;
+};
+
 const fetchRemoteBranches = ({ gitRootPath, remote }) => {
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
@@ -3457,6 +3548,7 @@ module.exports = {
   cloneGitRepository,
   fetchChanges,
   syncGitChanges,
+  performGuidedWorkspaceGitAction,
   fetchRemotes,
   fetchRemoteBranches,
   checkoutRemoteGitBranch,

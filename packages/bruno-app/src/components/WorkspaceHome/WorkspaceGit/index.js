@@ -238,6 +238,8 @@ const WorkspaceGit = ({ workspace }) => {
   const [sshKeyEmail, setSshKeyEmail] = useState('');
   const [gitIdentityName, setGitIdentityName] = useState('');
   const [gitIdentityEmail, setGitIdentityEmail] = useState('');
+  const [guidedCommitAction, setGuidedCommitAction] = useState(null);
+  const [guidedCommitMessage, setGuidedCommitMessage] = useState('');
 
   const gitRootPath = gitData?.gitRootPath;
   const currentBranch = gitData?.currentBranch || gitData?.currentGitBranch || gitData?.status?.current || '';
@@ -254,10 +256,14 @@ const WorkspaceGit = ({ workspace }) => {
   const conflicted = changedFiles.conflicted || [];
   const tooManyFiles = Boolean(changedFiles.tooManyFiles);
   const totalChangedFiles = changedFiles.totalFiles || 0;
+  const fileCount = useMemo(() => staged.length + unstaged.length + conflicted.length, [staged.length, unstaged.length, conflicted.length]);
   const hasConflicts = gitData?.mergeInProgress || conflicted.length > 0;
   const orphanCollections = collectionReconciliation?.orphanCollections || [];
   const missingCollections = collectionReconciliation?.missingCollections || [];
   const hasCommits = Boolean(gitData?.hasCommits);
+  const ahead = Number(gitData?.aheadBehind?.ahead || 0);
+  const behind = Number(gitData?.aheadBehind?.behind || 0);
+  const hasLocalChanges = Boolean(fileCount > 0 || tooManyFiles);
   const canPublishCurrentBranch = Boolean(hasCommits && (gitData?.canPublishCurrentBranch || (currentBranch && !hasUpstream)));
   const browserRemoteUrl = getBrowserRemoteUrl(remoteUrl);
   const providerUrls = getProviderUrls({
@@ -276,6 +282,109 @@ const WorkspaceGit = ({ workspace }) => {
   const authCommands = useMemo(() => getAuthCommands(auth), [auth]);
   const windowsSetupItems = useMemo(() => getWindowsSetupItems(setupDiagnostics), [setupDiagnostics]);
   const showWindowsGitSetup = setupDiagnostics?.platform === 'win32';
+
+  const guidedAction = useMemo(() => {
+    if (!gitData?.isGitRepository) {
+      return {
+        type: 'init',
+        title: 'Start tracking this workspace',
+        description: 'Initialize Git so this workspace can be saved and synced.',
+        primaryLabel: 'Initialize Git',
+        needsCommitMessage: false
+      };
+    }
+
+    if (hasConflicts) {
+      return {
+        type: 'resolve',
+        title: 'Resolve merge conflicts',
+        description: 'A pull or sync found conflicting changes. Resolve them before continuing.',
+        primaryLabel: 'Resolve conflicts',
+        needsCommitMessage: false,
+        tone: 'warning'
+      };
+    }
+
+    if (!remoteUrl) {
+      return {
+        type: 'connect-remote',
+        title: 'Connect a Git remote',
+        description: 'Paste the repository URL once. After that Gridman can publish or sync this workspace.',
+        primaryLabel: 'Connect remote',
+        needsCommitMessage: false
+      };
+    }
+
+    if (!hasCommits) {
+      return {
+        type: 'publish-workspace',
+        title: 'Publish this workspace',
+        description: 'Gridman will save safe workspace files, create the first commit, and push this branch to the remote.',
+        primaryLabel: 'Publish workspace',
+        defaultMessage: 'Initial workspace',
+        needsCommitMessage: true
+      };
+    }
+
+    if (hasLocalChanges) {
+      return {
+        type: 'save',
+        title: 'Save local changes',
+        description: 'Gridman will stage safe workspace files and create a Git commit. Environment files are excluded.',
+        primaryLabel: 'Save changes',
+        defaultMessage: 'Update workspace',
+        needsCommitMessage: true
+      };
+    }
+
+    if (remoteUrl && !hasUpstream) {
+      return {
+        type: 'publish-branch',
+        title: 'Publish this branch',
+        description: 'This branch has not been connected to the remote yet.',
+        primaryLabel: 'Publish branch',
+        needsCommitMessage: false
+      };
+    }
+
+    if (ahead > 0 && behind > 0) {
+      return {
+        type: 'sync',
+        title: 'Sync local and remote changes',
+        description: 'Gridman will pull remote commits, then push your committed local commits.',
+        primaryLabel: 'Sync changes',
+        needsCommitMessage: false
+      };
+    }
+
+    if (behind > 0) {
+      return {
+        type: 'pull',
+        title: 'Pull remote updates',
+        description: 'The remote has commits this workspace does not have yet.',
+        primaryLabel: 'Pull updates',
+        needsCommitMessage: false
+      };
+    }
+
+    if (ahead > 0) {
+      return {
+        type: 'push',
+        title: 'Push committed changes',
+        description: 'Your local commits are ready to upload to the remote.',
+        primaryLabel: 'Push to remote',
+        needsCommitMessage: false
+      };
+    }
+
+    return {
+      type: 'synced',
+      title: 'Workspace is synced',
+      description: 'There are no local changes and no remote updates detected.',
+      primaryLabel: 'Refresh status',
+      needsCommitMessage: false
+    };
+  }, [ahead, behind, gitData?.isGitRepository, hasCommits, hasConflicts, hasLocalChanges, hasUpstream, remoteUrl]);
 
   const refresh = useCallback(async ({ fetchRemote = false } = {}) => {
     if (!workspace?.pathname) return;
@@ -408,6 +517,87 @@ const WorkspaceGit = ({ workspace }) => {
     } finally {
       setOperation(null);
     }
+  };
+
+  const runGuidedAction = async (action, message = '') => {
+    if (!gitRootPath) return;
+
+    setOperation(guidedAction?.primaryLabel || 'Git Assistant');
+    setOutput('');
+    try {
+      const result = await window.ipcRenderer.invoke('renderer:guided-workspace-git-action', {
+        gitRootPath,
+        processUid: uuid(),
+        remote,
+        action,
+        message,
+        strategy: DEFAULT_PULL_STRATEGY
+      });
+
+      const protectedNote = result?.skippedProtectedFiles?.length
+        ? `\n\nLocal environment files were excluded:\n${result.skippedProtectedFiles.join('\n')}`
+        : '';
+      setOutput(`${result?.message || 'Git action completed.'}${protectedNote}`);
+      if (result?.mergeInProgress) {
+        toast.error('Merge conflicts need to be resolved');
+      } else {
+        toast.success(result?.message || 'Git action completed');
+      }
+      setGuidedCommitAction(null);
+      setGuidedCommitMessage('');
+      await refresh({ fetchRemote: ['pull', 'sync', 'sync-full'].includes(action) });
+    } catch (error) {
+      const message = getIpcErrorMessage(error, 'Git action failed');
+      setOutput(message);
+      toast.error(message);
+      await refresh();
+    } finally {
+      setOperation(null);
+    }
+  };
+
+  const openGuidedCommitModal = (action) => {
+    setGuidedCommitAction(action);
+    setGuidedCommitMessage(action.defaultMessage || 'Update workspace');
+  };
+
+  const handleGuidedPrimaryAction = () => {
+    if (!guidedAction) return null;
+
+    if (guidedAction.type === 'init') {
+      return initializeGit();
+    }
+
+    if (guidedAction.type === 'connect-remote') {
+      setEditingRemote(true);
+      setOutput('Paste your Git remote URL in the Origin section, then click Set origin.');
+      return null;
+    }
+
+    if (guidedAction.type === 'resolve') {
+      setOutput('Resolve each conflicted file in the Conflicts section, then continue the merge.');
+      return null;
+    }
+
+    if (guidedAction.type === 'synced') {
+      return refresh({ fetchRemote: true });
+    }
+
+    if (guidedAction.needsCommitMessage) {
+      openGuidedCommitModal(guidedAction);
+      return null;
+    }
+
+    return runGuidedAction(guidedAction.type);
+  };
+
+  const confirmGuidedCommit = () => {
+    const message = guidedCommitMessage.trim();
+    if (!message) {
+      toast.error('Commit message is required');
+      return;
+    }
+    return runGuidedAction(guidedCommitAction.type, message);
   };
 
   const syncFull = async () => {
@@ -904,8 +1094,6 @@ const WorkspaceGit = ({ workspace }) => {
     });
   };
 
-  const fileCount = useMemo(() => staged.length + unstaged.length + conflicted.length, [staged.length, unstaged.length, conflicted.length]);
-
   if (!workspace?.pathname) {
     return <div className="p-4">Workspace path not found.</div>;
   }
@@ -1031,6 +1219,38 @@ const WorkspaceGit = ({ workspace }) => {
     <StyledWrapper>
       <div className="git-layout">
         <div className="space-y-4">
+          <div className={`panel git-assistant-panel ${guidedAction?.tone === 'warning' ? 'warning-panel' : ''}`}>
+            <div className="assistant-header">
+              <div>
+                <div className="section-title">Git Assistant</div>
+                <div className="assistant-title">{guidedAction?.title}</div>
+                <p className="assistant-description">{guidedAction?.description}</p>
+              </div>
+              <Button
+                size="sm"
+                color={guidedAction?.type === 'synced' ? 'light' : 'primary'}
+                icon={guidedAction?.type === 'pull' ? <IconArrowDown size={14} /> : guidedAction?.type === 'push' ? <IconArrowUp size={14} /> : <IconUpload size={14} />}
+                loading={operation === guidedAction?.primaryLabel}
+                disabled={!guidedAction}
+                onClick={handleGuidedPrimaryAction}
+              >
+                {guidedAction?.primaryLabel || 'Refresh'}
+              </Button>
+            </div>
+            <div className="assistant-facts">
+              <span>{currentBranch || 'unknown branch'}</span>
+              <span>{remoteUrl ? 'remote connected' : 'no remote'}</span>
+              <span>{hasUpstream ? `tracks ${trackingBranch}` : 'not published'}</span>
+              <span>{hasLocalChanges ? `${tooManyFiles ? totalChangedFiles : fileCount} changed files` : 'no local changes'}</span>
+            </div>
+            {(hasLocalChanges || tooManyFiles) && (
+              <div className="assistant-note">
+                Local environment files are not included in Git.
+              </div>
+            )}
+            {output && <pre className="output-box assistant-output mt-3">{output}</pre>}
+          </div>
+
           <div className="panel">
             <div className="section-title">Repository</div>
             <div className="meta-grid">
@@ -1086,211 +1306,158 @@ const WorkspaceGit = ({ workspace }) => {
             )}
           </div>
 
-          {remoteUrl && (
-            <div className="panel">
-              <div className="section-title">Branches</div>
-              <div className="branch-controls">
-                <select
-                  className="textbox"
-                  value={currentBranch}
-                  onChange={(event) => checkoutBranch(event.target.value)}
-                  disabled={operation === 'Checkout branch'}
-                >
-                  {localBranches.map((branch) => (
-                    <option key={branch} value={branch}>{branch}</option>
-                  ))}
-                </select>
-                <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={operation === 'Fetch'} onClick={() => runGitOperation('Fetch', 'renderer:fetch-workspace-git')}>
-                  Fetch
-                </Button>
-                {canPublishCurrentBranch && (
-                  <Button size="sm" color="primary" icon={<IconCloudUpload size={14} />} loading={operation === 'Publish branch'} onClick={publishBranch}>
-                    Publish branch
-                  </Button>
-                )}
-              </div>
-
-              {remoteBranches.length > 0 && (
-                <div className="mt-3">
-                  <div className="text-sm text-muted mb-1">Checkout remote branch</div>
+          <details className="advanced-details" open={!remoteUrl || editingRemote || hasConflicts}>
+            <summary>Advanced Git</summary>
+            <div className="advanced-content">
+              {remoteUrl && (
+                <div className="panel">
+                  <div className="section-title">Branches</div>
                   <div className="branch-controls">
                     <select
                       className="textbox"
-                      defaultValue=""
-                      onChange={(event) => {
-                        checkoutRemoteBranch(event.target.value);
-                        event.target.value = '';
-                      }}
+                      value={currentBranch}
+                      onChange={(event) => checkoutBranch(event.target.value)}
+                      disabled={operation === 'Checkout branch'}
                     >
-                      <option value="" disabled>Select remote branch...</option>
-                      {remoteBranches.map((branch) => (
-                        <option key={branch} value={branch}>{remote}/{branch}</option>
+                      {localBranches.map((branch) => (
+                        <option key={branch} value={branch}>{branch}</option>
                       ))}
                     </select>
+                    <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={operation === 'Fetch'} onClick={() => runGitOperation('Fetch', 'renderer:fetch-workspace-git')}>
+                      Fetch
+                    </Button>
+                    {canPublishCurrentBranch && (
+                      <Button size="sm" color="primary" icon={<IconCloudUpload size={14} />} loading={operation === 'Publish branch'} onClick={publishBranch}>
+                        Publish branch
+                      </Button>
+                    )}
                   </div>
-                </div>
-              )}
 
-              <div className="mt-3">
-                <div className="text-sm text-muted mb-1">Create branch</div>
-                <div className="branch-create-form">
-                  <input
-                    className="textbox"
-                    value={createBranchName}
-                    onChange={(event) => setCreateBranchName(event.target.value)}
-                    placeholder="feature/workspace-sync"
-                  />
-                  <input
-                    className="textbox"
-                    value={branchBase}
-                    onChange={(event) => setCreateBranchBase(event.target.value)}
-                    placeholder="Base branch"
-                  />
-                  <Button size="sm" color="primary" icon={<IconPlus size={14} />} disabled={!createBranchName.trim()} loading={operation === 'Create branch'} onClick={createBranch}>
-                    Create
-                  </Button>
-                </div>
-                <label className="branch-checkbox mt-2">
-                  <input
-                    type="checkbox"
-                    checked={publishAfterCreate}
-                    onChange={(event) => setPublishAfterCreate(event.target.checked)}
-                  />
-                  <span>Publish to {remote} after create</span>
-                </label>
-              </div>
-
-              <div className="flex flex-wrap gap-2 mt-3">
-                <Button size="sm" color="light" icon={<IconExternalLink size={14} />} disabled={!browserRemoteUrl} onClick={openCreateMergeRequest}>
-                  Create merge request
-                </Button>
-                <Button size="sm" color="light" icon={<IconExternalLink size={14} />} disabled={!browserRemoteUrl} onClick={openMergeRequests}>
-                  Open merge requests
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {(orphanCollections.length > 0 || missingCollections.length > 0) && (
-            <div className="panel warning-panel">
-              <div className="section-title">Workspace Collections</div>
-              <p className="text-sm text-muted">
-                Git merge can leave collection folders and `workspace.yml` out of sync. Repair the workspace index before committing.
-              </p>
-
-              {orphanCollections.length > 0 && (
-                <div className="mt-3">
-                  <div className="font-semibold">Folders not listed in workspace.yml</div>
-                  <div className="outside-list mt-2">
-                    {orphanCollections.map((collection) => (
-                      <div key={collection.path} className="outside-row">{collection.relativePath || collection.path}</div>
-                    ))}
-                  </div>
-                  <Button
-                    size="sm"
-                    color="primary"
-                    className="mt-3"
-                    loading={reconcilingCollections}
-                    onClick={addOrphanCollectionsToWorkspace}
-                  >
-                    Add folders to workspace
-                  </Button>
-                  <Button
-                    size="sm"
-                    color="danger"
-                    className="mt-3 ml-2"
-                    loading={reconcilingCollections}
-                    onClick={deleteOrphanCollectionsFromDisk}
-                  >
-                    Delete folders from disk
-                  </Button>
-                </div>
-              )}
-
-              {missingCollections.length > 0 && (
-                <div className="mt-3">
-                  <div className="font-semibold">Entries with missing folders</div>
-                  <div className="outside-list mt-2">
-                    {missingCollections.map((collection) => (
-                      <div key={`${collection.name}-${collection.path}`} className="outside-row">
-                        {collection.name}: {collection.relativePath || collection.path}
+                  {remoteBranches.length > 0 && (
+                    <div className="mt-3">
+                      <div className="text-sm text-muted mb-1">Checkout remote branch</div>
+                      <div className="branch-controls">
+                        <select
+                          className="textbox"
+                          defaultValue=""
+                          onChange={(event) => {
+                            checkoutRemoteBranch(event.target.value);
+                            event.target.value = '';
+                          }}
+                        >
+                          <option value="" disabled>Select remote branch...</option>
+                          {remoteBranches.map((branch) => (
+                            <option key={branch} value={branch}>{remote}/{branch}</option>
+                          ))}
+                        </select>
                       </div>
-                    ))}
+                    </div>
+                  )}
+
+                  <div className="mt-3">
+                    <div className="text-sm text-muted mb-1">Create branch</div>
+                    <div className="branch-create-form">
+                      <input
+                        className="textbox"
+                        value={createBranchName}
+                        onChange={(event) => setCreateBranchName(event.target.value)}
+                        placeholder="feature/workspace-sync"
+                      />
+                      <input
+                        className="textbox"
+                        value={branchBase}
+                        onChange={(event) => setCreateBranchBase(event.target.value)}
+                        placeholder="Base branch"
+                      />
+                      <Button size="sm" color="primary" icon={<IconPlus size={14} />} disabled={!createBranchName.trim()} loading={operation === 'Create branch'} onClick={createBranch}>
+                        Create
+                      </Button>
+                    </div>
+                    <label className="branch-checkbox mt-2">
+                      <input
+                        type="checkbox"
+                        checked={publishAfterCreate}
+                        onChange={(event) => setPublishAfterCreate(event.target.checked)}
+                      />
+                      <span>Publish to {remote} after create</span>
+                    </label>
                   </div>
-                  <Button
-                    size="sm"
-                    color="light"
-                    className="mt-3"
-                    loading={reconcilingCollections}
-                    onClick={removeMissingCollectionsFromWorkspace}
-                  >
-                    Remove missing entries
-                  </Button>
+
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    <Button size="sm" color="light" icon={<IconExternalLink size={14} />} disabled={!browserRemoteUrl} onClick={openCreateMergeRequest}>
+                      Create merge request
+                    </Button>
+                    <Button size="sm" color="light" icon={<IconExternalLink size={14} />} disabled={!browserRemoteUrl} onClick={openMergeRequests}>
+                      Open merge requests
+                    </Button>
+                  </div>
                 </div>
               )}
-            </div>
-          )}
 
-          {!remoteUrl && (
-            <div className="panel">
-              <div className="section-title">Remote</div>
-              <p className="text-sm text-muted mb-2">Connect this local workspace repository to GitHub, GitLab, Bitbucket, or any Git remote.</p>
-              <div className="remote-form">
-                <input
-                  className="textbox"
-                  value={remoteUrlInput}
-                  onChange={(event) => setRemoteUrlInput(event.target.value)}
-                  placeholder="https://github.com/org/repo.git"
-                />
-                <Button
-                  size="sm"
-                  color="primary"
-                  icon={<IconCloudUpload size={14} />}
-                  disabled={!remoteUrlInput.trim()}
-                  loading={operation === 'Set remote'}
-                  onClick={setRemote}
-                >
-                  Set origin
-                </Button>
-              </div>
-              <div className="commands-list mt-3">
-                {['git remote add origin <url>', `git push -u origin ${currentBranch || 'main'}`].map((command) => (
-                  <div className="command-row" key={command}>
-                    <div>
-                      <code>{command}</code>
+              {(orphanCollections.length > 0 || missingCollections.length > 0) && (
+                <div className="panel warning-panel">
+                  <div className="section-title">Workspace Collections</div>
+                  <p className="text-sm text-muted">
+                    Git merge can leave collection folders and `workspace.yml` out of sync. Repair the workspace index before committing.
+                  </p>
+
+                  {orphanCollections.length > 0 && (
+                    <div className="mt-3">
+                      <div className="font-semibold">Folders not listed in workspace.yml</div>
+                      <div className="outside-list mt-2">
+                        {orphanCollections.map((collection) => (
+                          <div key={collection.path} className="outside-row">{collection.relativePath || collection.path}</div>
+                        ))}
+                      </div>
+                      <Button
+                        size="sm"
+                        color="primary"
+                        className="mt-3"
+                        loading={reconcilingCollections}
+                        onClick={addOrphanCollectionsToWorkspace}
+                      >
+                        Add folders to workspace
+                      </Button>
+                      <Button
+                        size="sm"
+                        color="danger"
+                        className="mt-3 ml-2"
+                        loading={reconcilingCollections}
+                        onClick={deleteOrphanCollectionsFromDisk}
+                      >
+                        Delete folders from disk
+                      </Button>
                     </div>
-                    <button className="copy-command" onClick={() => copyCommand(command)} title="Copy command">
-                      <IconCopy size={14} strokeWidth={1.5} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                  )}
 
-          {remoteUrl && (
-            <div className="panel">
-              <div className="section-title">Origin</div>
-              {!editingRemote ? (
-                <>
-                  <p className="text-sm text-muted mb-2">
-                    Change origin when this workspace should sync with a different Git repository.
-                  </p>
-                  <Button
-                    size="sm"
-                    color="light"
-                    icon={<IconEdit size={14} />}
-                    onClick={startEditingRemote}
-                  >
-                    Change origin
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm text-muted mb-2">
-                    Changing origin only changes where this workspace syncs. It does not move files or rewrite local commits.
-                    Pulling from an unrelated remote may fail.
-                  </p>
+                  {missingCollections.length > 0 && (
+                    <div className="mt-3">
+                      <div className="font-semibold">Entries with missing folders</div>
+                      <div className="outside-list mt-2">
+                        {missingCollections.map((collection) => (
+                          <div key={`${collection.name}-${collection.path}`} className="outside-row">
+                            {collection.name}: {collection.relativePath || collection.path}
+                          </div>
+                        ))}
+                      </div>
+                      <Button
+                        size="sm"
+                        color="light"
+                        className="mt-3"
+                        loading={reconcilingCollections}
+                        onClick={removeMissingCollectionsFromWorkspace}
+                      >
+                        Remove missing entries
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!remoteUrl && (
+                <div className="panel">
+                  <div className="section-title">Remote</div>
+                  <p className="text-sm text-muted mb-2">Connect this local workspace repository to GitHub, GitLab, Bitbucket, or any Git remote.</p>
                   <div className="remote-form">
                     <input
                       className="textbox"
@@ -1302,180 +1469,19 @@ const WorkspaceGit = ({ workspace }) => {
                       size="sm"
                       color="primary"
                       icon={<IconCloudUpload size={14} />}
-                      disabled={!remoteUrlInput.trim() || remoteUrlInput.trim() === remoteUrl}
+                      disabled={!remoteUrlInput.trim()}
                       loading={operation === 'Set remote'}
                       onClick={setRemote}
                     >
-                      Save origin
+                      Set origin
                     </Button>
                   </div>
-                  <div className="flex gap-2 mt-2">
-                    <Button size="sm" color="light" onClick={cancelEditingRemote}>Cancel</Button>
-                    <Button size="sm" color="light" icon={<IconCopy size={14} />} onClick={() => copyCommand(`git remote set-url origin ${remoteUrlInput || '<url>'}`)}>
-                      Copy command
-                    </Button>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          <div className="panel">
-            <div className="section-title">Authentication</div>
-            <div className="auth-summary">
-              <div className="auth-chip">
-                <IconKey size={14} strokeWidth={1.5} />
-                <span>{getAuthModeLabel(auth?.protocol)}</span>
-              </div>
-              <div className="auth-provider">{auth?.provider?.name || 'No provider detected'}</div>
-            </div>
-            <p className="text-sm text-muted mt-2">{getAuthSummary(auth)}</p>
-
-            {auth?.protocol === 'https' && (
-              <div className="auth-detail mt-3">
-                <span className="meta-label">Credential helper</span>
-                <span>{auth.credentialHelper?.configured ? `${auth.credentialHelper.value} (${auth.credentialHelper.scope})` : 'not configured'}</span>
-              </div>
-            )}
-
-            {auth?.protocol === 'ssh' && (
-              <div className="auth-detail mt-3">
-                <span className="meta-label">SSH keys</span>
-                <span>{auth.ssh?.hasKeys ? auth.ssh.keys.map((key) => key.name).join(', ') : 'no common SSH key found'}</span>
-              </div>
-            )}
-
-            <div className="flex flex-wrap gap-2 mt-3">
-              <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={operation === 'Check authentication'} onClick={refreshAuthDiagnostics}>Check setup</Button>
-              <Button size="sm" color="primary" icon={<IconKey size={14} />} disabled={!remoteUrl} loading={operation === 'Test connection'} onClick={testAuthentication}>Test connection</Button>
-              {auth?.helpLinks?.https && (
-                <Button size="sm" color="light" icon={<IconExternalLink size={14} />} onClick={() => window?.ipcRenderer?.openExternal(auth.protocol === 'ssh' ? auth.helpLinks.ssh : auth.helpLinks.https)}>
-                  Open setup guide
-                </Button>
-              )}
-            </div>
-
-            {authTestResult && (
-              <pre className={`output-box mt-3 ${authTestResult.ok ? 'success-output' : 'error-output'}`}>
-                {authTestResult.message}
-              </pre>
-            )}
-
-            <div className="commands-list mt-3">
-              {authCommands.map((command) => (
-                <div className="command-row" key={command}>
-                  <div>
-                    <code>{command}</code>
-                  </div>
-                  <button className="copy-command" onClick={() => copyCommand(command)} title="Copy command">
-                    <IconCopy size={14} strokeWidth={1.5} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {showWindowsGitSetup && (
-            <div className="panel">
-              <div className="section-title">Windows Git Setup</div>
-              <p className="text-sm text-muted mb-3">
-                Diagnose and fix common Windows Git setup issues. Safe user-level fixes require confirmation; administrator commands are copy-only.
-                <br />
-                راهنمای تنظیم Git در ویندوز؛ موارد حساس فقط با تایید شما انجام می‌شوند.
-              </p>
-
-              <div className="setup-checklist">
-                {windowsSetupItems.map((item) => (
-                  <div className="setup-row" key={item.id}>
-                    <div className="setup-status-icon">
-                      {item.status.className === 'setup-ok' ? <IconCircleCheck size={17} /> : <IconAlertTriangle size={17} />}
-                    </div>
-                    <div className="setup-row-body">
-                      <div className="setup-row-title">{item.title}</div>
-                      <div className="setup-row-fa">{item.fa}</div>
-                      {item.detail && <div className="setup-row-detail">{item.detail}</div>}
-                    </div>
-                    <span className={`setup-badge ${item.status.className}`}>{item.status.label}</span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="setup-actions mt-3">
-                <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={setupOperation === 'Check Git setup'} onClick={() => refreshSetupDiagnostics()}>
-                  Re-check
-                </Button>
-                <Button size="sm" color="primary" icon={<IconKey size={14} />} disabled={!remoteUrl} loading={setupOperation === 'Test Git connection'} onClick={testSetupConnection}>
-                  Test connection
-                </Button>
-              </div>
-
-              {setupDiagnostics?.protocol === 'ssh' && (
-                <div className="setup-form mt-3">
-                  <label className="setup-input-label">
-                    SSH key email/comment
-                    <input
-                      className="textbox"
-                      value={sshKeyEmail}
-                      onChange={(event) => setSshKeyEmail(event.target.value)}
-                      placeholder="you@example.com"
-                    />
-                  </label>
-                  <div className="setup-actions">
-                    <Button size="sm" color="light" icon={<IconKey size={14} />} disabled={setupDiagnostics?.sshKey?.hasKeys} loading={setupOperation === 'Create SSH key'} onClick={confirmCreateSshKey}>
-                      Create SSH key
-                    </Button>
-                    <Button size="sm" color="light" icon={<IconCopy size={14} />} disabled={!setupDiagnostics?.sshKey?.publicKey} onClick={() => copyCommand(setupDiagnostics?.sshKey?.publicKey)}>
-                      Copy public key
-                    </Button>
-                    <Button size="sm" color="light" icon={<IconKey size={14} />} disabled={!setupDiagnostics?.remoteInfo?.host || setupDiagnostics?.knownHost?.configured} loading={setupOperation === 'Scan SSH host' || setupOperation === 'Add known host'} onClick={confirmAddKnownHost}>
-                      Trust SSH host
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              <div className="setup-form mt-3">
-                <div className="setup-two-columns">
-                  <label className="setup-input-label">
-                    Git user name
-                    <input
-                      className="textbox"
-                      value={gitIdentityName}
-                      onChange={(event) => setGitIdentityName(event.target.value)}
-                      placeholder="Example User"
-                    />
-                  </label>
-                  <label className="setup-input-label">
-                    Git email
-                    <input
-                      className="textbox"
-                      value={gitIdentityEmail}
-                      onChange={(event) => setGitIdentityEmail(event.target.value)}
-                      placeholder="example@email.com"
-                    />
-                  </label>
-                </div>
-                <div className="setup-actions mt-2">
-                  <Button size="sm" color="light" icon={<IconEdit size={14} />} disabled={!gitIdentityName.trim() || !gitIdentityEmail.trim()} loading={setupOperation === 'Save Git identity'} onClick={confirmSetGitIdentity}>
-                    Save Git identity
-                  </Button>
-                  <Button size="sm" color="light" icon={<IconTerminal size={14} />} disabled={setupDiagnostics?.gitLongPaths?.configured} loading={setupOperation === 'Enable Git long paths'} onClick={confirmEnableGitLongPaths}>
-                    Enable Git long paths
-                  </Button>
-                </div>
-              </div>
-
-              {setupDiagnostics?.adminCommands?.length > 0 && (
-                <div className="mt-3">
-                  <div className="text-sm text-muted mb-2">
-                    Administrator-only fixes. Gridman will not run these commands for you.
-                    <br />
-                    این دستورها باید در PowerShell با دسترسی Administrator اجرا شوند.
-                  </div>
-                  <div className="commands-list">
-                    {setupDiagnostics.adminCommands.map((command) => (
+                  <div className="commands-list mt-3">
+                    {['git remote add origin <url>', `git push -u origin ${currentBranch || 'main'}`].map((command) => (
                       <div className="command-row" key={command}>
-                        <div><code>{command}</code></div>
+                        <div>
+                          <code>{command}</code>
+                        </div>
                         <button className="copy-command" onClick={() => copyCommand(command)} title="Copy command">
                           <IconCopy size={14} strokeWidth={1.5} />
                         </button>
@@ -1485,60 +1491,281 @@ const WorkspaceGit = ({ workspace }) => {
                 </div>
               )}
 
-              {setupDiagnostics?.protocol === 'https' && (
-                <div className="workspace-warning mt-3">
-                  HTTPS remotes use Git Credential Manager or your configured Git credential helper.
-                  <br />
-                  برای HTTPS بهتر است Credential Manager فعال باشد و token/app password استفاده شود.
+              {remoteUrl && (
+                <div className="panel">
+                  <div className="section-title">Origin</div>
+                  {!editingRemote ? (
+                    <>
+                      <p className="text-sm text-muted mb-2">
+                        Change origin when this workspace should sync with a different Git repository.
+                      </p>
+                      <Button
+                        size="sm"
+                        color="light"
+                        icon={<IconEdit size={14} />}
+                        onClick={startEditingRemote}
+                      >
+                        Change origin
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm text-muted mb-2">
+                        Changing origin only changes where this workspace syncs. It does not move files or rewrite local commits.
+                        Pulling from an unrelated remote may fail.
+                      </p>
+                      <div className="remote-form">
+                        <input
+                          className="textbox"
+                          value={remoteUrlInput}
+                          onChange={(event) => setRemoteUrlInput(event.target.value)}
+                          placeholder="https://github.com/org/repo.git"
+                        />
+                        <Button
+                          size="sm"
+                          color="primary"
+                          icon={<IconCloudUpload size={14} />}
+                          disabled={!remoteUrlInput.trim() || remoteUrlInput.trim() === remoteUrl}
+                          loading={operation === 'Set remote'}
+                          onClick={setRemote}
+                        >
+                          Save origin
+                        </Button>
+                      </div>
+                      <div className="flex gap-2 mt-2">
+                        <Button size="sm" color="light" onClick={cancelEditingRemote}>Cancel</Button>
+                        <Button size="sm" color="light" icon={<IconCopy size={14} />} onClick={() => copyCommand(`git remote set-url origin ${remoteUrlInput || '<url>'}`)}>
+                          Copy command
+                        </Button>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
-              {setupResult && <pre className="output-box mt-3">{setupResult}</pre>}
-            </div>
-          )}
+              <div className="panel">
+                <div className="section-title">Authentication</div>
+                <div className="auth-summary">
+                  <div className="auth-chip">
+                    <IconKey size={14} strokeWidth={1.5} />
+                    <span>{getAuthModeLabel(auth?.protocol)}</span>
+                  </div>
+                  <div className="auth-provider">{auth?.provider?.name || 'No provider detected'}</div>
+                </div>
+                <p className="text-sm text-muted mt-2">{getAuthSummary(auth)}</p>
 
-          <div className="panel">
-            <div className="section-title">Actions</div>
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={loading} onClick={() => refresh({ fetchRemote: true })}>Refresh</Button>
-              <Button size="sm" color="light" icon={<IconDownload size={14} />} loading={operation === 'Fetch'} onClick={() => runGitOperation('Fetch', 'renderer:fetch-workspace-git')}>Fetch</Button>
-              <Button size="sm" color="light" icon={<IconArrowDown size={14} />} disabled={!hasUpstream} loading={operation === 'Pull'} onClick={() => runGitOperation('Pull', 'renderer:pull-workspace-git')}>Pull</Button>
-              <Button size="sm" color="light" icon={<IconArrowUp size={14} />} disabled={!hasCommits || (!hasUpstream && !remoteUrl)} loading={operation === 'Push' || operation === 'Publish branch'} onClick={() => hasUpstream ? runGitOperation('Push', 'renderer:push-workspace-git') : publishBranch()}>{hasUpstream ? 'Push' : 'Publish branch'}</Button>
-              <Button size="sm" color="light" icon={<IconUpload size={14} />} disabled={!remoteUrl || !hasCommits || !hasUpstream} loading={operation === 'Sync committed'} onClick={() => runGitOperation('Sync committed', 'renderer:sync-workspace-git')}>Sync committed</Button>
-              <Button size="sm" color="primary" icon={<IconUpload size={14} />} disabled={!remoteUrl || !hasUpstream || hasConflicts || ((staged.length || unstaged.length) && !commitMessage.trim()) || (!hasCommits && !staged.length && !unstaged.length)} loading={operation === 'Sync Full'} onClick={syncFull}>Sync Full</Button>
-            </div>
-            <div className="action-help mt-3">
-              <div><strong>Refresh</strong> fetches remote metadata, then rereads Git status.</div>
-              <div><strong>Fetch</strong> downloads remote metadata without changing files.</div>
-              <div><strong>Pull</strong> brings remote commits into this workspace.</div>
-              <div><strong>Push</strong> uploads committed local changes.</div>
-              <div><strong>Publish branch</strong> runs `git push -u {remote} {currentBranch || '<branch>'}` for a branch without upstream.</div>
-              <div><strong>Sync committed</strong> fetches, pulls if behind, then pushes committed local changes.</div>
-              <div><strong>Sync Full</strong> stages local changes, commits them with the message below, then runs Sync committed.</div>
-              <div><strong>Environment files</strong> are ignored by default because they may contain secrets.</div>
-            </div>
-            {output && <pre className="output-box mt-3">{output}</pre>}
-          </div>
+                {auth?.protocol === 'https' && (
+                  <div className="auth-detail mt-3">
+                    <span className="meta-label">Credential helper</span>
+                    <span>{auth.credentialHelper?.configured ? `${auth.credentialHelper.value} (${auth.credentialHelper.scope})` : 'not configured'}</span>
+                  </div>
+                )}
 
-          <div className="panel">
-            <div className="section-title">Commit</div>
-            <textarea
-              className="textbox w-full h-24"
-              value={commitMessage}
-              onChange={(event) => setCommitMessage(event.target.value)}
-              placeholder="Commit message"
-            />
-            <div className="flex gap-2 mt-2">
-              <Button size="sm" color="light" disabled={!unstaged.length} onClick={() => stageFiles(unstaged)}>Stage all</Button>
-              <Button size="sm" color="light" disabled={!staged.length} onClick={() => unstageFiles(staged)}>Unstage all</Button>
-              <Button size="sm" color="primary" icon={<IconGitCommit size={14} />} disabled={(!staged.length && !unstaged.length) || !commitMessage.trim()} loading={operation === 'Commit'} onClick={commit}>
-                {staged.length ? 'Commit staged' : 'Stage all and commit'}
-              </Button>
+                {auth?.protocol === 'ssh' && (
+                  <div className="auth-detail mt-3">
+                    <span className="meta-label">SSH keys</span>
+                    <span>{auth.ssh?.hasKeys ? auth.ssh.keys.map((key) => key.name).join(', ') : 'no common SSH key found'}</span>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={operation === 'Check authentication'} onClick={refreshAuthDiagnostics}>Check setup</Button>
+                  <Button size="sm" color="primary" icon={<IconKey size={14} />} disabled={!remoteUrl} loading={operation === 'Test connection'} onClick={testAuthentication}>Test connection</Button>
+                  {auth?.helpLinks?.https && (
+                    <Button size="sm" color="light" icon={<IconExternalLink size={14} />} onClick={() => window?.ipcRenderer?.openExternal(auth.protocol === 'ssh' ? auth.helpLinks.ssh : auth.helpLinks.https)}>
+                      Open setup guide
+                    </Button>
+                  )}
+                </div>
+
+                {authTestResult && (
+                  <pre className={`output-box mt-3 ${authTestResult.ok ? 'success-output' : 'error-output'}`}>
+                    {authTestResult.message}
+                  </pre>
+                )}
+
+                <div className="commands-list mt-3">
+                  {authCommands.map((command) => (
+                    <div className="command-row" key={command}>
+                      <div>
+                        <code>{command}</code>
+                      </div>
+                      <button className="copy-command" onClick={() => copyCommand(command)} title="Copy command">
+                        <IconCopy size={14} strokeWidth={1.5} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {showWindowsGitSetup && (
+                <details className="nested-advanced-details" open={windowsSetupItems.some((item) => !['setup-ok', 'setup-unknown'].includes(item.status.className))}>
+                  <summary>Windows Git Setup</summary>
+                  <div className="panel">
+                    <div className="section-title">Windows Git Setup</div>
+                    <p className="text-sm text-muted mb-3">
+                      Diagnose and fix common Windows Git setup issues. Safe user-level fixes require confirmation; administrator commands are copy-only.
+                      <br />
+                      راهنمای تنظیم Git در ویندوز؛ موارد حساس فقط با تایید شما انجام می‌شوند.
+                    </p>
+
+                    <div className="setup-checklist">
+                      {windowsSetupItems.map((item) => (
+                        <div className="setup-row" key={item.id}>
+                          <div className="setup-status-icon">
+                            {item.status.className === 'setup-ok' ? <IconCircleCheck size={17} /> : <IconAlertTriangle size={17} />}
+                          </div>
+                          <div className="setup-row-body">
+                            <div className="setup-row-title">{item.title}</div>
+                            <div className="setup-row-fa">{item.fa}</div>
+                            {item.detail && <div className="setup-row-detail">{item.detail}</div>}
+                          </div>
+                          <span className={`setup-badge ${item.status.className}`}>{item.status.label}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="setup-actions mt-3">
+                      <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={setupOperation === 'Check Git setup'} onClick={() => refreshSetupDiagnostics()}>
+                        Re-check
+                      </Button>
+                      <Button size="sm" color="primary" icon={<IconKey size={14} />} disabled={!remoteUrl} loading={setupOperation === 'Test Git connection'} onClick={testSetupConnection}>
+                        Test connection
+                      </Button>
+                    </div>
+
+                    {setupDiagnostics?.protocol === 'ssh' && (
+                      <div className="setup-form mt-3">
+                        <label className="setup-input-label">
+                          SSH key email/comment
+                          <input
+                            className="textbox"
+                            value={sshKeyEmail}
+                            onChange={(event) => setSshKeyEmail(event.target.value)}
+                            placeholder="you@example.com"
+                          />
+                        </label>
+                        <div className="setup-actions">
+                          <Button size="sm" color="light" icon={<IconKey size={14} />} disabled={setupDiagnostics?.sshKey?.hasKeys} loading={setupOperation === 'Create SSH key'} onClick={confirmCreateSshKey}>
+                            Create SSH key
+                          </Button>
+                          <Button size="sm" color="light" icon={<IconCopy size={14} />} disabled={!setupDiagnostics?.sshKey?.publicKey} onClick={() => copyCommand(setupDiagnostics?.sshKey?.publicKey)}>
+                            Copy public key
+                          </Button>
+                          <Button size="sm" color="light" icon={<IconKey size={14} />} disabled={!setupDiagnostics?.remoteInfo?.host || setupDiagnostics?.knownHost?.configured} loading={setupOperation === 'Scan SSH host' || setupOperation === 'Add known host'} onClick={confirmAddKnownHost}>
+                            Trust SSH host
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="setup-form mt-3">
+                      <div className="setup-two-columns">
+                        <label className="setup-input-label">
+                          Git user name
+                          <input
+                            className="textbox"
+                            value={gitIdentityName}
+                            onChange={(event) => setGitIdentityName(event.target.value)}
+                            placeholder="Example User"
+                          />
+                        </label>
+                        <label className="setup-input-label">
+                          Git email
+                          <input
+                            className="textbox"
+                            value={gitIdentityEmail}
+                            onChange={(event) => setGitIdentityEmail(event.target.value)}
+                            placeholder="example@email.com"
+                          />
+                        </label>
+                      </div>
+                      <div className="setup-actions mt-2">
+                        <Button size="sm" color="light" icon={<IconEdit size={14} />} disabled={!gitIdentityName.trim() || !gitIdentityEmail.trim()} loading={setupOperation === 'Save Git identity'} onClick={confirmSetGitIdentity}>
+                          Save Git identity
+                        </Button>
+                        <Button size="sm" color="light" icon={<IconTerminal size={14} />} disabled={setupDiagnostics?.gitLongPaths?.configured} loading={setupOperation === 'Enable Git long paths'} onClick={confirmEnableGitLongPaths}>
+                          Enable Git long paths
+                        </Button>
+                      </div>
+                    </div>
+
+                    {setupDiagnostics?.adminCommands?.length > 0 && (
+                      <div className="mt-3">
+                        <div className="text-sm text-muted mb-2">
+                          Administrator-only fixes. Gridman will not run these commands for you.
+                          <br />
+                          این دستورها باید در PowerShell با دسترسی Administrator اجرا شوند.
+                        </div>
+                        <div className="commands-list">
+                          {setupDiagnostics.adminCommands.map((command) => (
+                            <div className="command-row" key={command}>
+                              <div><code>{command}</code></div>
+                              <button className="copy-command" onClick={() => copyCommand(command)} title="Copy command">
+                                <IconCopy size={14} strokeWidth={1.5} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {setupDiagnostics?.protocol === 'https' && (
+                      <div className="workspace-warning mt-3">
+                        HTTPS remotes use Git Credential Manager or your configured Git credential helper.
+                        <br />
+                        برای HTTPS بهتر است Credential Manager فعال باشد و token/app password استفاده شود.
+                      </div>
+                    )}
+
+                    {setupResult && <pre className="output-box mt-3">{setupResult}</pre>}
+                  </div>
+                </details>
+              )}
+
+              <div className="panel">
+                <div className="section-title">Actions</div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={loading} onClick={() => refresh({ fetchRemote: true })}>Refresh</Button>
+                  <Button size="sm" color="light" icon={<IconDownload size={14} />} loading={operation === 'Fetch'} onClick={() => runGitOperation('Fetch', 'renderer:fetch-workspace-git')}>Fetch</Button>
+                  <Button size="sm" color="light" icon={<IconArrowDown size={14} />} disabled={!hasUpstream} loading={operation === 'Pull'} onClick={() => runGitOperation('Pull', 'renderer:pull-workspace-git')}>Pull</Button>
+                  <Button size="sm" color="light" icon={<IconArrowUp size={14} />} disabled={!hasCommits || (!hasUpstream && !remoteUrl)} loading={operation === 'Push' || operation === 'Publish branch'} onClick={() => hasUpstream ? runGitOperation('Push', 'renderer:push-workspace-git') : publishBranch()}>{hasUpstream ? 'Push' : 'Publish branch'}</Button>
+                  <Button size="sm" color="light" icon={<IconUpload size={14} />} disabled={!remoteUrl || !hasCommits || !hasUpstream} loading={operation === 'Sync committed'} onClick={() => runGitOperation('Sync committed', 'renderer:sync-workspace-git')}>Sync committed</Button>
+                  <Button size="sm" color="primary" icon={<IconUpload size={14} />} disabled={!remoteUrl || !hasUpstream || hasConflicts || ((staged.length || unstaged.length) && !commitMessage.trim()) || (!hasCommits && !staged.length && !unstaged.length)} loading={operation === 'Sync Full'} onClick={syncFull}>Sync Full</Button>
+                </div>
+                <div className="action-help mt-3">
+                  <div><strong>Refresh</strong> fetches remote metadata, then rereads Git status.</div>
+                  <div><strong>Fetch</strong> downloads remote metadata without changing files.</div>
+                  <div><strong>Pull</strong> brings remote commits into this workspace.</div>
+                  <div><strong>Push</strong> uploads committed local changes.</div>
+                  <div><strong>Publish branch</strong> runs `git push -u {remote} {currentBranch || '<branch>'}` for a branch without upstream.</div>
+                  <div><strong>Sync committed</strong> fetches, pulls if behind, then pushes committed local changes.</div>
+                  <div><strong>Sync Full</strong> stages local changes, commits them with the message below, then runs Sync committed.</div>
+                  <div><strong>Environment files</strong> are ignored by default because they may contain secrets.</div>
+                </div>
+              </div>
+
+              <div className="panel">
+                <div className="section-title">Commit</div>
+                <textarea
+                  className="textbox w-full h-24"
+                  value={commitMessage}
+                  onChange={(event) => setCommitMessage(event.target.value)}
+                  placeholder="Commit message"
+                />
+                <div className="flex gap-2 mt-2">
+                  <Button size="sm" color="light" disabled={!unstaged.length} onClick={() => stageFiles(unstaged)}>Stage all</Button>
+                  <Button size="sm" color="light" disabled={!staged.length} onClick={() => unstageFiles(staged)}>Unstage all</Button>
+                  <Button size="sm" color="primary" icon={<IconGitCommit size={14} />} disabled={(!staged.length && !unstaged.length) || !commitMessage.trim()} loading={operation === 'Commit'} onClick={commit}>
+                    {staged.length ? 'Commit staged' : 'Stage all and commit'}
+                  </Button>
+                </div>
+                <div className="text-muted text-sm mt-2">
+                  Commit saves a Git snapshot. If nothing is staged, Gridman stages all unstaged files before committing.
+                </div>
+              </div>
             </div>
-            <div className="text-muted text-sm mt-2">
-              Commit saves a Git snapshot. If nothing is staged, Gridman stages all unstaged files before committing.
-            </div>
-          </div>
+          </details>
 
           {hasConflicts && (
             <div className="panel">
@@ -1558,92 +1785,127 @@ const WorkspaceGit = ({ workspace }) => {
         </div>
 
         <div className="space-y-4">
-          <div className="panel">
-            <div className="section-title">Changes</div>
-            {tooManyFiles && (
-              <div className="workspace-warning mb-3">
-                Git has {totalChangedFiles} changed files. Gridman hides the full list for performance, but Pull can still create a safety commit for non-protected files.
-              </div>
-            )}
-            {conflicted.length > 0 && (
-              <>
-                <div className="font-semibold mb-1">Conflicts</div>
-                {conflicted.map((file) => (
-                  <div key={`conflict-${file.path}`} className={`file-row ${selectedFile?.path === file.path ? 'active' : ''}`} onClick={() => selectFile(file)}>
-                    <span className="file-status">{file.status || `${file.fileIndex || ''}${file.working_dir || ''}`}</span>
+          <details className="advanced-details changes-details" open={hasConflicts}>
+            <summary>Changed files and diff</summary>
+            <div className="advanced-content">
+              <div className="panel">
+                <div className="section-title">Changes</div>
+                {tooManyFiles && (
+                  <div className="workspace-warning mb-3">
+                    Git has {totalChangedFiles} changed files. Gridman hides the full list for performance, but Pull can still create a safety commit for non-protected files.
+                  </div>
+                )}
+                {conflicted.length > 0 && (
+                  <>
+                    <div className="font-semibold mb-1">Conflicts</div>
+                    {conflicted.map((file) => (
+                      <div key={`conflict-${file.path}`} className={`file-row ${selectedFile?.path === file.path ? 'active' : ''}`} onClick={() => selectFile(file)}>
+                        <span className="file-status">{file.status || `${file.fileIndex || ''}${file.working_dir || ''}`}</span>
+                        <span className="truncate">{file.path}</span>
+                        <div className="file-actions">
+                          <Button
+                            size="sm"
+                            color="light"
+                            onClick={(event) => {
+                              event.stopPropagation(); resolveConflict(file, 'ours');
+                            }}
+                          >Accept local
+                          </Button>
+                          <Button
+                            size="sm"
+                            color="light"
+                            onClick={(event) => {
+                              event.stopPropagation(); resolveConflict(file, 'theirs');
+                            }}
+                          >Accept remote
+                          </Button>
+                          <Button
+                            size="sm"
+                            color="light"
+                            onClick={(event) => {
+                              event.stopPropagation(); stageFiles([file]);
+                            }}
+                          >Mark resolved
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+
+                <div className="font-semibold mt-3 mb-1">Staged</div>
+                {staged.length === 0 && <div className="text-muted text-sm">No staged changes.</div>}
+                {staged.map((file) => (
+                  <div key={`staged-${file.path}`} className={`file-row ${selectedFile?.path === file.path && selectedFile?.stagedDiff ? 'active' : ''}`} onClick={() => selectFile(file, true)}>
+                    <span className="file-status">{file.fileIndex}</span>
                     <span className="truncate">{file.path}</span>
-                    <div className="file-actions">
-                      <Button
-                        size="sm"
-                        color="light"
-                        onClick={(event) => {
-                          event.stopPropagation(); resolveConflict(file, 'ours');
-                        }}
-                      >Accept local
-                      </Button>
-                      <Button
-                        size="sm"
-                        color="light"
-                        onClick={(event) => {
-                          event.stopPropagation(); resolveConflict(file, 'theirs');
-                        }}
-                      >Accept remote
-                      </Button>
-                      <Button
-                        size="sm"
-                        color="light"
-                        onClick={(event) => {
-                          event.stopPropagation(); stageFiles([file]);
-                        }}
-                      >Mark resolved
-                      </Button>
-                    </div>
+                    <Button
+                      size="sm"
+                      color="light"
+                      onClick={(event) => {
+                        event.stopPropagation(); unstageFiles([file]);
+                      }}
+                    >Unstage
+                    </Button>
                   </div>
                 ))}
-              </>
-            )}
 
-            <div className="font-semibold mt-3 mb-1">Staged</div>
-            {staged.length === 0 && <div className="text-muted text-sm">No staged changes.</div>}
-            {staged.map((file) => (
-              <div key={`staged-${file.path}`} className={`file-row ${selectedFile?.path === file.path && selectedFile?.stagedDiff ? 'active' : ''}`} onClick={() => selectFile(file, true)}>
-                <span className="file-status">{file.fileIndex}</span>
-                <span className="truncate">{file.path}</span>
-                <Button
-                  size="sm"
-                  color="light"
-                  onClick={(event) => {
-                    event.stopPropagation(); unstageFiles([file]);
-                  }}
-                >Unstage
-                </Button>
+                <div className="font-semibold mt-3 mb-1">Unstaged</div>
+                {unstaged.length === 0 && <div className="text-muted text-sm">No unstaged changes.</div>}
+                {unstaged.map((file) => (
+                  <div key={`unstaged-${file.path}`} className={`file-row ${selectedFile?.path === file.path && !selectedFile?.stagedDiff ? 'active' : ''}`} onClick={() => selectFile(file)}>
+                    <span className="file-status">{file.working_dir || file.fileIndex}</span>
+                    <span className="truncate">{file.path}</span>
+                    <Button
+                      size="sm"
+                      color="light"
+                      onClick={(event) => {
+                        event.stopPropagation(); stageFiles([file]);
+                      }}
+                    >Stage
+                    </Button>
+                  </div>
+                ))}
               </div>
-            ))}
 
-            <div className="font-semibold mt-3 mb-1">Unstaged</div>
-            {unstaged.length === 0 && <div className="text-muted text-sm">No unstaged changes.</div>}
-            {unstaged.map((file) => (
-              <div key={`unstaged-${file.path}`} className={`file-row ${selectedFile?.path === file.path && !selectedFile?.stagedDiff ? 'active' : ''}`} onClick={() => selectFile(file)}>
-                <span className="file-status">{file.working_dir || file.fileIndex}</span>
-                <span className="truncate">{file.path}</span>
-                <Button
-                  size="sm"
-                  color="light"
-                  onClick={(event) => {
-                    event.stopPropagation(); stageFiles([file]);
-                  }}
-                >Stage
-                </Button>
+              <div className="panel">
+                <div className="section-title">Diff</div>
+                <pre className="diff-box">{selectedFile ? diff : 'Select a file to preview the diff.'}</pre>
               </div>
-            ))}
-          </div>
-
-          <div className="panel">
-            <div className="section-title">Diff</div>
-            <pre className="diff-box">{selectedFile ? diff : 'Select a file to preview the diff.'}</pre>
-          </div>
+            </div>
+          </details>
         </div>
       </div>
+      {guidedCommitAction && (
+        <Portal>
+          <Modal
+            size="md"
+            title={guidedCommitAction.title}
+            confirmText={guidedCommitAction.primaryLabel}
+            handleConfirm={confirmGuidedCommit}
+            handleCancel={() => {
+              setGuidedCommitAction(null);
+              setGuidedCommitMessage('');
+            }}
+          >
+            <div className="space-y-3">
+              <p>{guidedCommitAction.description}</p>
+              <label className="setup-input-label">
+                Commit message
+                <textarea
+                  className="textbox guided-commit-message"
+                  value={guidedCommitMessage}
+                  onChange={(event) => setGuidedCommitMessage(event.target.value)}
+                  autoFocus
+                />
+              </label>
+              <div className="assistant-note">
+                Environment files are excluded from Git.
+              </div>
+            </div>
+          </Modal>
+        </Portal>
+      )}
       {confirmSetupAction && (
         <Portal>
           <Modal

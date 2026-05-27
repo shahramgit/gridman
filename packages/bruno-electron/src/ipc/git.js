@@ -16,6 +16,7 @@ const {
   pullGitChanges,
   pushGitChanges,
   syncGitChanges,
+  performGuidedWorkspaceGitAction,
   checkoutGitBranch,
   checkoutRemoteGitBranch,
   publishGitBranch,
@@ -162,6 +163,17 @@ const registerGitIpc = (mainWindow) => {
 
   ipcMain.handle('renderer:sync-workspace-git', async (event, { gitRootPath, processUid, remote = 'origin', remoteBranch, strategy = '--no-rebase' }) => {
     return withWorkspaceGitOperationLock(gitRootPath, 'sync', () => syncGitChanges(mainWindow, { gitRootPath, processUid, remote, remoteBranch, strategy }));
+  });
+
+  ipcMain.handle('renderer:guided-workspace-git-action', async (event, { gitRootPath, processUid, remote = 'origin', action, message, strategy = '--no-rebase' }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'guided Git action', () => performGuidedWorkspaceGitAction(mainWindow, {
+      gitRootPath,
+      processUid,
+      remote,
+      action,
+      message,
+      strategy
+    }));
   });
 
   ipcMain.handle('renderer:checkout-workspace-git-branch', async (event, { gitRootPath, processUid, branchName }) => {
