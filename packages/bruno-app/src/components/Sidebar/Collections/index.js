@@ -15,7 +15,7 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
   const [isMountingSearchCollections, setIsMountingSearchCollections] = useState(false);
   const openingSearchCollectionPathsRef = useRef(new Set());
   const mountingSearchCollectionPathsRef = useRef(new Set());
-  const { collections } = useSelector((state) => state.collections);
+  const { collections, collectionSortOrder } = useSelector((state) => state.collections);
   const { workspaces, activeWorkspaceUid } = useSelector((state) => state.workspaces);
   const dispatch = useDispatch();
 
@@ -82,7 +82,7 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
     });
   }, [activeWorkspace, dispatch, loadedByPath, searchText]);
 
-  // Build the sidebar list in workspace.yml order while keeping Git scoped to the workspace.
+  // Build the sidebar list in workspace.yml order by default while keeping Git scoped to the workspace.
   const sidebarEntries = useMemo(() => {
     if (!activeWorkspace?.collections?.length) return [];
 
@@ -94,8 +94,17 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
         entries.push({ collection: loaded, key: loaded.uid, type: 'loaded' });
       }
     }
+
+    if (collectionSortOrder === 'alphabetical' || collectionSortOrder === 'reverseAlphabetical') {
+      const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+      entries.sort((a, b) => {
+        const result = collator.compare(a.collection?.name || '', b.collection?.name || '');
+        return collectionSortOrder === 'reverseAlphabetical' ? -result : result;
+      });
+    }
+
     return entries;
-  }, [activeWorkspace, loadedByPath]);
+  }, [activeWorkspace, collectionSortOrder, loadedByPath]);
 
   const hasWorkspaceCollections = activeWorkspace?.collections?.length > 0;
 

@@ -212,6 +212,7 @@ const getGuidedActionIcon = (type) => {
   if (type === 'pull') return <IconArrowDown size={14} />;
   if (type === 'pull-existing') return <IconArrowDown size={14} />;
   if (type === 'push') return <IconArrowUp size={14} />;
+  if (type === 'sync' || type === 'sync-full') return <IconUpload size={14} />;
   if (type === 'synced') return <IconRefresh size={14} />;
   if (type === 'save' || type === 'publish-workspace' || type === 'publish-branch') return <IconCloudUpload size={14} />;
   if (type === 'init') return <IconGitBranch size={14} />;
@@ -350,6 +351,17 @@ const WorkspaceGit = ({ workspace }) => {
         description: 'Gridman will save safe workspace files, create the first commit, and push this branch to the remote.',
         primaryLabel: 'Publish workspace',
         defaultMessage: 'Initial workspace',
+        needsCommitMessage: true
+      };
+    }
+
+    if (hasLocalChanges && behind > 0) {
+      return {
+        type: 'sync-full',
+        title: 'Sync local and remote changes',
+        description: 'Gridman will save safe local files, pull remote commits, then push your committed changes.',
+        primaryLabel: 'Sync changes',
+        defaultMessage: 'Update workspace',
         needsCommitMessage: true
       };
     }
@@ -791,20 +803,31 @@ const WorkspaceGit = ({ workspace }) => {
       return;
     }
 
-    await runGitOperation('Set remote', 'renderer:set-workspace-git-remote', {
-      remoteName: DEFAULT_REMOTE,
-      remoteUrl: nextRemoteUrl,
-      branchName: nextBranch
-    });
-    setPreferredRemoteBranch(nextBranch);
-    await refresh({ fetchRemote: true });
-    setRemoteUrlInput('');
-    setRemoteBranchInput('main');
-    setEditingRemote(false);
-    setConnectRemoteModalOpen(false);
-    setConnectRemoteTestResult(null);
-    setAuthTestResult(null);
-    toast.success(`Origin connected for branch ${nextBranch}.`);
+    setOperation('Set remote');
+    setOutput('');
+    try {
+      await window.ipcRenderer.invoke('renderer:set-workspace-git-remote', {
+        gitRootPath,
+        remoteName: DEFAULT_REMOTE,
+        remoteUrl: nextRemoteUrl,
+        branchName: nextBranch
+      });
+      setPreferredRemoteBranch(nextBranch);
+      setRemoteUrlInput('');
+      setRemoteBranchInput('main');
+      setEditingRemote(false);
+      setConnectRemoteModalOpen(false);
+      setConnectRemoteTestResult(null);
+      setAuthTestResult(null);
+      toast.success(`Origin connected for branch ${nextBranch}.`);
+      await refresh({ fetchRemote: true });
+    } catch (error) {
+      const message = getIpcErrorMessage(error, 'Set remote failed');
+      setOutput(message);
+      toast.error(message);
+    } finally {
+      setOperation(null);
+    }
   };
 
   const startEditingRemote = () => {
