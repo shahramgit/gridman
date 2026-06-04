@@ -349,4 +349,11 @@ export const clearHttpHttpsAgentCache = () => () => {
   });
 };
 
+export const refreshPacCache = () => () => {
+  return new Promise((resolve, reject) => {
+    const { ipcRenderer } = window;
+    ipcRenderer.invoke('renderer:refresh-pac-cache').then(resolve).catch(reject);
+  });
+};
+
 export default appSlice.reducer;
