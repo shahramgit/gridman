@@ -112,6 +112,24 @@ const mergeRequestWithPreservedUids = (existingRequest, newRequest) =>
 const mergeRootWithPreservedUids = (existingRoot, newRoot) =>
   preserveUidsAtPaths(existingRoot, newRoot, ROOT_UID_PATHS);
 
+const applyFileDataToItem = (item, file, isTransientFile) => {
+  item.name = file.data.name;
+  item.type = file.data.type;
+  item.seq = file.data.seq;
+  item.tags = file.data.tags;
+  item.request = mergeRequestWithPreservedUids(item.request, file.data.request);
+  item.filename = file.meta.name;
+  item.pathname = file.meta.pathname;
+  item.settings = file.data.settings;
+  item.examples = file.data.examples;
+  item.draft = null;
+  item.partial = file.partial;
+  item.loading = file.loading;
+  item.size = file.size;
+  item.error = file.error;
+  item.isTransient = isTransientFile;
+};
+
 const applyCollectionAddFile = (state, file, options = {}) => {
   const isCollectionRoot = file.meta.collectionRoot ? true : false;
   const isFolderRoot = file.meta.folderRoot ? true : false;
@@ -144,6 +162,17 @@ const applyCollectionAddFile = (state, file, options = {}) => {
     const tempDirectory = state.tempDirectories?.[file.meta.collectionUid];
     const isTransientFile = tempDirectory && file.meta.pathname.startsWith(tempDirectory);
 
+    if (file.meta.name != 'folder.bru') {
+      const existingItem = findItemInCollection(collection, file.data.uid) || findItemInCollectionByPathname(collection, file.meta.pathname);
+      if (existingItem) {
+        applyFileDataToItem(existingItem, file, isTransientFile);
+        if (!options.deferDepth) {
+          addDepth(collection.items);
+        }
+        return collection;
+      }
+    }
+
     const subDirectories = getSubdirectoriesFromRoot(collection.pathname, dirname);
     let currentPath = collection.pathname;
     let currentSubItems = collection.items;
@@ -168,28 +197,17 @@ const applyCollectionAddFile = (state, file, options = {}) => {
       currentSubItems = childItem.items;
     }
 
-    if (file.meta.name != 'folder.bru' && !currentSubItems.find((f) => f.name === file.meta.name)) {
+    if (file.meta.name != 'folder.bru') {
       // this happens when you rename a file
       // the add event might get triggered first, before the unlink event
       // this results in duplicate uids causing react renderer to go mad
-      const currentItem = find(currentSubItems, (i) => i.uid === file.data.uid);
+      const currentItem = find(
+        currentSubItems,
+        (i) => i.uid === file.data.uid || path.normalize(i.pathname || '') === path.normalize(file.meta.pathname || '')
+      );
       if (currentItem) {
-        currentItem.name = file.data.name;
-        currentItem.type = file.data.type;
-        currentItem.seq = file.data.seq;
-        currentItem.tags = file.data.tags;
-        currentItem.request = mergeRequestWithPreservedUids(currentItem.request, file.data.request);
-        currentItem.filename = file.meta.name;
-        currentItem.pathname = file.meta.pathname;
-        currentItem.settings = file.data.settings;
-        currentItem.examples = file.data.examples;
-        currentItem.draft = null;
-        currentItem.partial = file.partial;
-        currentItem.loading = file.loading;
-        currentItem.size = file.size;
-        currentItem.error = file.error;
-        currentItem.isTransient = isTransientFile;
-      } else {
+        applyFileDataToItem(currentItem, file, isTransientFile);
+      } else if (!currentSubItems.find((f) => f.name === file.meta.name || f.filename === file.meta.name)) {
         currentSubItems.push({
           uid: file.data.uid,
           name: file.data.name,
@@ -261,8 +279,120 @@ const applyCollectionAddDirectory = (state, dir, options = {}) => {
   return collection;
 };
 
+const getIndexForCollection = (state, collectionUid) => {
+  if (!state.collectionIndexes[collectionUid]) {
+    state.collectionIndexes[collectionUid] = {
+      collectionUid,
+      loadSessionId: null,
+      status: 'idle',
+      nodesByUid: {},
+      childrenByParentUid: {
+        root: []
+      },
+      rootChildUids: [],
+      totalScanned: 0,
+      totalNodes: 0,
+      error: null
+    };
+  }
+
+  return state.collectionIndexes[collectionUid];
+};
+
+const appendChildUid = (index, parentUid, uid) => {
+  const parentKey = parentUid || 'root';
+  if (!index.childrenByParentUid[parentKey]) {
+    index.childrenByParentUid[parentKey] = [];
+  }
+
+  if (!index.childrenByParentUid[parentKey].includes(uid)) {
+    index.childrenByParentUid[parentKey].push(uid);
+  }
+
+  if (!parentUid && !index.rootChildUids.includes(uid)) {
+    index.rootChildUids.push(uid);
+  }
+};
+
+const createPartialRequestFromIndexNode = (node) => ({
+  uid: node.uid,
+  name: node.name,
+  type: node.type || 'http-request',
+  seq: node.seq,
+  tags: node.tags || [],
+  request: {
+    method: node.method || '',
+    url: node.url || '',
+    params: [],
+    headers: [],
+    auth: {
+      mode: 'none'
+    },
+    body: {
+      mode: 'none'
+    },
+    script: {
+      req: '',
+      res: ''
+    },
+    vars: {
+      req: [],
+      res: []
+    },
+    assertions: [],
+    tests: '',
+    docs: ''
+  },
+  settings: {},
+  examples: []
+});
+
+const applyCollectionIndexNodeToTree = (state, collectionUid, node) => {
+  const collection = findCollectionByUid(state.collections, collectionUid);
+
+  if (node.type === 'folder') {
+    return applyCollectionAddDirectory(
+      state,
+      {
+        meta: {
+          collectionUid,
+          pathname: node.pathname,
+          name: node.name,
+          seq: node.seq,
+          uid: node.uid
+        }
+      },
+      { deferDepth: true }
+    );
+  }
+
+  const existingItem = collection ? (
+    findItemInCollection(collection, node.uid) || findItemInCollectionByPathname(collection, node.pathname)
+  ) : null;
+
+  if (existingItem?.request && !existingItem.loading && !existingItem.partial) {
+    return collection;
+  }
+
+  return applyCollectionAddFile(
+    state,
+    {
+      meta: {
+        collectionUid,
+        pathname: node.pathname,
+        name: node.filename || path.basename(node.pathname)
+      },
+      data: createPartialRequestFromIndexNode(node),
+      partial: false,
+      loading: true
+    },
+    { deferDepth: true }
+  );
+};
+
 const initialState = {
   collections: [],
+  collectionIndexes: {},
   collectionSortOrder: 'default',
   activeConnections: [],
   tempDirectories: {},
@@ -2855,6 +2985,90 @@ export const collectionsSlice = createSlice({
         }
       }
     },
+    collectionIndexStarted: (state, action) => {
+      const { collectionUid, loadSessionId } = action.payload;
+      state.collectionIndexes[collectionUid] = {
+        collectionUid,
+        loadSessionId,
+        status: 'indexing',
+        nodesByUid: {},
+        childrenByParentUid: {
+          root: []
+        },
+        rootChildUids: [],
+        totalScanned: 0,
+        totalNodes: 0,
+        error: null
+      };
+
+      const collection = findCollectionByUid(state.collections, collectionUid);
+      if (collection) {
+        collection.isLoading = true;
+      }
+    },
+    collectionIndexBatchReceived: (state, action) => {
+      const { collectionUid, loadSessionId, nodes = [], totalScanned } = action.payload;
+      const index = getIndexForCollection(state, collectionUid);
+      if (index.loadSessionId && index.loadSessionId !== loadSessionId) {
+        return;
+      }
+
+      index.loadSessionId = loadSessionId;
+      index.status = 'indexing';
+      index.totalScanned = totalScanned || index.totalScanned;
+      for (const node of nodes) {
+        index.nodesByUid[node.uid] = node;
+        appendChildUid(index, node.parentUid, node.uid);
+      }
+    },
+    collectionIndexNodeActivated: (state, action) => {
+      const { collectionUid, node } = action.payload;
+      const collection = applyCollectionIndexNodeToTree(state, collectionUid, node);
+      if (collection) {
+        addDepth(collection.items);
+      }
+    },
+    collectionIndexReady: (state, action) => {
+      const { collectionUid, loadSessionId, totalNodes } = action.payload;
+      const index = getIndexForCollection(state, collectionUid);
+      if (index.loadSessionId && index.loadSessionId !== loadSessionId) {
+        return;
+      }
+      index.status = 'ready';
+      index.totalNodes = totalNodes || index.totalScanned;
+
+      const collection = findCollectionByUid(state.collections, collectionUid);
+      if (collection) {
+        collection.isLoading = false;
+      }
+    },
+    collectionIndexFailed: (state, action) => {
+      const { collectionUid, loadSessionId, error } = action.payload;
+      const index = getIndexForCollection(state, collectionUid);
+      if (index.loadSessionId && index.loadSessionId !== loadSessionId) {
+        return;
+      }
+      index.status = 'failed';
+      index.error = error || 'Failed to index collection';
+
+      const collection = findCollectionByUid(state.collections, collectionUid);
+      if (collection) {
+        collection.isLoading = false;
+      }
+    },
+    collectionIndexCancelled: (state, action) => {
+      const { collectionUid, loadSessionId } = action.payload;
+      const index = getIndexForCollection(state, collectionUid);
+      if (index.loadSessionId && index.loadSessionId !== loadSessionId) {
+        return;
+      }
+      index.status = 'cancelled';
+
+      const collection = findCollectionByUid(state.collections, collectionUid);
+      if (collection) {
+        collection.isLoading = false;
+      }
+    },
     collectionChangeFileEvent: (state, action) => {
       const { file } = action.payload;
       const isCollectionRoot = file.meta.collectionRoot ? true : false;
@@ -3782,6 +3996,12 @@ export const {
   collectionAddFileEvent,
   collectionAddDirectoryEvent,
   collectionTreeBatchUpdatedEvent,
+  collectionIndexStarted,
+  collectionIndexBatchReceived,
+  collectionIndexNodeActivated,
+  collectionIndexReady,
+  collectionIndexFailed,
+  collectionIndexCancelled,
   collectionChangeFileEvent,
   collectionUnlinkFileEvent,
   collectionUnlinkDirectoryEvent,

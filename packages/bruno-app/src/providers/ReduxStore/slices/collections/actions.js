@@ -3068,7 +3068,14 @@ export const loadRequest
     (dispatch, getState) => {
       return new Promise(async (resolve, reject) => {
         const { ipcRenderer } = window;
-        ipcRenderer.invoke('renderer:load-request', { collectionUid, pathname }).then(resolve).catch(reject);
+        ipcRenderer.invoke('renderer:load-request', { collectionUid, pathname })
+          .then((file) => {
+            if (file?.meta?.pathname) {
+              dispatch(collectionAddFileEvent({ file }));
+            }
+            resolve(file);
+          })
+          .catch(reject);
       });
     };
 
@@ -3086,10 +3093,14 @@ export const mountCollection
     (dispatch, getState) => {
       dispatch(updateCollectionMountStatus({ collectionUid, mountStatus: 'mounting' }));
       return new Promise(async (resolve, reject) => {
-        callIpc('renderer:mount-collection', { collectionUid, collectionPathname, brunoConfig })
-          .then((transientDirPath) => {
+        const loadSessionId = uuid();
+        callIpc('renderer:mount-collection', { collectionUid, collectionPathname, brunoConfig, loadSessionId })
+          .then((mountResult) => {
+            const transientDirPath = typeof mountResult === 'string' ? mountResult : mountResult?.tempDirectoryPath;
             dispatch(updateCollectionMountStatus({ collectionUid, mountStatus: 'mounted' }));
-            dispatch(addTransientDirectory({ collectionUid, pathname: transientDirPath }));
+            if (transientDirPath) {
+              dispatch(addTransientDirectory({ collectionUid, pathname: transientDirPath }));
+            }
           })
           .then(resolve)
           .catch(() => {

@@ -196,8 +196,6 @@ const unlinkEnvironmentFile = async (win, pathname, collectionUid) => {
 };
 
 const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread, watcher) => {
-  console.log(`watcher add: ${pathname}`);
-
   if (isBrunoConfigFile(pathname, collectionPath)) {
     try {
       const content = fs.readFileSync(pathname, 'utf8');
@@ -542,7 +540,6 @@ const unlink = (win, pathname, collectionUid, collectionPath) => {
     if (!fs.existsSync(collectionPath)) {
       return;
     }
-    console.log(`watcher unlink: ${pathname}`);
 
     if (isEnvironmentsFolder(pathname, collectionPath)) {
       return unlinkEnvironmentFile(win, pathname, collectionUid);
@@ -703,14 +700,16 @@ class CollectionWatcher {
     delete this.loadingStates[collectionUid];
   }
 
-  addWatcher(win, watchPath, collectionUid, brunoConfig, forcePolling = false, useWorkerThread) {
+  addWatcher(win, watchPath, collectionUid, brunoConfig, forcePolling = false, useWorkerThread, options = {}) {
     if (this.watchers[watchPath]) {
       this.watchers[watchPath].close();
     }
 
     this.initializeLoadingState(collectionUid);
 
-    this.startCollectionDiscovery(win, collectionUid);
+    if (!options.skipInitialLoad) {
+      this.startCollectionDiscovery(win, collectionUid);
+    }
 
     // Always ignore node_modules and .git, regardless of user config
     // This prevents infinite loops with symlinked directories (e.g., npm workspaces)
@@ -720,7 +719,7 @@ class CollectionWatcher {
 
     setTimeout(() => {
       const watcher = chokidar.watch(watchPath, {
-        ignoreInitial: false,
+        ignoreInitial: Boolean(options.skipInitialLoad),
         usePolling: isWSLPath(watchPath) || forcePolling ? true : false,
         ignored: (filepath) => {
           const normalizedPath = normalizeAndResolvePath(filepath);
@@ -754,7 +753,11 @@ class CollectionWatcher {
 
       let startedNewWatcher = false;
       watcher
-        .on('ready', () => onWatcherSetupComplete(win, watchPath, collectionUid, this))
+        .on('ready', () => {
+          if (!options.skipInitialLoad) {
+            onWatcherSetupComplete(win, watchPath, collectionUid, this);
+          }
+        })
         .on('add', (pathname) => add(win, pathname, collectionUid, watchPath, useWorkerThread, this))
         .on('addDir', (pathname) => addDirectory(win, pathname, collectionUid, watchPath))
         .on('change', (pathname) => change(win, pathname, collectionUid, watchPath))
@@ -776,7 +779,7 @@ class CollectionWatcher {
               'Update your system config to allow more concurrently watched files with:',
               '"echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p"'
             );
-            this.addWatcher(win, watchPath, collectionUid, brunoConfig, true, useWorkerThread);
+            this.addWatcher(win, watchPath, collectionUid, brunoConfig, true, useWorkerThread, options);
           } else {
             console.error(`An error occurred in the watcher for: ${watchPath}`, error);
           }

@@ -11,6 +11,11 @@ import {
   brunoConfigUpdateEvent,
   collectionAddDirectoryEvent,
   collectionAddFileEvent,
+  collectionIndexBatchReceived,
+  collectionIndexCancelled,
+  collectionIndexFailed,
+  collectionIndexReady,
+  collectionIndexStarted,
   collectionTreeBatchUpdatedEvent,
   collectionChangeFileEvent,
   collectionRenamedEvent,
@@ -156,6 +161,21 @@ const useIpcEvents = () => {
     ipcRenderer.invoke('renderer:ready');
 
     const removeCollectionTreeUpdateListener = ipcRenderer.on('main:collection-tree-updated', _collectionTreeUpdated);
+    const removeCollectionIndexStartedListener = ipcRenderer.on('main:collection-index-started', (val) => {
+      dispatch(collectionIndexStarted(val));
+    });
+    const removeCollectionIndexBatchListener = ipcRenderer.on('main:collection-index-batch', (val) => {
+      dispatch(collectionIndexBatchReceived(val));
+    });
+    const removeCollectionIndexReadyListener = ipcRenderer.on('main:collection-index-ready', (val) => {
+      dispatch(collectionIndexReady(val));
+    });
+    const removeCollectionIndexFailedListener = ipcRenderer.on('main:collection-index-failed', (val) => {
+      dispatch(collectionIndexFailed(val));
+    });
+    const removeCollectionIndexCancelledListener = ipcRenderer.on('main:collection-index-cancelled', (val) => {
+      dispatch(collectionIndexCancelled(val));
+    });
 
     const removeApiSpecTreeUpdateListener = ipcRenderer.on('main:apispec-tree-updated', _apiSpecTreeUpdated);
 
@@ -379,6 +399,11 @@ const useIpcEvents = () => {
 
     return () => {
       removeCollectionTreeUpdateListener();
+      removeCollectionIndexStartedListener();
+      removeCollectionIndexBatchListener();
+      removeCollectionIndexReadyListener();
+      removeCollectionIndexFailedListener();
+      removeCollectionIndexCancelledListener();
       removeApiSpecTreeUpdateListener();
       removeOpenCollectionListener();
       removeOpenWorkspaceListener();

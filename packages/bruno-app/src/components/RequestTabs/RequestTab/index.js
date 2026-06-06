@@ -8,7 +8,7 @@ import { clearGlobalEnvironmentDraft } from 'providers/ReduxStore/slices/global-
 import { saveGlobalEnvironment } from 'providers/ReduxStore/slices/global-environments';
 import { useTheme } from 'providers/Theme';
 import { useDispatch, useSelector } from 'react-redux';
-import { findItemInCollection, hasRequestChanges } from 'utils/collections';
+import { findItemInCollection, findItemInCollectionByPathname, hasRequestChanges } from 'utils/collections';
 import ConfirmRequestClose from './ConfirmRequestClose';
 import ConfirmCollectionClose from './ConfirmCollectionClose';
 import ConfirmFolderClose from './ConfirmFolderClose';
@@ -56,7 +56,10 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     'openapi-spec'
   ];
   const isSpecialTab = specialTabs.includes(tab.type);
-  const item = isSpecialTab ? null : findItemInCollection(collection, tab.uid);
+  const item = isSpecialTab ? null : (
+    findItemInCollection(collection, tab.itemUid || tab.uid)
+    || (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null)
+  );
 
   const method = useMemo(() => {
     if (!item) return;
@@ -592,8 +595,18 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
   };
 
   const totalTabs = collectionRequestTabs.length || 0;
-  const currentTabUid = collectionRequestTabs[tabIndex]?.uid;
-  const currentTabItem = findItemInCollection(collection, currentTabUid);
+  const findItemForTab = (tab) => {
+    if (!tab) {
+      return null;
+    }
+
+    return findItemInCollection(collection, tab.itemUid || tab.uid)
+      || (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null);
+  };
+
+  const currentTab = collectionRequestTabs[tabIndex];
+  const currentTabUid = currentTab?.uid;
+  const currentTabItem = findItemForTab(currentTab);
   const currentTabHasChanges = useMemo(() => hasRequestChanges(currentTabItem), [currentTabItem]);
 
   const hasLeftTabs = tabIndex !== 0;
@@ -606,7 +619,8 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
     }
 
     try {
-      const item = findItemInCollection(collection, tabUid);
+      const tab = collectionRequestTabs.find((t) => t.uid === tabUid);
+      const item = findItemForTab(tab);
       // silently save unsaved changes before closing the tab
       if (hasRequestChanges(item)) {
         await dispatch(saveRequest(item.uid, collection.uid, true));
@@ -622,7 +636,7 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
     }
 
     try {
-      const item = findItemInCollection(collection, currentTabUid);
+      const item = findItemForTab(currentTab);
       if (item.draft) {
         dispatch(deleteRequestDraft({
           itemUid: item.uid,
@@ -636,7 +650,7 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
     const tabUidsToClose = [];
 
     for (const tab of tabs) {
-      const item = findItemInCollection(collection, tab.uid);
+      const item = findItemForTab(tab);
       if (item && hasRequestChanges(item)) {
         try {
           await dispatch(saveRequest(item.uid, collection.uid, true));

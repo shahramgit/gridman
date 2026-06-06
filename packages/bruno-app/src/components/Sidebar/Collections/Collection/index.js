@@ -32,6 +32,7 @@ import toast from 'react-hot-toast';
 import NewRequest from 'components/Sidebar/NewRequest';
 import NewFolder from 'components/Sidebar/NewFolder';
 import CollectionItem from './CollectionItem';
+import IndexedCollectionItems from './IndexedCollectionItems';
 import SearchHighlight from '../SearchHighlight';
 import RemoveCollection from './RemoveCollection';
 import { doesCollectionHaveItemsMatchingSearchText } from 'utils/collections/search';
@@ -75,6 +76,7 @@ const Collection = ({ collection, searchText }) => {
   const [showEmptyState, setShowEmptyState] = useState(false);
   const dispatch = useDispatch();
   const isLoading = collection.isLoading;
+  const collectionIndex = useSelector((state) => state.collections.collectionIndexes?.[collection.uid]);
   const collectionRef = useRef(null);
   // Only count persisted requests and folders; transients and file items
   // (bruno.json, .js scripts) don't affect empty state
@@ -306,7 +308,13 @@ const Collection = ({ collection, searchText }) => {
   }, [itemCount, isLoading, collection.mountStatus]);
 
   if (searchText && searchText.length) {
-    if (!doesCollectionHaveItemsMatchingSearchText(collection, searchText)) {
+    if (collectionIndex) {
+      const normalizedSearchText = searchText.trim().toLowerCase();
+      const collectionMatches = collection.name?.toLowerCase?.().includes(normalizedSearchText);
+      if (!collectionMatches && !Object.keys(collectionIndex.nodesByUid || {}).length) {
+        return null;
+      }
+    } else if (!doesCollectionHaveItemsMatchingSearchText(collection, searchText)) {
       return null;
     }
   }
@@ -522,12 +530,18 @@ const Collection = ({ collection, searchText }) => {
       <div>
         {!collectionIsCollapsed ? (
           <div>
-            {folderItems?.map?.((i) => {
-              return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} />;
-            })}
-            {requestItems?.map?.((i) => {
-              return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} />;
-            })}
+            {collectionIndex ? (
+              <IndexedCollectionItems collectionUid={collection.uid} searchText={searchText} />
+            ) : (
+              <>
+                {folderItems?.map?.((i) => {
+                  return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} />;
+                })}
+                {requestItems?.map?.((i) => {
+                  return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} />;
+                })}
+              </>
+            )}
             {showEmptyCollectionMessage ? (
               <div className="empty-collection-message">
                 <div className="indent-block" style={{ width: 16, minWidth: 16, height: '100%' }}>

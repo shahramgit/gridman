@@ -24,7 +24,7 @@ export const tabsSlice = createSlice({
   initialState,
   reducers: {
     addTab: (state, action) => {
-      const { uid, collectionUid, type, requestPaneTab, preview, exampleUid, itemUid, isTransient } = action.payload;
+      const { uid, collectionUid, type, requestPaneTab, preview, exampleUid, itemUid, itemPathname, isTransient } = action.payload;
 
       const nonReplaceableTabTypes = [
         'variables',
@@ -84,6 +84,7 @@ export const tabsSlice = createSlice({
           ...(uid ? { folderUid: uid } : {}),
           ...(exampleUid ? { exampleUid } : {}),
           ...(itemUid ? { itemUid } : {}),
+          ...(itemPathname ? { itemPathname } : {}),
           ...(isTransient ? { isTransient: true } : {})
         };
 
@@ -117,6 +118,7 @@ export const tabsSlice = createSlice({
           : !nonReplaceableTabTypes.includes(type),
         ...(exampleUid ? { exampleUid } : {}),
         ...(itemUid ? { itemUid } : {}),
+        ...(itemPathname ? { itemPathname } : {}),
         ...(isTransient ? { isTransient: true } : {})
       });
       state.activeTabUid = uid;
