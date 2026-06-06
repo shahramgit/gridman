@@ -7,7 +7,7 @@ import HttpRequestPane from 'components/RequestPane/HttpRequestPane';
 import GrpcRequestPane from 'components/RequestPane/GrpcRequestPane/index';
 import ResponsePane from 'components/ResponsePane';
 import GrpcResponsePane from 'components/ResponsePane/GrpcResponsePane';
-import { findItemInCollection } from 'utils/collections';
+import { findItemInCollection, findItemInCollectionByPathname } from 'utils/collections';
 import { sendRequest } from 'providers/ReduxStore/slices/collections/actions';
 import { updateGqlDocsOpen } from 'providers/ReduxStore/slices/tabs';
 import RequestNotFound from './RequestNotFound';
@@ -335,7 +335,10 @@ const RequestTabPanel = () => {
     return <ResponseExample item={item} collection={collection} example={example} />;
   }
 
-  const item = findItemInCollection(collection, activeTabUid);
+  const requestItemUid = focusedTab.itemUid || activeTabUid;
+  const item = findItemInCollection(collection, requestItemUid) || (
+    focusedTab.itemPathname ? findItemInCollectionByPathname(collection, focusedTab.itemPathname) : null
+  );
   const isGrpcRequest = item?.type === 'grpc-request';
   const isWsRequest = item?.type === 'ws-request';
 
@@ -388,12 +391,12 @@ const RequestTabPanel = () => {
     return <RequestNotFound itemUid={activeTabUid} />;
   }
 
-  if (item?.partial) {
-    return <RequestNotLoaded item={item} collection={collection} />;
-  }
-
   if (item?.loading) {
     return <RequestIsLoading item={item} />;
+  }
+
+  if (item?.partial) {
+    return <RequestNotLoaded item={item} collection={collection} />;
   }
 
   const handleRun = async () => {

@@ -72,6 +72,7 @@ const { getProcessEnvVars } = require('../store/process-env');
 const { getOAuth2TokenUsingAuthorizationCode, getOAuth2TokenUsingClientCredentials, getOAuth2TokenUsingPasswordCredentials, getOAuth2TokenUsingImplicitGrant, refreshOauth2Token } = require('../utils/oauth2');
 const { getCertsAndProxyConfig } = require('./network/cert-utils');
 const collectionWatcher = require('../app/collection-watcher');
+const { startCollectionIndex, cancelCollectionIndex } = require('../app/collection-indexer');
 const { transformBrunoConfigBeforeSave } = require('../utils/transformBrunoConfig');
 const { REQUEST_TYPES } = require('../utils/constants');
 const { cancelOAuth2AuthorizationRequest, isOauth2AuthorizationRequestInProgress } = require('../utils/oauth2-protocol-handler');
@@ -90,10 +91,27 @@ const environmentSecretsStore = new EnvironmentSecretsStore();
 const collectionSecurityStore = new CollectionSecurityStore();
 const uiStateSnapshotStore = new UiStateSnapshotStore();
 
-// size and file count limits to determine whether the bru files in the collection should be loaded asynchronously or not.
+// Size and file count limits to determine whether a collection should use the metadata-only indexed loader.
+// Keep the file threshold intentionally low: moderately large nested API collections are where recursive Redux
+// tree mounting and initial watcher events start causing visible sidebar lag.
 const MAX_COLLECTION_SIZE_IN_MB = 20;
 const MAX_SINGLE_FILE_SIZE_IN_COLLECTION_IN_MB = 5;
-const MAX_COLLECTION_FILES_COUNT = 2000;
+const MAX_COLLECTION_FILES_COUNT = 100;
+const INDEXED_COLLECTION_WATCHER_ATTACH_DELAY_MS = 3000;
+
+const shouldUseIndexedCollectionLoad = ({ size, filesCount, maxFileSize }) => (
+  (size > MAX_COLLECTION_SIZE_IN_MB)
+  || (filesCount > MAX_COLLECTION_FILES_COUNT)
+  || (maxFileSize > MAX_SINGLE_FILE_SIZE_IN_COLLECTION_IN_MB)
+);
+
+const addIndexedCollectionWatcherAfterIdle = (watcher, mainWindow, collectionPath, collectionUid, brunoConfig, useWorkerThread) => {
+  setTimeout(() => {
+    watcher.addWatcher(mainWindow, collectionPath, collectionUid, brunoConfig, false, useWorkerThread, {
+      skipInitialLoad: true
+    });
+  }, INDEXED_COLLECTION_WATCHER_ATTACH_DELAY_MS);
+};
 
 // Get the base directory for transient request files (stored in app data directory)
 const getTransientDirectoryBase = () => {
@@ -1239,6 +1257,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
   ipcMain.handle('renderer:remove-collection', async (event, collectionPath, collectionUid, workspacePath, options = {}) => {
     if (watcher && mainWindow) {
       watcher.removeWatcher(collectionPath, mainWindow, collectionUid);
+      cancelCollectionIndex(collectionUid);
 
       if (wsClient) {
         wsClient.closeForCollection(collectionUid);
@@ -1988,7 +2007,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
         file.data = await parseRequestViaWorker(bruContent, { format: 'bru' });
         file.partial = false;
-        file.loading = true;
+        file.loading = false;
         file.size = sizeInMB(fileStats?.size);
         hydrateRequestWithUuid(file.data, pathname);
         mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
@@ -2029,6 +2048,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           }
         };
         let bruContent = fs.readFileSync(pathname, 'utf8');
+        const format = hasBruExtension(pathname) ? 'bru' : 'yml';
         const metaJson = parseBruFileMeta(bruContent);
         file.data = metaJson;
         file.loading = true;
@@ -2036,12 +2056,13 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         file.size = sizeInMB(fileStats?.size);
         hydrateRequestWithUuid(file.data, pathname);
         mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
-        file.data = parseRequest(bruContent);
+        file.data = parseRequest(bruContent, { format });
         file.partial = false;
-        file.loading = true;
+        file.loading = false;
         file.size = sizeInMB(fileStats?.size);
         hydrateRequestWithUuid(file.data, pathname);
         mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
+        return safeParseJSON(safeStringifyJSON(file));
       }
     } catch (error) {
       if (hasRequestExtension(pathname)) {
@@ -2060,6 +2081,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         file.size = sizeInMB(fileStats?.size);
         hydrateRequestWithUuid(file.data, pathname);
         mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
+        return safeParseJSON(safeStringifyJSON(file));
       }
       return Promise.reject(error);
     }
@@ -2115,7 +2137,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     }
   });
 
-  ipcMain.handle('renderer:mount-collection', async (event, { collectionUid, collectionPathname, brunoConfig }) => {
+  ipcMain.handle('renderer:mount-collection', async (event, { collectionUid, collectionPathname, brunoConfig, loadSessionId }) => {
     let tempDirectoryPath = null;
     try {
       // Ensure the transient base directory exists
@@ -2137,17 +2159,42 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       maxFileSize
     } = await getCollectionStats(collectionPathname);
 
-    const shouldLoadCollectionAsync
-      = (size > MAX_COLLECTION_SIZE_IN_MB)
-        || (filesCount > MAX_COLLECTION_FILES_COUNT)
-        || (maxFileSize > MAX_SINGLE_FILE_SIZE_IN_COLLECTION_IN_MB);
+    const shouldLoadCollectionAsync = shouldUseIndexedCollectionLoad({ size, filesCount, maxFileSize });
 
-    watcher.addWatcher(mainWindow, collectionPathname, collectionUid, brunoConfig, false, shouldLoadCollectionAsync);
+    if (shouldLoadCollectionAsync) {
+      startCollectionIndex(mainWindow, {
+        collectionUid,
+        collectionPathname,
+        brunoConfig,
+        loadSessionId,
+        onReady: () => {
+          addIndexedCollectionWatcherAfterIdle(
+            watcher,
+            mainWindow,
+            collectionPathname,
+            collectionUid,
+            brunoConfig,
+            shouldLoadCollectionAsync
+          );
+        }
+      });
+    } else {
+      watcher.addWatcher(mainWindow, collectionPathname, collectionUid, brunoConfig, false, shouldLoadCollectionAsync);
+    }
 
     // Add watcher for transient directory
     watcher.addTempDirectoryWatcher(mainWindow, tempDirectoryPath, collectionUid, collectionPathname);
 
-    return tempDirectoryPath;
+    return {
+      tempDirectoryPath,
+      indexed: shouldLoadCollectionAsync,
+      loadSessionId
+    };
+  });
+
+  ipcMain.handle('renderer:cancel-collection-index', async (event, { collectionUid, loadSessionId }) => {
+    cancelCollectionIndex(collectionUid, loadSessionId);
+    return true;
   });
 
   ipcMain.handle('renderer:mount-workspace-scratch', async (event, { workspaceUid, workspacePath }) => {
@@ -2198,12 +2245,29 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     try {
       const { size, filesCount, maxFileSize } = await getCollectionStats(collectionPath);
 
-      const shouldLoadCollectionAsync
-        = (size > MAX_COLLECTION_SIZE_IN_MB)
-          || (filesCount > MAX_COLLECTION_FILES_COUNT)
-          || (maxFileSize > MAX_SINGLE_FILE_SIZE_IN_COLLECTION_IN_MB);
+      const shouldLoadCollectionAsync = shouldUseIndexedCollectionLoad({ size, filesCount, maxFileSize });
 
-      watcher.addWatcher(mainWindow, collectionPath, collectionUid, brunoConfig, false, shouldLoadCollectionAsync);
+      if (shouldLoadCollectionAsync) {
+        const loadSessionId = generateUidBasedOnHash(`${collectionUid}:${collectionPath}:${Date.now()}`);
+        startCollectionIndex(mainWindow, {
+          collectionUid,
+          collectionPathname: collectionPath,
+          brunoConfig,
+          loadSessionId,
+          onReady: () => {
+            addIndexedCollectionWatcherAfterIdle(
+              watcher,
+              mainWindow,
+              collectionPath,
+              collectionUid,
+              brunoConfig,
+              shouldLoadCollectionAsync
+            );
+          }
+        });
+      } else {
+        watcher.addWatcher(mainWindow, collectionPath, collectionUid, brunoConfig, false, shouldLoadCollectionAsync);
+      }
 
       return { success: true };
     } catch (error) {
@@ -2366,7 +2430,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
             }
             if (!stats.isDirectory() && path.extname(filePath) === '.bru' && file !== 'folder.bru') {
               const bruContent = fs.readFileSync(filePath, 'utf8');
-              const bruJson = parseRequest(bruContent);
+              const bruJson = parseRequest(bruContent, { format: 'bru' });
 
               currentDirBruJsons.push({
                 ...bruJson
