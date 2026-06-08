@@ -109,7 +109,7 @@ const Collection = ({ collection, searchText }) => {
   };
 
   const ensureCollectionIsMounted = () => {
-    if (collection.mountStatus === 'mounted') {
+    if (collection.mountStatus === 'mounted' || collection.mountStatus === 'mounting') {
       return;
     }
     dispatch(mountCollection({
@@ -311,7 +311,10 @@ const Collection = ({ collection, searchText }) => {
     if (collectionIndex) {
       const normalizedSearchText = searchText.trim().toLowerCase();
       const collectionMatches = collection.name?.toLowerCase?.().includes(normalizedSearchText);
-      if (!collectionMatches && !Object.keys(collectionIndex.nodesByUid || {}).length) {
+      if (collectionIndex.status === 'indexing' || collectionIndex.status === 'queued') {
+        // Keep the collection visible while its metadata index is still building;
+        // hiding it early makes unopened large collections look unsearchable.
+      } else if (!collectionMatches && !Object.keys(collectionIndex.nodesByUid || {}).length) {
         return null;
       }
     } else if (!doesCollectionHaveItemsMatchingSearchText(collection, searchText)) {

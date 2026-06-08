@@ -60,7 +60,7 @@ const {
 } = require('../utils/filesystem');
 const { openCollectionsByPathname, registerScratchCollectionPath } = require('../app/collections');
 const { generateUidBasedOnHash, stringifyJson, safeStringifyJSON, safeParseJSON } = require('../utils/common');
-const { moveRequestUid, deleteRequestUid, syncExampleUidsCache } = require('../cache/requestUids');
+const { getRequestUid, moveRequestUid, deleteRequestUid, syncExampleUidsCache } = require('../cache/requestUids');
 const { deleteCookiesForDomain, getDomainsWithCookies, addCookieForDomain, modifyCookieForDomain, parseCookieString, createCookieString, deleteCookie } = require('../utils/cookies');
 const EnvironmentSecretsStore = require('../store/env-secrets');
 const CollectionSecurityStore = require('../store/collection-security');
@@ -216,6 +216,366 @@ const getUniqueCollectionCopyTarget = async (workspacePath, sourcePath) => {
 
 const hasCollectionConfigFile = (collectionPath) => {
   return fs.existsSync(path.join(collectionPath, 'opencollection.yml')) || fs.existsSync(path.join(collectionPath, 'bruno.json'));
+};
+
+const workspaceSearchJobs = new Map();
+const WORKSPACE_SEARCH_BATCH_SIZE = 25;
+const WORKSPACE_SEARCH_RESULT_LIMIT = 250;
+
+const cleanSearchMetaValue = (value) => {
+  if (!value) {
+    return '';
+  }
+
+  return String(value).trim().replace(/^['"]|['"]$/g, '');
+};
+
+const extractSearchLineValue = (content, key) => {
+  const match = content.match(new RegExp(`^\\s*${key}:\\s*(.+?)\\s*$`, 'm'));
+  return cleanSearchMetaValue(match?.[1]);
+};
+
+const createSearchSnippet = (content, query) => {
+  if (!content || !query) {
+    return '';
+  }
+
+  const normalizedContent = String(content);
+  const lowerContent = normalizedContent.toLowerCase();
+  const matchIndex = lowerContent.indexOf(query);
+  if (matchIndex === -1) {
+    return '';
+  }
+
+  const start = Math.max(0, matchIndex - 40);
+  const end = Math.min(normalizedContent.length, matchIndex + query.length + 60);
+  const prefix = start > 0 ? '...' : '';
+  const suffix = end < normalizedContent.length ? '...' : '';
+
+  return `${prefix}${normalizedContent.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
+};
+
+const addSearchMatchInfo = (result, content, query) => {
+  const fields = [
+    ['name', result.name],
+    ['filename', result.filename],
+    ['method', result.method],
+    ['url', result.url]
+  ];
+
+  for (const [field, value] of fields) {
+    if (value && String(value).toLowerCase().includes(query)) {
+      return {
+        ...result,
+        matchField: field,
+        matchText: String(value)
+      };
+    }
+  }
+
+  const matchSnippet = createSearchSnippet(content, query);
+  if (matchSnippet) {
+    return {
+      ...result,
+      matchField: 'content',
+      matchText: matchSnippet
+    };
+  }
+
+  return result;
+};
+
+const extractSearchBruType = (content) => {
+  const metaBlock = content.match(/meta\s*\{([\s\S]*?)\n\}/);
+  if (metaBlock?.[1]) {
+    return extractSearchLineValue(metaBlock[1], 'type');
+  }
+  return '';
+};
+
+const extractSearchBruMethod = (content) => {
+  const blockMatch = content.match(/^\s*(get|post|put|delete|patch|head|options|trace)\s*\{/im);
+  if (blockMatch?.[1]) {
+    return blockMatch[1].toUpperCase();
+  }
+
+  return extractSearchLineValue(content, 'method').toUpperCase();
+};
+
+const normalizeSearchRequestType = (type) => {
+  const normalizedType = cleanSearchMetaValue(type).toLowerCase();
+  const typeMap = {
+    http: 'http-request',
+    graphql: 'graphql-request',
+    grpc: 'grpc-request',
+    ws: 'ws-request',
+    websocket: 'ws-request'
+  };
+
+  return typeMap[normalizedType] || normalizedType || 'http-request';
+};
+
+const shouldSkipWorkspaceSearchEntry = (name) => {
+  return !name
+    || name === '.'
+    || name === '..'
+    || name === '.git'
+    || name === 'node_modules'
+    || name === 'environments'
+    || name === '.env'
+    || name.startsWith('.env.');
+};
+
+const isWorkspaceSearchCollectionMetadataFile = (name, dirname, collectionPath) => {
+  return path.normalize(dirname) === path.normalize(collectionPath)
+    && (name === 'collection.bru' || name === 'opencollection.yml' || name === 'bruno.json');
+};
+
+const readSearchText = async (pathname) => {
+  try {
+    return await fs.promises.readFile(pathname, 'utf8');
+  } catch (_err) {
+    return '';
+  }
+};
+
+const toPortableRelativePath = (basePath, pathname) => {
+  return path.relative(basePath, pathname).split(path.sep).join('/');
+};
+
+const createWorkspaceSearchResult = ({ workspacePath, collectionPath, pathname, content, format }) => {
+  const fallbackName = path.basename(pathname, path.extname(pathname));
+  const name = extractSearchLineValue(content, 'name') || fallbackName;
+  const type = format === 'bru'
+    ? extractSearchBruType(content)
+    : extractSearchLineValue(content, 'type');
+
+  const method = format === 'bru'
+    ? extractSearchBruMethod(content)
+    : extractSearchLineValue(content, 'method').toUpperCase();
+
+  return {
+    uid: getRequestUid(pathname),
+    collectionUid: generateUidBasedOnHash(collectionPath),
+    collectionPathname: collectionPath,
+    collectionName: path.basename(collectionPath),
+    pathname,
+    relativePath: toPortableRelativePath(workspacePath, pathname),
+    collectionRelativePath: toPortableRelativePath(collectionPath, pathname),
+    parentCollectionRelativePath: toPortableRelativePath(collectionPath, path.dirname(pathname)),
+    name,
+    filename: path.basename(pathname),
+    type: normalizeSearchRequestType(type),
+    method,
+    url: extractSearchLineValue(content, 'url')
+  };
+};
+
+const createWorkspaceFolderSearchResult = ({ workspacePath, collectionPath, pathname, content, format }) => {
+  const folderPathname = path.dirname(pathname);
+  const fallbackName = path.basename(folderPathname);
+
+  return {
+    uid: getRequestUid(folderPathname),
+    collectionUid: generateUidBasedOnHash(collectionPath),
+    collectionPathname: collectionPath,
+    collectionName: path.basename(collectionPath),
+    pathname: folderPathname,
+    relativePath: toPortableRelativePath(workspacePath, folderPathname),
+    collectionRelativePath: toPortableRelativePath(collectionPath, folderPathname),
+    parentCollectionRelativePath: toPortableRelativePath(collectionPath, path.dirname(folderPathname)),
+    name: extractSearchLineValue(content, 'name') || fallbackName,
+    filename: path.basename(folderPathname),
+    type: 'folder',
+    method: '',
+    url: '',
+    seq: Number(extractSearchLineValue(content, 'seq')) || undefined,
+    fileFormat: format
+  };
+};
+
+const createWorkspaceCollectionSearchResult = ({ workspacePath, collectionPath }) => {
+  return {
+    uid: generateUidBasedOnHash(collectionPath),
+    collectionUid: generateUidBasedOnHash(collectionPath),
+    collectionPathname: collectionPath,
+    collectionName: path.basename(collectionPath),
+    pathname: collectionPath,
+    relativePath: toPortableRelativePath(workspacePath, collectionPath),
+    collectionRelativePath: '',
+    parentCollectionRelativePath: '',
+    name: path.basename(collectionPath),
+    filename: path.basename(collectionPath),
+    type: 'collection',
+    method: '',
+    url: ''
+  };
+};
+
+const sendWorkspaceSearchBatch = (event, job, force = false) => {
+  if (!job.results.length) {
+    return;
+  }
+
+  if (!force && job.results.length < WORKSPACE_SEARCH_BATCH_SIZE) {
+    return;
+  }
+
+  const results = job.results.splice(0, job.results.length);
+  event.sender.send('main:workspace-collection-search-batch', {
+    searchSessionId: job.searchSessionId,
+    results
+  });
+};
+
+const walkWorkspaceSearchCollection = async ({ event, job, workspacePath, collectionPath, dirname, format, query }) => {
+  if (job.cancelled || job.totalResults >= job.limit) {
+    return;
+  }
+
+  let entries;
+  try {
+    entries = await fs.promises.readdir(dirname, { withFileTypes: true });
+  } catch (_err) {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (job.cancelled || job.totalResults >= job.limit) {
+      return;
+    }
+
+    if (shouldSkipWorkspaceSearchEntry(entry.name)) {
+      continue;
+    }
+
+    const pathname = path.join(dirname, entry.name);
+    if (entry.isDirectory()) {
+      await walkWorkspaceSearchCollection({ event, job, workspacePath, collectionPath, dirname: pathname, format, query });
+      continue;
+    }
+
+    if (!entry.isFile() || !hasRequestExtension(pathname, format)) {
+      continue;
+    }
+
+    if (isWorkspaceSearchCollectionMetadataFile(entry.name, dirname, collectionPath)) {
+      continue;
+    }
+
+    const isFolderMetadataFile = entry.name === `folder.${format}`;
+
+    const lowerFilename = entry.name.toLowerCase();
+    let content = '';
+    let matched = lowerFilename.includes(query);
+    if (!matched) {
+      content = await readSearchText(pathname);
+      matched = content.toLowerCase().includes(query);
+    }
+
+    if (!matched) {
+      continue;
+    }
+
+    if (!content) {
+      content = await readSearchText(pathname);
+    }
+
+    const result = isFolderMetadataFile
+      ? createWorkspaceFolderSearchResult({ workspacePath, collectionPath, pathname, content, format })
+      : createWorkspaceSearchResult({ workspacePath, collectionPath, pathname, content, format });
+
+    job.results.push(addSearchMatchInfo(result, content, query));
+    job.totalResults += 1;
+    sendWorkspaceSearchBatch(event, job);
+  }
+};
+
+const startWorkspaceCollectionSearch = async (event, {
+  searchSessionId,
+  workspacePath,
+  collectionPaths = [],
+  query,
+  limit = WORKSPACE_SEARCH_RESULT_LIMIT
+}) => {
+  for (const job of workspaceSearchJobs.values()) {
+    job.cancelled = true;
+  }
+  workspaceSearchJobs.clear();
+
+  const normalizedQuery = String(query || '').trim().toLowerCase();
+  const job = {
+    searchSessionId,
+    cancelled: false,
+    results: [],
+    totalResults: 0,
+    limit: Math.min(Math.max(Number(limit) || WORKSPACE_SEARCH_RESULT_LIMIT, 1), 500)
+  };
+  workspaceSearchJobs.set(searchSessionId, job);
+
+  event.sender.send('main:workspace-collection-search-started', { searchSessionId });
+
+  if (!normalizedQuery || normalizedQuery.length < 2 || !workspacePath || !collectionPaths.length) {
+    event.sender.send('main:workspace-collection-search-ready', {
+      searchSessionId,
+      totalResults: 0
+    });
+    workspaceSearchJobs.delete(searchSessionId);
+    return;
+  }
+
+  try {
+    for (const collectionPath of collectionPaths) {
+      if (job.cancelled || job.totalResults >= job.limit) {
+        break;
+      }
+
+      if (!isWorkspaceCollectionPathAllowed(workspacePath, collectionPath) || !isDirectory(collectionPath)) {
+        continue;
+      }
+
+      if (path.basename(collectionPath).toLowerCase().includes(normalizedQuery)) {
+        job.results.push(addSearchMatchInfo(
+          createWorkspaceCollectionSearchResult({ workspacePath, collectionPath }),
+          '',
+          normalizedQuery
+        ));
+        job.totalResults += 1;
+        sendWorkspaceSearchBatch(event, job);
+      }
+
+      const format = getCollectionFormat(collectionPath);
+      await walkWorkspaceSearchCollection({
+        event,
+        job,
+        workspacePath,
+        collectionPath,
+        dirname: collectionPath,
+        format,
+        query: normalizedQuery
+      });
+    }
+
+    sendWorkspaceSearchBatch(event, job, true);
+    if (!job.cancelled) {
+      event.sender.send('main:workspace-collection-search-ready', {
+        searchSessionId,
+        totalResults: job.totalResults,
+        limit: job.limit
+      });
+    }
+  } catch (err) {
+    if (!job.cancelled) {
+      event.sender.send('main:workspace-collection-search-failed', {
+        searchSessionId,
+        error: err?.message || 'Workspace search failed'
+      });
+    }
+  } finally {
+    if (workspaceSearchJobs.get(searchSessionId) === job) {
+      workspaceSearchJobs.delete(searchSessionId);
+    }
+  }
 };
 
 const prepareWorkspaceConfigForClient = (workspaceConfig, workspacePath) => {
@@ -1245,6 +1605,11 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         }
       }
     }
+  });
+
+  ipcMain.handle('renderer:start-workspace-collection-search', async (event, options = {}) => {
+    startWorkspaceCollectionSearch(event, options);
+    return true;
   });
 
   ipcMain.handle('renderer:set-collection-workspace', (event, collectionUid, workspacePath) => {

@@ -5,6 +5,7 @@ import StyledWrapper from './StyledWrapper';
 import CreateOrOpenCollection from './CreateOrOpenCollection';
 import CollectionSearch from './CollectionSearch/index';
 import InlineCollectionCreator from './InlineCollectionCreator';
+import WorkspaceSearchResults from './WorkspaceSearchResults';
 import { normalizePath } from 'utils/common/path';
 import { isScratchCollection } from 'utils/collections';
 
@@ -79,11 +80,12 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
             onOpenAdvanced={onOpenAdvancedCreate}
           />
         )}
-        {sidebarEntries.map((entry) => (
-          <Collection searchText={searchText} collection={entry.collection} key={entry.key} />
-        ))}
-        {searchText.trim() && !sidebarEntries.length && (
-          <div className="px-4 py-2 text-muted">No matches found.</div>
+        {searchText.trim().length >= 2 ? (
+          <WorkspaceSearchResults searchText={searchText} activeWorkspace={activeWorkspace} />
+        ) : (
+          sidebarEntries.map((entry) => (
+            <Collection searchText={searchText} collection={entry.collection} key={entry.key} />
+          ))
         )}
       </div>
     </StyledWrapper>
