@@ -1,14 +1,16 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import classnames from 'classnames';
 import { IconChevronRight, IconFolder } from '@tabler/icons';
 import { useDispatch, useSelector } from 'react-redux';
+import { getEmptyImage } from 'react-dnd-html5-backend';
+import { useDrag, useDrop } from 'react-dnd';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import { collectionIndexNodeActivated } from 'providers/ReduxStore/slices/collections';
-import { loadRequest } from 'providers/ReduxStore/slices/collections/actions';
+import { handleCollectionItemDrop, loadRequest } from 'providers/ReduxStore/slices/collections/actions';
 import SearchHighlight from '../SearchHighlight';
 import CollectionItemIcon from './CollectionItem/CollectionItemIcon';
-import { getDefaultRequestPaneTab } from 'utils/collections';
+import { calculateDraggedItemNewPathname, getDefaultRequestPaneTab, isItemAFolder } from 'utils/collections';
 import { findItemInCollection, findItemInCollectionByPathname } from 'utils/collections';
 import { isTabForItemPresent as isTabForItemPresentSelector } from 'src/selectors/tab';
 import { isEqual } from 'lodash';
@@ -58,6 +60,21 @@ const normalizeRequestType = (type) => {
   return typeMap[normalizedType] || normalizedType || 'http-request';
 };
 
+const getIndexedNodeChain = (index, node) => {
+  const nodesByUid = index?.nodesByUid || {};
+  const chain = [];
+  let current = node;
+  const seen = new Set();
+
+  while (current?.uid && !seen.has(current.uid)) {
+    seen.add(current.uid);
+    chain.unshift(current);
+    current = current.parentUid ? nodesByUid[current.parentUid] : null;
+  }
+
+  return chain;
+};
+
 const useVisibleRows = ({ index, expandedNodeUids, searchText }) => {
   return useMemo(() => {
     if (!index?.nodesByUid) {
@@ -90,9 +107,12 @@ const useVisibleRows = ({ index, expandedNodeUids, searchText }) => {
 
 const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggleFolder }) => {
   const dispatch = useDispatch();
+  const rowRef = useRef(null);
   const isRequest = node.type !== 'folder';
   const isExpanded = expandedNodeUids.has(node.uid);
   const isTabForItemPresent = useSelector(isTabForItemPresentSelector({ itemUid: node.uid }), isEqual);
+  const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
+  const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid), isEqual);
   const item = useSelector((state) => {
     const collection = state.collections.collections?.find((c) => c.uid === collectionUid);
     return collection ? (
@@ -134,6 +154,117 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     }
   };
 
+  const activateNodeChain = (targetNode = node) => {
+    const chain = getIndexedNodeChain(index, targetNode);
+    for (const chainNode of chain) {
+      dispatch(collectionIndexNodeActivated({ collectionUid, node: chainNode }));
+    }
+  };
+
+  const createDragItem = () => {
+    activateNodeChain(node);
+    return {
+      ...displayItem,
+      ...node,
+      type: node.type,
+      request: displayItem.request,
+      sourceCollectionUid: collectionUid
+    };
+  };
+
+  const [{ isDragging }, drag, dragPreview] = useDrag({
+    type: 'collection-item',
+    item: createDragItem,
+    collect: (monitor) => ({
+      isDragging: monitor.isDragging()
+    }),
+    options: {
+      dropEffect: 'move'
+    }
+  });
+
+  useEffect(() => {
+    dragPreview(getEmptyImage(), { captureDraggingState: true });
+  }, [dragPreview]);
+
+  const determineDropType = (monitor) => {
+    const hoverBoundingRect = rowRef.current?.getBoundingClientRect();
+    const clientOffset = monitor.getClientOffset();
+    if (!hoverBoundingRect || !clientOffset) {
+      return null;
+    }
+
+    const clientY = clientOffset.y - hoverBoundingRect.top;
+    const folderUpperThreshold = hoverBoundingRect.height * 0.35;
+    const fileUpperThreshold = hoverBoundingRect.height * 0.5;
+
+    if (node.type === 'folder') {
+      return clientY < folderUpperThreshold ? 'adjacent' : 'inside';
+    }
+
+    return clientY < fileUpperThreshold ? 'adjacent' : null;
+  };
+
+  const canItemBeDropped = ({ draggedItem, dropType }) => {
+    if (!collection?.pathname || !dropType || draggedItem.uid === node.uid) {
+      return false;
+    }
+
+    if (draggedItem.sourceCollectionUid !== collectionUid) {
+      return true;
+    }
+
+    const newPathname = calculateDraggedItemNewPathname({
+      draggedItem,
+      targetItem: node,
+      dropType,
+      collectionPathname: collection.pathname
+    });
+
+    if (!newPathname) {
+      return false;
+    }
+
+    return !node.pathname?.startsWith(draggedItem.pathname);
+  };
+
+  const [{ isOver, canDrop }, drop] = useDrop({
+    accept: 'collection-item',
+    hover: (draggedItem, monitor) => {
+      if (draggedItem.uid === node.uid) {
+        return;
+      }
+
+      determineDropType(monitor);
+    },
+    drop: async (draggedItem, monitor) => {
+      const dropType = determineDropType(monitor);
+      if (!canItemBeDropped({ draggedItem, dropType })) {
+        return;
+      }
+
+      activateNodeChain(node);
+      await dispatch(handleCollectionItemDrop({
+        targetItem: {
+          ...displayItem,
+          ...node,
+          type: node.type,
+          items: isItemAFolder(node) ? [] : undefined
+        },
+        draggedItem,
+        dropType,
+        collectionUid
+      }));
+    },
+    canDrop: (draggedItem, monitor) => {
+      return canItemBeDropped({ draggedItem, dropType: determineDropType(monitor) });
+    },
+    collect: (monitor) => ({
+      isOver: monitor.isOver(),
+      canDrop: monitor.canDrop()
+    })
+  });
+
   const handleClick = () => {
     if (isRequest) {
       openRequest();
@@ -145,8 +276,16 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
 
   return (
     <div
+      ref={(element) => {
+        rowRef.current = element;
+        drag(drop(element));
+      }}
       className={classnames('flex items-center py-1 collection-item-name item', {
-        'cursor-pointer': true
+        'cursor-pointer': true,
+        'opacity-50': isDragging,
+        'item-hovered': isOver && canDrop,
+        'drop-target': isOver && canDrop && node.type === 'folder',
+        'drop-target-above': isOver && canDrop && node.type !== 'folder'
       })}
       style={{ height: ROW_HEIGHT, paddingLeft: 8 + (node.depth || 0) * 14 }}
       title={node.pathname}
