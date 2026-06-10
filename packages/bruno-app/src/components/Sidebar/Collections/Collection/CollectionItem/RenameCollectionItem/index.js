@@ -16,7 +16,7 @@ import Dropdown from 'components/Dropdown';
 import StyledWrapper from './StyledWrapper';
 import Button from 'ui/Button';
 
-const RenameCollectionItem = ({ collectionUid, item, onClose }) => {
+const RenameCollectionItem = ({ collectionUid, item, onClose, onRename }) => {
   const dispatch = useDispatch();
   const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid));
   const isFolder = isItemAFolder(item);
@@ -57,11 +57,23 @@ const RenameCollectionItem = ({ collectionUid, item, onClose }) => {
       if ((item.name === values.name) && (itemFilename === values.filename)) {
         return;
       }
-      if (!isFolder && item.draft) {
+      if (!onRename && !isFolder && item.draft) {
         await dispatch(saveRequest(item.uid, collectionUid, true));
       }
       const { name: newName, filename: newFilename } = values;
       try {
+        if (onRename) {
+          await onRename({
+            name: newName,
+            filename: itemFilename !== newFilename ? newFilename : undefined
+          });
+          if (isFolder) {
+            dispatch(closeTabs({ tabUids: [item.uid] }));
+          }
+          onClose();
+          return;
+        }
+
         let renameConfig = {
           itemUid: item.uid,
           collectionUid

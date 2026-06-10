@@ -24,7 +24,15 @@ import {
 } from '@tabler/icons';
 import OpenAPISyncIcon from 'components/Icons/OpenAPISync';
 import { toggleCollection, collapseFullCollection } from 'providers/ReduxStore/slices/collections';
-import { mountCollection, moveCollectionAndPersist, handleCollectionItemDrop, pasteItem, showInFolder, saveCollectionSecurityConfig } from 'providers/ReduxStore/slices/collections/actions';
+import {
+  mountCollection,
+  moveCollectionAndPersist,
+  handleCollectionItemDrop,
+  moveCollectionItemByPath,
+  pasteItem,
+  showInFolder,
+  saveCollectionSecurityConfig
+} from 'providers/ReduxStore/slices/collections/actions';
 import { useDispatch, useSelector } from 'react-redux';
 import { addTab, makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
 import { setFocusedSidebarPath } from 'providers/ReduxStore/slices/app';
@@ -264,7 +272,19 @@ const Collection = ({ collection, searchText }) => {
     drop: (draggedItem, monitor) => {
       const itemType = monitor.getItemType();
       if (isCollectionItem(itemType)) {
-        dispatch(handleCollectionItemDrop({ targetItem: collection, draggedItem, dropType: 'inside', collectionUid: collection.uid }));
+        if (draggedItem.sourcePathname) {
+          dispatch(moveCollectionItemByPath({
+            sourceCollectionUid: draggedItem.sourceCollectionUid || collection.uid,
+            targetCollectionUid: collection.uid,
+            sourcePathname: draggedItem.sourcePathname,
+            targetPathname: collection.pathname,
+            dropType: 'inside'
+          })).catch((error) => {
+            toast.error(error?.message || 'Unable to move item');
+          });
+        } else {
+          dispatch(handleCollectionItemDrop({ targetItem: collection, draggedItem, dropType: 'inside', collectionUid: collection.uid }));
+        }
       } else {
         dispatch(moveCollectionAndPersist({ draggedItem, targetItem: collection }));
       }

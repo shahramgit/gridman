@@ -7,15 +7,17 @@ import { recursivelyGetAllItemUids } from 'utils/collections';
 import StyledWrapper from './StyledWrapper';
 import toast from 'react-hot-toast';
 
-const DeleteCollectionItem = ({ onClose, item, collectionUid }) => {
+const DeleteCollectionItem = ({ onClose, item, collectionUid, onDelete }) => {
   const dispatch = useDispatch();
   const isFolder = isItemAFolder(item);
   const onConfirm = () => {
-    dispatch(deleteItem(item.uid, collectionUid)).then(() => {
+    const deleteOperation = onDelete ? onDelete() : dispatch(deleteItem(item.uid, collectionUid));
+
+    Promise.resolve(deleteOperation).then(() => {
       if (isFolder) {
         // close all tabs that belong to the folder
         // including the folder itself and its children
-        const tabUids = [...recursivelyGetAllItemUids(item.items), item.uid];
+        const tabUids = [...recursivelyGetAllItemUids(item.items || []), item.uid];
 
         dispatch(
           closeTabs({

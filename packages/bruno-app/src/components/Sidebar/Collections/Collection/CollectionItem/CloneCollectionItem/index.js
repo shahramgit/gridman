@@ -16,7 +16,7 @@ import Dropdown from 'components/Dropdown';
 import StyledWrapper from './StyledWrapper';
 import Button from 'ui/Button';
 
-const CloneCollectionItem = ({ collectionUid, item, onClose }) => {
+const CloneCollectionItem = ({ collectionUid, item, onClose, onClone }) => {
   const dispatch = useDispatch();
   const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid));
   const isFolder = isItemAFolder(item);
@@ -51,13 +51,17 @@ const CloneCollectionItem = ({ collectionUid, item, onClose }) => {
         .test('not-reserved', `The file names "collection" and "folder" are reserved in bruno`, (value) => !['collection', 'folder'].includes(value))
     }),
     onSubmit: (values) => {
-      dispatch(cloneItem(values.name, values.filename, item.uid, collectionUid))
+      const cloneOperation = onClone
+        ? onClone({ name: values.name, filename: values.filename })
+        : dispatch(cloneItem(values.name, values.filename, item.uid, collectionUid));
+
+      Promise.resolve(cloneOperation)
         .then(() => {
-          toast.success('Request cloned!');
+          toast.success(`${isFolder ? 'Folder' : 'Request'} cloned!`);
           onClose();
         })
         .catch((err) => {
-          toast.error(err ? err.message : 'An error occurred while cloning the request');
+          toast.error(err ? err.message : `An error occurred while cloning the ${isFolder ? 'folder' : 'request'}`);
         });
     }
   });

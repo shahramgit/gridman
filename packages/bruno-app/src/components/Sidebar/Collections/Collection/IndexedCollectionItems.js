@@ -1,19 +1,59 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import classnames from 'classnames';
-import { IconChevronRight, IconFolder } from '@tabler/icons';
+import {
+  IconChevronRight,
+  IconClipboard,
+  IconCode,
+  IconCopy,
+  IconDots,
+  IconEdit,
+  IconFilePlus,
+  IconFolder,
+  IconFolderPlus,
+  IconInfoCircle,
+  IconPlayerPlay,
+  IconSettings,
+  IconTerminal2,
+  IconTrash
+} from '@tabler/icons';
 import { useDispatch, useSelector } from 'react-redux';
 import { getEmptyImage } from 'react-dnd-html5-backend';
 import { useDrag, useDrop } from 'react-dnd';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import { collectionIndexNodeActivated } from 'providers/ReduxStore/slices/collections';
-import { handleCollectionItemDrop, loadRequest } from 'providers/ReduxStore/slices/collections/actions';
+import {
+  cloneCollectionItemByPath,
+  deleteCollectionItemByPath,
+  loadRequest,
+  moveCollectionItemByPath,
+  newFolderByPath,
+  pasteItem,
+  renameCollectionItemByPath,
+  showInFolder
+} from 'providers/ReduxStore/slices/collections/actions';
+import { copyRequest } from 'providers/ReduxStore/slices/app';
 import SearchHighlight from '../SearchHighlight';
 import CollectionItemIcon from './CollectionItem/CollectionItemIcon';
-import { calculateDraggedItemNewPathname, getDefaultRequestPaneTab, isItemAFolder } from 'utils/collections';
+import StyledWrapper from './CollectionItem/StyledWrapper';
+import RenameCollectionItem from './CollectionItem/RenameCollectionItem';
+import CloneCollectionItem from './CollectionItem/CloneCollectionItem';
+import DeleteCollectionItem from './CollectionItem/DeleteCollectionItem';
+import RunCollectionItem from './CollectionItem/RunCollectionItem';
+import GenerateCodeItem from './CollectionItem/GenerateCodeItem';
+import CollectionItemInfo from './CollectionItem/CollectionItemInfo';
+import { getDefaultRequestPaneTab } from 'utils/collections';
 import { findItemInCollection, findItemInCollectionByPathname } from 'utils/collections';
 import { isTabForItemPresent as isTabForItemPresentSelector } from 'src/selectors/tab';
 import { isEqual } from 'lodash';
+import NewRequest from 'components/Sidebar/NewRequest';
+import NewFolder from 'components/Sidebar/NewFolder';
+import ActionIcon from 'ui/ActionIcon';
+import MenuDropdown from 'ui/MenuDropdown';
+import toast from 'react-hot-toast';
+import { getRevealInFolderLabel } from 'utils/common/platform';
+import { openDevtoolsAndSwitchToTerminal } from 'utils/terminal';
+import { useSidebarAccordion } from 'components/Sidebar/SidebarAccordionContext';
 
 const ROW_HEIGHT = 28;
 const MAX_LIST_HEIGHT = 520;
@@ -75,6 +115,23 @@ const getIndexedNodeChain = (index, node) => {
   return chain;
 };
 
+const getIndexedNodeDisplayDepth = (index, node) => {
+  const chain = getIndexedNodeChain(index, node);
+  if (chain.length) {
+    return chain.length;
+  }
+
+  return Math.max(0, (node.depth || 0) + 1);
+};
+
+const normalizeForPathCompare = (pathname) => String(pathname || '').replace(/\\/g, '/').replace(/\/+$/, '');
+
+const isSameOrDescendantPath = (targetPathname, sourcePathname) => {
+  const target = normalizeForPathCompare(targetPathname);
+  const source = normalizeForPathCompare(sourcePathname);
+  return target === source || target.startsWith(`${source}/`);
+};
+
 const useVisibleRows = ({ index, expandedNodeUids, searchText }) => {
   return useMemo(() => {
     if (!index?.nodesByUid) {
@@ -107,10 +164,23 @@ const useVisibleRows = ({ index, expandedNodeUids, searchText }) => {
 
 const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggleFolder }) => {
   const dispatch = useDispatch();
+  const { dropdownContainerRef } = useSidebarAccordion();
   const rowRef = useRef(null);
+  const menuDropdownRef = useRef(null);
   const isRequest = node.type !== 'folder';
+  const isFolder = !isRequest;
   const isExpanded = expandedNodeUids.has(node.uid);
+  const [renameItemModalOpen, setRenameItemModalOpen] = useState(false);
+  const [cloneItemModalOpen, setCloneItemModalOpen] = useState(false);
+  const [deleteItemModalOpen, setDeleteItemModalOpen] = useState(false);
+  const [newRequestModalOpen, setNewRequestModalOpen] = useState(false);
+  const [newFolderModalOpen, setNewFolderModalOpen] = useState(false);
+  const [runCollectionModalOpen, setRunCollectionModalOpen] = useState(false);
+  const [generateCodeItemModalOpen, setGenerateCodeItemModalOpen] = useState(false);
+  const [itemInfoModalOpen, setItemInfoModalOpen] = useState(false);
+  const [dropType, setDropType] = useState(null);
   const isTabForItemPresent = useSelector(isTabForItemPresentSelector({ itemUid: node.uid }), isEqual);
+  const { hasCopiedItems } = useSelector((state) => state.app.clipboard);
   const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
   const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid), isEqual);
   const item = useSelector((state) => {
@@ -130,6 +200,20 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
       url: node.url || ''
     }
   };
+  const hasHydratedChildren = Boolean(item?.items?.length);
+  const getActionCompatibleItem = () => {
+    const hydratedItem = item || displayItem;
+
+    return {
+      ...hydratedItem,
+      ...node,
+      type: isFolder ? 'folder' : normalizeRequestType(hydratedItem.type || node.type),
+      items: isFolder ? (hydratedItem.items || []) : undefined,
+      request: isFolder ? undefined : (hydratedItem.request || displayItem.request)
+    };
+  };
+  const actionItem = getActionCompatibleItem();
+  const displayDepth = getIndexedNodeDisplayDepth(index, node);
 
   const openRequest = () => {
     dispatch(collectionIndexNodeActivated({ collectionUid, node }));
@@ -161,14 +245,206 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     }
   };
 
-  const createDragItem = () => {
+  const ensureNodeHydrated = () => {
     activateNodeChain(node);
+    return getActionCompatibleItem();
+  };
+
+  const handleCopyItem = () => {
+    const hydratedItem = ensureNodeHydrated();
+    dispatch(copyRequest(hydratedItem));
+    toast.success(`${isFolder ? 'Folder' : 'Request'} copied`);
+  };
+
+  const handlePasteItem = () => {
+    ensureNodeHydrated();
+    dispatch(pasteItem(collectionUid, isFolder ? node.uid : node.parentUid || null))
+      .then(() => {
+        toast.success('Item pasted successfully');
+      })
+      .catch((err) => {
+        toast.error(err ? err.message : 'An error occurred while pasting the item');
+      });
+  };
+
+  const handleShowInFolder = () => {
+    ensureNodeHydrated();
+    dispatch(showInFolder(node.pathname)).catch((error) => {
+      console.error('Error opening the folder', error);
+      toast.error('Error opening the folder');
+    });
+  };
+
+  const viewFolderSettings = () => {
+    ensureNodeHydrated();
+    if (isTabForItemPresent) {
+      dispatch(focusTab({ uid: node.uid }));
+      return;
+    }
+
+    dispatch(
+      addTab({
+        uid: node.uid,
+        collectionUid,
+        type: 'folder-settings'
+      })
+    );
+  };
+
+  const handleGenerateCode = async () => {
+    ensureNodeHydrated();
+    const hydratedItem = getActionCompatibleItem();
+    const requestUrl = hydratedItem?.draft?.request?.url ?? hydratedItem?.request?.url;
+    if (!requestUrl && node.pathname) {
+      try {
+        const loadedFile = await dispatch(loadRequest({ collectionUid, pathname: node.pathname }));
+        if (!loadedFile?.data?.request?.url) {
+          toast.error('URL is required');
+          return;
+        }
+      } catch (err) {
+        toast.error(err?.message || 'Unable to load request');
+        return;
+      }
+    } else if (!requestUrl) {
+      toast.error('URL is required');
+      return;
+    }
+
+    setGenerateCodeItemModalOpen(true);
+  };
+
+  const openModalAfterHydration = (openModal) => {
+    ensureNodeHydrated();
+    openModal(true);
+  };
+
+  const openPathModal = (openModal) => {
+    openModal(true);
+  };
+
+  const buildMenuItems = () => {
+    const items = [];
+
+    if (isFolder) {
+      items.push(
+        {
+          id: 'new-request',
+          leftSection: IconFilePlus,
+          label: 'New Request',
+          onClick: () => openModalAfterHydration(setNewRequestModalOpen)
+        },
+        {
+          id: 'new-folder',
+          leftSection: IconFolderPlus,
+          label: 'New Folder',
+          onClick: () => openPathModal(setNewFolderModalOpen)
+        },
+        {
+          id: 'run',
+          leftSection: IconPlayerPlay,
+          label: 'Run',
+          disabled: !hasHydratedChildren,
+          title: hasHydratedChildren ? 'Run this folder' : 'Run is available after this folder has loaded child request data',
+          onClick: () => openModalAfterHydration(setRunCollectionModalOpen)
+        }
+      );
+    }
+
+    items.push(
+      {
+        id: 'clone',
+        leftSection: IconCopy,
+        label: 'Clone',
+        onClick: () => openPathModal(setCloneItemModalOpen)
+      },
+      {
+        id: 'copy',
+        leftSection: IconCopy,
+        label: 'Copy',
+        onClick: handleCopyItem
+      }
+    );
+
+    if (isFolder && hasCopiedItems) {
+      items.push({
+        id: 'paste',
+        leftSection: IconClipboard,
+        label: 'Paste',
+        onClick: handlePasteItem
+      });
+    }
+
+    items.push({
+      id: 'rename',
+      leftSection: IconEdit,
+      label: 'Rename',
+      onClick: () => openPathModal(setRenameItemModalOpen)
+    });
+
+    if (!isFolder && ['http-request', 'graphql-request', 'http', 'graphql'].includes(actionItem.type)) {
+      items.push({
+        id: 'generate-code',
+        leftSection: IconCode,
+        label: 'Generate Code',
+        onClick: handleGenerateCode
+      });
+    }
+
+    items.push({
+      id: 'show-in-folder',
+      leftSection: IconFolder,
+      label: getRevealInFolderLabel(),
+      onClick: handleShowInFolder
+    });
+
+    items.push({ id: 'separator-1', type: 'divider' });
+
+    items.push({
+      id: 'info',
+      leftSection: IconInfoCircle,
+      label: 'Info',
+      onClick: () => openModalAfterHydration(setItemInfoModalOpen)
+    });
+
+    if (isFolder) {
+      items.push(
+        {
+          id: 'settings',
+          leftSection: IconSettings,
+          label: 'Settings',
+          onClick: viewFolderSettings
+        },
+        {
+          id: 'open-terminal',
+          leftSection: IconTerminal2,
+          label: 'Open in Terminal',
+          onClick: async () => {
+            ensureNodeHydrated();
+            await openDevtoolsAndSwitchToTerminal(dispatch, node.pathname || collection?.pathname);
+          }
+        }
+      );
+    }
+
+    items.push({
+      id: 'delete',
+      leftSection: IconTrash,
+      label: 'Delete',
+      className: 'delete-item',
+      onClick: () => openPathModal(setDeleteItemModalOpen)
+    });
+
+    return items;
+  };
+
+  const createDragItem = () => {
     return {
-      ...displayItem,
-      ...node,
-      type: node.type,
-      request: displayItem.request,
-      sourceCollectionUid: collectionUid
+      uid: node.uid,
+      type: isFolder ? 'folder' : normalizeRequestType(node.type),
+      sourcePathname: node.pathname,
+      sourceCollectionUid: collectionUid,
+      sourceCollectionPathname: collection?.pathname
     };
   };
 
@@ -198,7 +474,7 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     const folderUpperThreshold = hoverBoundingRect.height * 0.35;
     const fileUpperThreshold = hoverBoundingRect.height * 0.5;
 
-    if (node.type === 'folder') {
+    if (isFolder) {
       return clientY < folderUpperThreshold ? 'adjacent' : 'inside';
     }
 
@@ -206,26 +482,20 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
   };
 
   const canItemBeDropped = ({ draggedItem, dropType }) => {
-    if (!collection?.pathname || !dropType || draggedItem.uid === node.uid) {
+    if (!collection?.pathname || !node.pathname || !dropType || draggedItem.uid === node.uid) {
       return false;
     }
 
-    if (draggedItem.sourceCollectionUid !== collectionUid) {
-      return true;
-    }
-
-    const newPathname = calculateDraggedItemNewPathname({
-      draggedItem,
-      targetItem: node,
-      dropType,
-      collectionPathname: collection.pathname
-    });
-
-    if (!newPathname) {
+    const sourcePathname = draggedItem.sourcePathname || draggedItem.pathname;
+    if (!sourcePathname) {
       return false;
     }
 
-    return !node.pathname?.startsWith(draggedItem.pathname);
+    if (draggedItem.sourceCollectionUid === collectionUid && isSameOrDescendantPath(node.pathname, sourcePathname)) {
+      return false;
+    }
+
+    return true;
   };
 
   const [{ isOver, canDrop }, drop] = useDrop({
@@ -235,30 +505,31 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
         return;
       }
 
-      determineDropType(monitor);
+      const nextDropType = determineDropType(monitor);
+      setDropType(canItemBeDropped({ draggedItem, dropType: nextDropType }) ? nextDropType : null);
     },
     drop: async (draggedItem, monitor) => {
-      const dropType = determineDropType(monitor);
-      if (!canItemBeDropped({ draggedItem, dropType })) {
+      const nextDropType = determineDropType(monitor);
+      if (!canItemBeDropped({ draggedItem, dropType: nextDropType })) {
+        setDropType(null);
         return;
       }
 
-      activateNodeChain(node);
-      await dispatch(handleCollectionItemDrop({
-        targetItem: {
-          ...displayItem,
-          ...node,
-          type: node.type,
-          items: isItemAFolder(node) ? [] : undefined
-        },
-        draggedItem,
-        dropType,
-        collectionUid
-      }));
+      try {
+        await dispatch(moveCollectionItemByPath({
+          sourceCollectionUid: draggedItem.sourceCollectionUid || collectionUid,
+          targetCollectionUid: collectionUid,
+          sourcePathname: draggedItem.sourcePathname || draggedItem.pathname,
+          targetPathname: node.pathname,
+          dropType: nextDropType
+        }));
+      } catch (error) {
+        toast.error(error?.message || 'Unable to move item');
+      } finally {
+        setDropType(null);
+      }
     },
-    canDrop: (draggedItem, monitor) => {
-      return canItemBeDropped({ draggedItem, dropType: determineDropType(monitor) });
-    },
+    canDrop: (draggedItem) => draggedItem.uid !== node.uid,
     collect: (monitor) => ({
       isOver: monitor.isOver(),
       canDrop: monitor.canDrop()
@@ -274,40 +545,153 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     onToggleFolder(node.uid);
   };
 
+  const handleContextMenu = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    menuDropdownRef.current?.show();
+  };
+
   return (
-    <div
-      ref={(element) => {
-        rowRef.current = element;
-        drag(drop(element));
-      }}
-      className={classnames('flex items-center py-1 collection-item-name item', {
-        'cursor-pointer': true,
-        'opacity-50': isDragging,
-        'item-hovered': isOver && canDrop,
-        'drop-target': isOver && canDrop && node.type === 'folder',
-        'drop-target-above': isOver && canDrop && node.type !== 'folder'
-      })}
-      style={{ height: ROW_HEIGHT, paddingLeft: 8 + (node.depth || 0) * 14 }}
-      title={node.pathname}
-      onClick={handleClick}
-    >
-      <span className="flex items-center justify-center" style={{ width: 16, minWidth: 16 }}>
-        {node.type === 'folder' ? (
-          <IconChevronRight
-            size={16}
-            strokeWidth={2}
-            className={classnames('chevron-icon', { 'rotate-90': isExpanded })}
-            style={{ color: 'rgb(160 160 160)' }}
-          />
-        ) : null}
-      </span>
-      <span className="flex items-center justify-center ml-1" style={{ width: 18, minWidth: 18 }}>
-        {node.type === 'folder' ? <IconFolder size={16} strokeWidth={1.7} /> : <CollectionItemIcon item={displayItem} />}
-      </span>
-      <span className="ml-1 truncate">
-        <SearchHighlight text={node.name || node.filename || 'Untitled'} searchText={searchText} />
-      </span>
-    </div>
+    <StyledWrapper>
+      {renameItemModalOpen && (
+        <RenameCollectionItem
+          item={actionItem}
+          collectionUid={collectionUid}
+          onClose={() => setRenameItemModalOpen(false)}
+          onRename={({ name, filename }) => dispatch(renameCollectionItemByPath({
+            collectionUid,
+            sourcePathname: node.pathname,
+            newName: name,
+            newFilename: filename
+          }))}
+        />
+      )}
+      {cloneItemModalOpen && (
+        <CloneCollectionItem
+          item={actionItem}
+          collectionUid={collectionUid}
+          onClose={() => setCloneItemModalOpen(false)}
+          onClone={({ name, filename }) => dispatch(cloneCollectionItemByPath({
+            collectionUid,
+            sourcePathname: node.pathname,
+            newName: name,
+            newFilename: filename
+          }))}
+        />
+      )}
+      {deleteItemModalOpen && (
+        <DeleteCollectionItem
+          item={actionItem}
+          collectionUid={collectionUid}
+          onClose={() => setDeleteItemModalOpen(false)}
+          onDelete={() => dispatch(deleteCollectionItemByPath({
+            collectionUid,
+            sourcePathname: node.pathname,
+            type: isFolder ? 'folder' : normalizeRequestType(node.type)
+          }))}
+        />
+      )}
+      {newRequestModalOpen && (
+        <NewRequest item={actionItem} collectionUid={collectionUid} onClose={() => setNewRequestModalOpen(false)} />
+      )}
+      {newFolderModalOpen && (
+        <NewFolder
+          item={actionItem}
+          collectionUid={collectionUid}
+          onClose={() => setNewFolderModalOpen(false)}
+          onCreate={({ folderName, directoryName }) => dispatch(newFolderByPath({
+            collectionUid,
+            parentPathname: node.pathname,
+            folderName,
+            directoryName
+          }))}
+        />
+      )}
+      {runCollectionModalOpen && (
+        <RunCollectionItem collectionUid={collectionUid} item={actionItem} onClose={() => setRunCollectionModalOpen(false)} />
+      )}
+      {generateCodeItemModalOpen && (
+        <GenerateCodeItem collectionUid={collectionUid} item={actionItem} onClose={() => setGenerateCodeItemModalOpen(false)} />
+      )}
+      {itemInfoModalOpen && (
+        <CollectionItemInfo item={actionItem} onClose={() => setItemInfoModalOpen(false)} />
+      )}
+      <div
+        ref={(element) => {
+          rowRef.current = element;
+          drag(drop(element));
+        }}
+        className={classnames('flex collection-item-name relative items-center', {
+          'cursor-pointer': true,
+          'opacity-50': isDragging,
+          'item-hovered': isOver && canDrop && dropType,
+          'drop-target': isOver && canDrop && dropType === 'inside',
+          'drop-target-above': isOver && canDrop && dropType === 'adjacent'
+        })}
+        style={{ height: ROW_HEIGHT }}
+        title={node.pathname}
+        onContextMenu={handleContextMenu}
+      >
+        <div className="flex items-center h-full w-full">
+          {Array.from({ length: displayDepth }).map((_, index) => (
+            <div
+              key={`${node.uid}-indent-${index}`}
+              className="indent-block"
+              style={{
+                width: 16,
+                minWidth: 16,
+                height: '100%'
+              }}
+            >
+              &nbsp;
+            </div>
+          ))}
+          <div
+            className="flex flex-grow items-center h-full overflow-hidden"
+            style={{ paddingLeft: 8 }}
+            onClick={handleClick}
+          >
+            {node.type === 'folder' ? (
+              <ActionIcon style={{ width: 16, minWidth: 16 }}>
+                <IconChevronRight
+                  size={16}
+                  strokeWidth={2}
+                  className={classnames('chevron-icon', { 'rotate-90': isExpanded })}
+                  style={{ color: 'rgb(160 160 160)' }}
+                />
+              </ActionIcon>
+            ) : null}
+            <div className="ml-1 flex w-full h-full items-center overflow-hidden">
+              {node.type === 'folder' ? (
+                <IconFolder size={16} strokeWidth={1.7} className="mr-2" />
+              ) : (
+                <CollectionItemIcon item={displayItem} />
+              )}
+              <span className="item-name">
+                <SearchHighlight text={node.name || node.filename || 'Untitled'} searchText={searchText} />
+              </span>
+            </div>
+          </div>
+          <MenuDropdown
+            ref={menuDropdownRef}
+            items={buildMenuItems()}
+            placement="bottom-start"
+            data-testid="indexed-collection-item-menu"
+            popperOptions={{ strategy: 'fixed' }}
+            appendTo={dropdownContainerRef?.current || document.body}
+          >
+            <ActionIcon
+              className="menu-icon"
+              onClick={(event) => {
+                event.stopPropagation();
+              }}
+            >
+              <IconDots size={18} className="collection-item-menu-icon" />
+            </ActionIcon>
+          </MenuDropdown>
+        </div>
+      </div>
+    </StyledWrapper>
   );
 };
 

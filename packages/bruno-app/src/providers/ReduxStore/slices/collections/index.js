@@ -314,6 +314,136 @@ const appendChildUid = (index, parentUid, uid) => {
   }
 };
 
+const removeChildUid = (index, parentUid, uid) => {
+  const parentKey = parentUid || 'root';
+  if (index.childrenByParentUid[parentKey]) {
+    index.childrenByParentUid[parentKey] = index.childrenByParentUid[parentKey].filter((childUid) => childUid !== uid);
+  }
+
+  if (!parentUid) {
+    index.rootChildUids = index.rootChildUids.filter((childUid) => childUid !== uid);
+  }
+};
+
+const findIndexNodeByPathname = (index, pathname) => {
+  const normalizedPathname = path.normalize(pathname || '');
+  return Object.values(index?.nodesByUid || {}).find((node) => path.normalize(node.pathname || '') === normalizedPathname);
+};
+
+const upsertCollectionIndexNodeFromItem = (state, collectionUid, item) => {
+  const index = state.collectionIndexes?.[collectionUid];
+  if (!index || !item?.uid || !item?.pathname) {
+    return;
+  }
+
+  const parentPathname = path.dirname(item.pathname);
+  const parentNode = findIndexNodeByPathname(index, parentPathname);
+  const existingNode = index.nodesByUid[item.uid] || findIndexNodeByPathname(index, item.pathname);
+  const previousParentUid = existingNode?.parentUid || null;
+  const parentUid = parentNode?.uid || null;
+  const request = item.draft?.request || item.request || {};
+
+  if (existingNode?.uid && existingNode.uid !== item.uid) {
+    removeChildUid(index, existingNode.parentUid, existingNode.uid);
+    delete index.nodesByUid[existingNode.uid];
+  }
+
+  if (previousParentUid !== parentUid) {
+    removeChildUid(index, previousParentUid, item.uid);
+  }
+
+  index.nodesByUid[item.uid] = {
+    uid: item.uid,
+    name: item.name,
+    type: item.type,
+    pathname: item.pathname,
+    parentUid,
+    depth: item.depth,
+    seq: item.seq,
+    filename: item.filename,
+    method: request.method || '',
+    url: request.url || ''
+  };
+  appendChildUid(index, parentUid, item.uid);
+};
+
+const removeCollectionIndexNodeByPathname = (state, collectionUid, pathname, options = {}) => {
+  const index = state.collectionIndexes?.[collectionUid];
+  if (!index || !pathname) {
+    return;
+  }
+
+  const normalizedPathname = path.normalize(pathname);
+  const nodesToRemove = Object.values(index.nodesByUid || {}).filter((node) => {
+    const normalizedNodePathname = path.normalize(node.pathname || '');
+    if (options.recursive) {
+      return normalizedNodePathname === normalizedPathname || normalizedNodePathname.startsWith(`${normalizedPathname}${path.sep}`);
+    }
+    return normalizedNodePathname === normalizedPathname;
+  });
+
+  for (const node of nodesToRemove) {
+    removeChildUid(index, node.parentUid, node.uid);
+    delete index.childrenByParentUid[node.uid];
+    delete index.nodesByUid[node.uid];
+  }
+
+  index.totalNodes = Object.keys(index.nodesByUid).length;
+  index.totalScanned = Math.min(index.totalScanned || index.totalNodes, index.totalNodes);
+};
+
+const updateCollectionIndexNodePath = (node, previousPathname, nextPathname) => {
+  const normalizedPreviousPathname = path.normalize(previousPathname || '');
+  const normalizedNextPathname = path.normalize(nextPathname || '');
+  const normalizedNodePathname = path.normalize(node.pathname || '');
+
+  if (normalizedNodePathname === normalizedPreviousPathname || normalizedNodePathname.startsWith(`${normalizedPreviousPathname}${path.sep}`)) {
+    node.pathname = normalizedNodePathname.replace(normalizedPreviousPathname, normalizedNextPathname);
+    node.filename = path.basename(node.pathname);
+  }
+};
+
+const moveCollectionIndexNodeByPathname = (state, collectionUid, sourcePathname, targetPathname) => {
+  const index = state.collectionIndexes?.[collectionUid];
+  if (!index || !sourcePathname || !targetPathname) {
+    return;
+  }
+
+  const movedNode = findIndexNodeByPathname(index, sourcePathname);
+  if (!movedNode) {
+    return;
+  }
+
+  const previousParentUid = movedNode.parentUid || null;
+  const previousPathname = movedNode.pathname;
+  const nextParentPathname = path.dirname(targetPathname);
+  const nextParentNode = findIndexNodeByPathname(index, nextParentPathname);
+  const nextParentUid = nextParentNode?.uid || null;
+  const nextDepth = nextParentNode ? ((nextParentNode.depth || 0) + 1) : 0;
+  const depthDelta = nextDepth - (movedNode.depth || 0);
+
+  if (previousParentUid !== nextParentUid) {
+    removeChildUid(index, previousParentUid, movedNode.uid);
+    appendChildUid(index, nextParentUid, movedNode.uid);
+  }
+
+  Object.values(index.nodesByUid || {}).forEach((node) => {
+    const normalizedNodePathname = path.normalize(node.pathname || '');
+    const normalizedPreviousPathname = path.normalize(previousPathname || '');
+    const isMovedNode = node.uid === movedNode.uid;
+    const isDescendant = normalizedNodePathname.startsWith(`${normalizedPreviousPathname}${path.sep}`);
+    if (!isMovedNode && !isDescendant) {
+      return;
+    }
+
+    updateCollectionIndexNodePath(node, previousPathname, targetPathname);
+    node.depth = Math.max(0, (node.depth || 0) + depthDelta);
+    if (isMovedNode) {
+      node.parentUid = nextParentUid;
+    }
+  });
+};
+
 const createPartialRequestFromIndexNode = (node) => ({
   uid: node.uid,
   name: node.name,
@@ -2950,11 +3080,15 @@ export const collectionsSlice = createSlice({
     },
     collectionAddFileEvent: (state, action) => {
       const file = action.payload.file;
-      applyCollectionAddFile(state, file);
+      const collection = applyCollectionAddFile(state, file);
+      const item = collection ? findItemInCollectionByPathname(collection, file.meta.pathname) : null;
+      upsertCollectionIndexNodeFromItem(state, file.meta.collectionUid, item);
     },
     collectionAddDirectoryEvent: (state, action) => {
       const { dir } = action.payload;
-      applyCollectionAddDirectory(state, dir);
+      const collection = applyCollectionAddDirectory(state, dir);
+      const item = collection ? findItemInCollectionByPathname(collection, dir.meta.pathname) : null;
+      upsertCollectionIndexNodeFromItem(state, dir.meta.collectionUid, item);
     },
     collectionTreeBatchUpdatedEvent: (state, action) => {
       const updates = action.payload.updates || [];
@@ -2965,6 +3099,8 @@ export const collectionsSlice = createSlice({
           const collection = applyCollectionAddDirectory(state, update.val, { deferDepth: true });
           if (collection?.uid) {
             touchedCollectionUids.add(collection.uid);
+            const item = findItemInCollectionByPathname(collection, update.val.meta.pathname);
+            upsertCollectionIndexNodeFromItem(state, collection.uid, item);
           }
           continue;
         }
@@ -2973,6 +3109,8 @@ export const collectionsSlice = createSlice({
           const collection = applyCollectionAddFile(state, update.val, { deferDepth: true });
           if (collection?.uid) {
             touchedCollectionUids.add(collection.uid);
+            const item = findItemInCollectionByPathname(collection, update.val.meta.pathname);
+            upsertCollectionIndexNodeFromItem(state, collection.uid, item);
           }
           continue;
         }
@@ -3027,6 +3165,10 @@ export const collectionsSlice = createSlice({
       if (collection) {
         addDepth(collection.items);
       }
+    },
+    collectionIndexNodeMoved: (state, action) => {
+      const { collectionUid, sourcePathname, targetPathname } = action.payload;
+      moveCollectionIndexNodeByPathname(state, collectionUid, sourcePathname, targetPathname);
     },
     collectionIndexReady: (state, action) => {
       const { collectionUid, loadSessionId, totalNodes } = action.payload;
@@ -3128,6 +3270,7 @@ export const collectionsSlice = createSlice({
               item.draft = null;
             }
           }
+          upsertCollectionIndexNodeFromItem(state, file.meta.collectionUid, item);
         }
       }
     },
@@ -3140,6 +3283,7 @@ export const collectionsSlice = createSlice({
 
         if (item) {
           deleteItemInCollectionByPathname(file.meta.pathname, collection);
+          removeCollectionIndexNodeByPathname(state, file.meta.collectionUid, file.meta.pathname);
         }
       }
     },
@@ -3152,6 +3296,9 @@ export const collectionsSlice = createSlice({
 
         if (item) {
           deleteItemInCollectionByPathname(directory.meta.pathname, collection);
+          removeCollectionIndexNodeByPathname(state, directory.meta.collectionUid, directory.meta.pathname, {
+            recursive: true
+          });
         }
       }
     },
@@ -3999,6 +4146,7 @@ export const {
   collectionIndexStarted,
   collectionIndexBatchReceived,
   collectionIndexNodeActivated,
+  collectionIndexNodeMoved,
   collectionIndexReady,
   collectionIndexFailed,
   collectionIndexCancelled,

@@ -49,6 +49,7 @@ const {
   copyPath,
   removePath,
   getPaths,
+  normalizeAndResolvePath,
   generateUniqueName,
   isDotEnvFile,
   isValidDotEnvFilename,
@@ -104,6 +105,195 @@ const shouldUseIndexedCollectionLoad = ({ size, filesCount, maxFileSize }) => (
   || (filesCount > MAX_COLLECTION_FILES_COUNT)
   || (maxFileSize > MAX_SINGLE_FILE_SIZE_IN_COLLECTION_IN_MB)
 );
+
+const REQUEST_FILE_TYPE_BY_FORMAT = {
+  bru: '.bru',
+  yml: '.yml'
+};
+
+const getRequestFilenameForFormat = (filename, format) => {
+  const baseName = path.basename(String(filename || '').trim(), path.extname(String(filename || '').trim()));
+  const ext = REQUEST_FILE_TYPE_BY_FORMAT[format] || '.bru';
+  return `${baseName}${ext}`;
+};
+
+const assertPathInside = (rootPathname, targetPathname, message = 'Path must stay inside the collection') => {
+  const root = normalizeAndResolvePath(rootPathname) || path.resolve(rootPathname);
+  const target = fs.existsSync(targetPathname)
+    ? (normalizeAndResolvePath(targetPathname) || path.resolve(targetPathname))
+    : path.resolve(targetPathname);
+
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    throw new Error(message);
+  }
+
+  return target;
+};
+
+const assertCollectionItemPath = ({ collectionPathname, itemPathname }) => {
+  const itemPath = assertPathInside(collectionPathname, itemPathname, 'Item path must stay inside the collection');
+  if (itemPath === (normalizeAndResolvePath(collectionPathname) || path.resolve(collectionPathname))) {
+    throw new Error('Collection root cannot be used as an item path');
+  }
+  return itemPath;
+};
+
+const getItemKindFromPath = (pathname, collectionPathname) => {
+  if (!fs.existsSync(pathname)) {
+    throw new Error(`path: ${pathname} does not exist`);
+  }
+
+  if (isDirectory(pathname)) {
+    return 'folder';
+  }
+
+  const format = getCollectionFormat(collectionPathname);
+  if (!hasRequestExtension(pathname, format)) {
+    throw new Error(`path: ${pathname} is not a valid request file`);
+  }
+
+  return 'request';
+};
+
+const getRequestTypeFromPath = (pathname, collectionPathname) => {
+  const format = getCollectionFormat(collectionPathname);
+  try {
+    const data = fs.readFileSync(pathname, 'utf8');
+    const parsed = parseRequest(data, { format });
+    return parsed?.type || 'http-request';
+  } catch (_err) {
+    return 'http-request';
+  }
+};
+
+const updateFolderMeta = async ({ folderPathname, name, seq, collectionPathname }) => {
+  const format = getCollectionFormat(collectionPathname);
+  const folderFilePath = path.join(folderPathname, `folder.${format}`);
+  let folderFileJsonContent;
+
+  if (fs.existsSync(folderFilePath)) {
+    const oldFolderFileContent = await fs.promises.readFile(folderFilePath, 'utf8');
+    folderFileJsonContent = await parseFolder(oldFolderFileContent, { format });
+  } else {
+    folderFileJsonContent = { meta: {} };
+  }
+
+  folderFileJsonContent.meta = folderFileJsonContent.meta || {};
+  if (name) {
+    folderFileJsonContent.meta.name = name;
+  }
+  if (seq) {
+    folderFileJsonContent.meta.seq = seq;
+  }
+
+  const folderFileContent = await stringifyFolder(folderFileJsonContent, { format });
+  await writeFile(folderFilePath, folderFileContent);
+};
+
+const cloneRequestByPath = async ({ sourcePathname, targetPathname, newName, collectionPathname }) => {
+  const format = getCollectionFormat(collectionPathname);
+  if (!hasRequestExtension(sourcePathname, format)) {
+    throw new Error(`path: ${sourcePathname} is not a valid request file`);
+  }
+  if (fs.existsSync(targetPathname)) {
+    throw new Error(`path: ${targetPathname} already exists`);
+  }
+
+  const data = await fs.promises.readFile(sourcePathname, 'utf8');
+  const jsonData = parseRequest(data, { format });
+  jsonData.name = newName;
+  const content = await stringifyRequestViaWorker(jsonData, { format });
+  await writeFile(targetPathname, content);
+  return targetPathname;
+};
+
+const cloneFolderByPath = async ({ sourcePathname, targetPathname, newName, collectionPathname }) => {
+  if (!isDirectory(sourcePathname)) {
+    throw new Error(`path: ${sourcePathname} is not a folder`);
+  }
+  if (fs.existsSync(targetPathname)) {
+    throw new Error(`folder: ${targetPathname} already exists`);
+  }
+
+  await fsExtra.copy(sourcePathname, targetPathname, { errorOnExist: true });
+  await updateFolderMeta({ folderPathname: targetPathname, name: newName, collectionPathname });
+  return targetPathname;
+};
+
+const createFolderByPath = async ({ parentPathname, collectionPathname, folderName, directoryName }) => {
+  const parentPath = assertPathInside(collectionPathname, parentPathname, 'Parent path must stay inside the collection');
+  if (!fs.existsSync(parentPath) || !isDirectory(parentPath)) {
+    throw new Error('Parent folder does not exist');
+  }
+
+  const format = getCollectionFormat(collectionPathname);
+  const targetPathname = path.join(parentPath, sanitizeName(directoryName || folderName));
+  assertPathInside(collectionPathname, targetPathname);
+  if (fs.existsSync(targetPathname)) {
+    throw new Error('The directory already exists');
+  }
+
+  const siblingCount = fs.readdirSync(parentPath).filter((name) => {
+    const siblingPath = path.join(parentPath, name);
+    return isDirectory(siblingPath) || hasRequestExtension(siblingPath, format);
+  }).length;
+
+  fs.mkdirSync(targetPathname);
+  const folderFilePath = path.join(targetPathname, `folder.${format}`);
+  const content = await stringifyFolder({
+    meta: {
+      name: folderName,
+      seq: siblingCount + 1
+    },
+    request: {
+      auth: {
+        mode: 'inherit'
+      }
+    }
+  }, { format });
+  await writeFile(folderFilePath, content);
+  return targetPathname;
+};
+
+const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollectionPathname, targetCollectionPathname }) => {
+  if (!fs.existsSync(sourcePathname)) {
+    throw new Error(`path: ${sourcePathname} does not exist`);
+  }
+  if (fs.existsSync(targetPathname)) {
+    throw new Error(`path: ${targetPathname} already exists`);
+  }
+
+  const sourceKind = getItemKindFromPath(sourcePathname, sourceCollectionPathname);
+  if (sourceKind === 'folder' && targetPathname.startsWith(`${sourcePathname}${path.sep}`)) {
+    throw new Error('Cannot move a folder inside itself');
+  }
+
+  const sourceFormat = getCollectionFormat(sourceCollectionPathname);
+  const targetFormat = getCollectionFormat(targetCollectionPathname);
+  if (sourceKind === 'folder' && sourceFormat !== targetFormat) {
+    throw new Error('Moving folders between collections with different formats is not supported');
+  }
+
+  const pathnamesBefore = await getPaths(sourcePathname);
+
+  if (sourceKind === 'request' && sourceFormat !== targetFormat) {
+    const sourceContent = await fs.promises.readFile(sourcePathname, 'utf8');
+    const parsedRequest = parseRequest(sourceContent, { format: sourceFormat });
+    const finalContent = stringifyRequest(parsedRequest, { format: targetFormat });
+
+    await writeFile(targetPathname, finalContent);
+    await removePath(sourcePathname);
+  } else {
+    await fsExtra.move(sourcePathname, targetPathname, { overwrite: false });
+  }
+
+  const pathnamesAfter = pathnamesBefore?.map((p) => p?.replace(sourcePathname, targetPathname));
+  pathnamesAfter?.forEach((_, index) => {
+    moveRequestUid(pathnamesBefore[index], pathnamesAfter[index]);
+  });
+
+  return targetPathname;
+};
 
 const addIndexedCollectionWatcherAfterIdle = (watcher, mainWindow, collectionPath, collectionUid, brunoConfig, useWorkerThread) => {
   setTimeout(() => {
@@ -1901,6 +2091,229 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
       // create folder and files based on another folder
       await parseCollectionItems(itemFolder.items, collectionPath);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
+
+  ipcMain.handle('renderer:clone-collection-item-by-path', async (event, { sourcePathname, collectionPathname, newName, newFilename }) => {
+    try {
+      const sourcePath = assertCollectionItemPath({ collectionPathname, itemPathname: sourcePathname });
+      const kind = getItemKindFromPath(sourcePath, collectionPathname);
+      const parentDirname = path.dirname(sourcePath);
+      assertPathInside(collectionPathname, parentDirname);
+
+      if (kind === 'folder') {
+        const targetPathname = path.join(parentDirname, sanitizeName(newFilename || newName));
+        assertPathInside(collectionPathname, targetPathname);
+        await cloneFolderByPath({
+          sourcePathname: sourcePath,
+          targetPathname,
+          newName,
+          collectionPathname
+        });
+        return {
+          pathname: targetPathname,
+          type: 'folder'
+        };
+      }
+
+      const format = getCollectionFormat(collectionPathname);
+      const targetFilename = getRequestFilenameForFormat(newFilename || newName, format);
+      const targetPathname = path.join(parentDirname, targetFilename);
+      assertPathInside(collectionPathname, targetPathname);
+      await cloneRequestByPath({
+        sourcePathname: sourcePath,
+        targetPathname,
+        newName,
+        collectionPathname
+      });
+      return {
+        pathname: targetPathname,
+        type: getRequestTypeFromPath(targetPathname, collectionPathname)
+      };
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
+
+  ipcMain.handle('renderer:new-collection-folder-by-path', async (event, { parentPathname, collectionPathname, folderName, directoryName }) => {
+    try {
+      const targetPathname = await createFolderByPath({
+        parentPathname,
+        collectionPathname,
+        folderName,
+        directoryName
+      });
+      return {
+        pathname: targetPathname,
+        type: 'folder'
+      };
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
+
+  ipcMain.handle('renderer:rename-collection-item-by-path', async (event, { sourcePathname, collectionPathname, newName, newFilename }) => {
+    try {
+      const oldPath = assertCollectionItemPath({ collectionPathname, itemPathname: sourcePathname });
+      const kind = getItemKindFromPath(oldPath, collectionPathname);
+
+      if (!newFilename) {
+        if (kind === 'folder') {
+          await updateFolderMeta({ folderPathname: oldPath, name: newName, collectionPathname });
+        } else {
+          const format = getCollectionFormat(collectionPathname);
+          const data = await fs.promises.readFile(oldPath, 'utf8');
+          const jsonData = parseRequest(data, { format });
+          jsonData.name = newName;
+          const content = await stringifyRequestViaWorker(jsonData, { format });
+          await writeFile(oldPath, content);
+        }
+        return {
+          pathname: oldPath,
+          type: kind === 'folder' ? 'folder' : getRequestTypeFromPath(oldPath, collectionPathname)
+        };
+      }
+
+      const format = getCollectionFormat(collectionPathname);
+      const targetBasename = kind === 'folder'
+        ? sanitizeName(newFilename)
+        : getRequestFilenameForFormat(newFilename, format);
+      const newPath = path.join(path.dirname(oldPath), targetBasename);
+      assertPathInside(collectionPathname, newPath);
+
+      if (!safeToRename(oldPath, newPath)) {
+        throw new Error(`path: ${newPath} already exists`);
+      }
+
+      if (kind === 'folder') {
+        await updateFolderMeta({ folderPathname: oldPath, name: newName, collectionPathname });
+        const requestFilesAtSource = await searchForRequestFiles(oldPath, collectionPathname);
+        requestFilesAtSource.forEach((requestFile) => {
+          const newRequestFilePath = requestFile.replace(oldPath, newPath);
+          moveRequestUid(requestFile, newRequestFilePath);
+        });
+        await fsExtra.move(oldPath, newPath, { overwrite: false });
+        return {
+          pathname: newPath,
+          type: 'folder'
+        };
+      }
+
+      const data = await fs.promises.readFile(oldPath, 'utf8');
+      const jsonData = parseRequest(data, { format });
+      jsonData.name = newName;
+      const content = await stringifyRequestViaWorker(jsonData, { format });
+      await writeFile(newPath, content);
+      await fs.promises.unlink(oldPath);
+      moveRequestUid(oldPath, newPath);
+      return {
+        pathname: newPath,
+        type: getRequestTypeFromPath(newPath, collectionPathname)
+      };
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
+
+  ipcMain.handle('renderer:delete-collection-item-by-path', async (event, { sourcePathname, collectionPathname, type }) => {
+    try {
+      const sourcePath = assertCollectionItemPath({ collectionPathname, itemPathname: sourcePathname });
+      const kind = type === 'folder' || isDirectory(sourcePath) ? 'folder' : 'request';
+
+      if (kind === 'folder') {
+        const requestFilesAtSource = await searchForRequestFiles(sourcePath, collectionPathname);
+        requestFilesAtSource.forEach((requestFile) => deleteRequestUid(requestFile));
+        await fsExtra.remove(sourcePath);
+        return {
+          pathname: sourcePath,
+          type: 'folder'
+        };
+      }
+
+      if (!fs.existsSync(sourcePath)) {
+        throw new Error('The file does not exist');
+      }
+      const requestType = getRequestTypeFromPath(sourcePath, collectionPathname);
+      deleteRequestUid(sourcePath);
+      await fs.promises.unlink(sourcePath);
+      return {
+        pathname: sourcePath,
+        type: requestType
+      };
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
+
+  ipcMain.handle('renderer:move-collection-item-by-path', async (event, {
+    sourcePathname,
+    targetPathname,
+    sourceCollectionPathname,
+    targetCollectionPathname,
+    dropType
+  }) => {
+    try {
+      const sourcePath = assertCollectionItemPath({ collectionPathname: sourceCollectionPathname, itemPathname: sourcePathname });
+      const targetPath = assertPathInside(targetCollectionPathname, targetPathname, 'Target path must stay inside the collection');
+      const sourceKind = getItemKindFromPath(sourcePath, sourceCollectionPathname);
+      const targetIsCollectionRoot = path.normalize(targetPath) === path.normalize(targetCollectionPathname);
+      const targetKind = targetIsCollectionRoot ? 'folder' : getItemKindFromPath(targetPath, targetCollectionPathname);
+
+      if (!dropType) {
+        throw new Error('Drop type is required');
+      }
+
+      let targetDirname = dropType === 'inside' && targetKind === 'folder'
+        ? targetPath
+        : path.dirname(targetPath);
+      assertPathInside(targetCollectionPathname, targetDirname);
+
+      const sourceFormat = getCollectionFormat(sourceCollectionPathname);
+      const targetFormat = getCollectionFormat(targetCollectionPathname);
+      const sourceBasename = path.basename(sourcePath);
+      const targetBasename = sourceKind === 'request' && sourceFormat !== targetFormat
+        ? getRequestFilenameForFormat(sourceBasename, targetFormat)
+        : sourceBasename;
+      const finalPathname = path.join(targetDirname, targetBasename);
+      assertPathInside(targetCollectionPathname, finalPathname);
+
+      if (path.normalize(finalPathname) === path.normalize(sourcePath)) {
+        return {
+          pathname: sourcePath,
+          type: sourceKind === 'folder' ? 'folder' : getRequestTypeFromPath(sourcePath, sourceCollectionPathname),
+          skipped: true
+        };
+      }
+
+      await moveItemByPath({
+        sourcePathname: sourcePath,
+        targetPathname: finalPathname,
+        sourceCollectionPathname,
+        targetCollectionPathname
+      });
+
+      return {
+        pathname: finalPathname,
+        type: sourceKind === 'folder' ? 'folder' : getRequestTypeFromPath(finalPathname, targetCollectionPathname)
+      };
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
+
+  ipcMain.handle('renderer:refresh-collection-index', async (event, { collectionUid, collectionPathname, brunoConfig, loadSessionId }) => {
+    try {
+      startCollectionIndex(mainWindow, {
+        collectionUid,
+        collectionPathname,
+        brunoConfig,
+        loadSessionId
+      });
+      return {
+        loadSessionId
+      };
     } catch (error) {
       return Promise.reject(error);
     }

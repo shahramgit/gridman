@@ -15,7 +15,7 @@ import { IconCaretDown } from '@tabler/icons';
 import StyledWrapper from './StyledWrapper';
 import Button from 'ui/Button';
 
-const NewFolder = ({ collectionUid, item, onClose }) => {
+const NewFolder = ({ collectionUid, item, onClose, onCreate }) => {
   const dispatch = useDispatch();
   const inputRef = useRef();
   const [isEditing, toggleEditing] = useState(false);
@@ -53,7 +53,11 @@ const NewFolder = ({ collectionUid, item, onClose }) => {
         })
     }),
     onSubmit: (values) => {
-      dispatch(newFolder(values.folderName, values.directoryName, collectionUid, item ? item.uid : null))
+      const createOperation = onCreate
+        ? onCreate({ folderName: values.folderName, directoryName: values.directoryName })
+        : dispatch(newFolder(values.folderName, values.directoryName, collectionUid, item ? item.uid : null));
+
+      Promise.resolve(createOperation)
         .then(() => {
           toast.success('New folder created!');
           onClose();

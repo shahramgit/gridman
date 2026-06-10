@@ -62,7 +62,8 @@ import {
   updateCollectionVar,
   addTransientDirectory,
   addSaveTransientRequestModal,
-  updatePathParam
+  updatePathParam,
+  collectionIndexNodeMoved
 } from './index';
 
 import { each } from 'lodash';
@@ -889,6 +890,24 @@ export const newFolder = (folderName, directoryName, collectionUid, itemUid) => 
   });
 };
 
+export const newFolderByPath = ({ collectionUid, parentPathname, folderName, directoryName }) => async (dispatch, getState) => {
+  const state = getState();
+  const collection = findCollectionByUid(state.collections.collections, collectionUid);
+
+  if (!collection) {
+    throw new Error('Collection not found');
+  }
+
+  const result = await callIpc('renderer:new-collection-folder-by-path', {
+    parentPathname: parentPathname || collection.pathname,
+    collectionPathname: collection.pathname,
+    folderName,
+    directoryName
+  });
+  await dispatch(refreshCollectionIndex({ collectionUid }));
+  return result;
+};
+
 export const renameItem
   = ({ newName, newFilename, itemUid, collectionUid }) =>
     (dispatch, getState) => {
@@ -1055,6 +1074,75 @@ export const cloneItem = (newName, newFilename, itemUid, collectionUid) => (disp
   });
 };
 
+export const refreshCollectionIndex = ({ collectionUid }) => (dispatch, getState) => {
+  const state = getState();
+  const collection = findCollectionByUid(state.collections.collections, collectionUid);
+
+  if (!collection) {
+    return Promise.reject(new Error('Collection not found'));
+  }
+
+  return callIpc('renderer:refresh-collection-index', {
+    collectionUid,
+    collectionPathname: collection.pathname,
+    brunoConfig: collection.brunoConfig,
+    loadSessionId: uuid()
+  });
+};
+
+export const cloneCollectionItemByPath = ({ collectionUid, sourcePathname, newName, newFilename }) => async (dispatch, getState) => {
+  const state = getState();
+  const collection = findCollectionByUid(state.collections.collections, collectionUid);
+
+  if (!collection) {
+    throw new Error('Collection not found');
+  }
+
+  const result = await callIpc('renderer:clone-collection-item-by-path', {
+    sourcePathname,
+    collectionPathname: collection.pathname,
+    newName,
+    newFilename
+  });
+  await dispatch(refreshCollectionIndex({ collectionUid }));
+  return result;
+};
+
+export const renameCollectionItemByPath = ({ collectionUid, sourcePathname, newName, newFilename }) => async (dispatch, getState) => {
+  const state = getState();
+  const collection = findCollectionByUid(state.collections.collections, collectionUid);
+
+  if (!collection) {
+    throw new Error('Collection not found');
+  }
+
+  const result = await callIpc('renderer:rename-collection-item-by-path', {
+    sourcePathname,
+    collectionPathname: collection.pathname,
+    newName,
+    newFilename
+  });
+  await dispatch(refreshCollectionIndex({ collectionUid }));
+  return result;
+};
+
+export const deleteCollectionItemByPath = ({ collectionUid, sourcePathname, type }) => async (dispatch, getState) => {
+  const state = getState();
+  const collection = findCollectionByUid(state.collections.collections, collectionUid);
+
+  if (!collection) {
+    throw new Error('Collection not found');
+  }
+
+  const result = await callIpc('renderer:delete-collection-item-by-path', {
+    sourcePathname,
+    collectionPathname: collection.pathname,
+    type
+  });
+  await dispatch(refreshCollectionIndex({ collectionUid }));
+  return result;
+};
+
 export const pasteItem = (targetCollectionUid, targetItemUid = null) => (dispatch, getState) => {
   const state = getState();
 
@@ -1177,6 +1265,51 @@ export const deleteItem = (itemUid, collectionUid) => (dispatch, getState) => {
       return reject(new Error('Unable to locate item'));
     }
   });
+};
+
+export const moveCollectionItemByPath = ({
+  sourceCollectionUid,
+  targetCollectionUid,
+  sourcePathname,
+  targetPathname,
+  dropType
+}) => async (dispatch, getState) => {
+  const state = getState();
+  const sourceCollection = findCollectionByUid(state.collections.collections, sourceCollectionUid);
+  const targetCollection = findCollectionByUid(state.collections.collections, targetCollectionUid);
+  const shouldRefreshSourceIndex = Boolean(state.collections.collectionIndexes?.[sourceCollectionUid]);
+  const shouldRefreshTargetIndex = Boolean(state.collections.collectionIndexes?.[targetCollectionUid]);
+
+  if (!sourceCollection) {
+    throw new Error('Source collection not found');
+  }
+
+  if (!targetCollection) {
+    throw new Error('Target collection not found');
+  }
+
+  const result = await callIpc('renderer:move-collection-item-by-path', {
+    sourcePathname,
+    targetPathname,
+    sourceCollectionPathname: sourceCollection.pathname,
+    targetCollectionPathname: targetCollection.pathname,
+    dropType
+  });
+
+  if (sourceCollectionUid === targetCollectionUid && shouldRefreshTargetIndex && result?.pathname && !result?.skipped) {
+    dispatch(collectionIndexNodeMoved({
+      collectionUid: targetCollectionUid,
+      sourcePathname,
+      targetPathname: result.pathname
+    }));
+  } else if (shouldRefreshTargetIndex) {
+    await dispatch(refreshCollectionIndex({ collectionUid: targetCollectionUid }));
+  }
+  if (sourceCollectionUid !== targetCollectionUid && shouldRefreshSourceIndex) {
+    await dispatch(refreshCollectionIndex({ collectionUid: sourceCollectionUid }));
+  }
+
+  return result;
 };
 
 export const sortCollections = (payload) => (dispatch) => {

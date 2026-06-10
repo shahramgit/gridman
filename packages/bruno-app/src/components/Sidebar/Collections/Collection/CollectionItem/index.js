@@ -22,7 +22,14 @@ import {
 } from '@tabler/icons';
 import { useSelector, useDispatch } from 'react-redux';
 import { addTab, focusTab, makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
-import { handleCollectionItemDrop, sendRequest, showInFolder, pasteItem, saveRequest } from 'providers/ReduxStore/slices/collections/actions';
+import {
+  handleCollectionItemDrop,
+  moveCollectionItemByPath,
+  sendRequest,
+  showInFolder,
+  pasteItem,
+  saveRequest
+} from 'providers/ReduxStore/slices/collections/actions';
 import { toggleCollectionItem, addResponseExample } from 'providers/ReduxStore/slices/collections';
 import { insertTaskIntoQueue } from 'providers/ReduxStore/slices/app';
 import { uuid } from 'utils/common';
@@ -162,12 +169,19 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
   const canItemBeDropped = ({ draggedItem, targetItem, dropType }) => {
     const { uid: targetItemUid, pathname: targetItemPathname } = targetItem;
     const { uid: draggedItemUid, pathname: draggedItemPathname, sourceCollectionUid } = draggedItem;
+    const sourcePathname = draggedItem.sourcePathname || draggedItemPathname;
 
     if (draggedItemUid === targetItemUid) return false;
 
     // For cross-collection moves, we allow the drop
     if (sourceCollectionUid !== collectionUid) {
       return true;
+    }
+
+    if (draggedItem.sourcePathname) {
+      const normalizedTarget = String(targetItemPathname || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      const normalizedSource = String(sourcePathname || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      return normalizedTarget !== normalizedSource && !normalizedTarget.startsWith(`${normalizedSource}/`);
     }
 
     const newPathname = calculateDraggedItemNewPathname({ draggedItem, targetItem, dropType, collectionPathname });
@@ -201,7 +215,21 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
       const dropType = determineDropType(monitor);
       if (!dropType) return;
 
-      await dispatch(handleCollectionItemDrop({ targetItem: item, draggedItem, dropType, collectionUid }));
+      try {
+        if (draggedItem.sourcePathname) {
+          await dispatch(moveCollectionItemByPath({
+            sourceCollectionUid: draggedItem.sourceCollectionUid || collectionUid,
+            targetCollectionUid: collectionUid,
+            sourcePathname: draggedItem.sourcePathname,
+            targetPathname: item.pathname,
+            dropType
+          }));
+        } else {
+          await dispatch(handleCollectionItemDrop({ targetItem: item, draggedItem, dropType, collectionUid }));
+        }
+      } catch (error) {
+        toast.error(error?.message || 'Unable to move item');
+      }
       setDropType(null);
     },
     canDrop: (draggedItem) => draggedItem.uid !== item.uid,
