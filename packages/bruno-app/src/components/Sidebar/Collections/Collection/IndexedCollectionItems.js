@@ -20,8 +20,8 @@ import {
 import { useDispatch, useSelector, useStore } from 'react-redux';
 import { getEmptyImage } from 'react-dnd-html5-backend';
 import { useDrag, useDrop } from 'react-dnd';
-import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
-import { collectionIndexNodeActivated } from 'providers/ReduxStore/slices/collections';
+import { addTab, focusTab, makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
+import { addResponseExample, collectionIndexNodeActivated, collectionIndexNodesResequenced } from 'providers/ReduxStore/slices/collections';
 import {
   cloneCollectionItemByPath,
   deleteCollectionItemByPath,
@@ -30,9 +30,12 @@ import {
   newFolderByPath,
   pasteItem,
   renameCollectionItemByPath,
-  showInFolder
+  saveRequest,
+  sendRequest,
+  showInFolder,
+  updateItemsSequences
 } from 'providers/ReduxStore/slices/collections/actions';
-import { copyRequest } from 'providers/ReduxStore/slices/app';
+import { copyRequest, insertTaskIntoQueue } from 'providers/ReduxStore/slices/app';
 import SearchHighlight from '../SearchHighlight';
 import CollectionItemIcon from './CollectionItem/CollectionItemIcon';
 import StyledWrapper from './CollectionItem/StyledWrapper';
@@ -42,8 +45,15 @@ import DeleteCollectionItem from './CollectionItem/DeleteCollectionItem';
 import RunCollectionItem from './CollectionItem/RunCollectionItem';
 import GenerateCodeItem from './CollectionItem/GenerateCodeItem';
 import CollectionItemInfo from './CollectionItem/CollectionItemInfo';
-import { getDefaultRequestPaneTab } from 'utils/collections';
+import { getDefaultRequestPaneTab, getInitialExampleName } from 'utils/collections';
 import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname } from 'utils/collections';
+import { uuid } from 'utils/common';
+import { sortByNameThenSequence } from 'utils/common/index';
+import { scrollToTheActiveTab } from 'utils/tabs';
+import ExampleItem from './CollectionItem/ExampleItem';
+import ExampleIcon from 'components/Icons/ExampleIcon';
+import CreateExampleModal from 'components/ResponseExample/CreateExampleModal';
+import NetworkError from 'components/ResponsePane/NetworkError/index';
 import { isEqual } from 'lodash';
 import NewRequest from 'components/Sidebar/NewRequest';
 import NewFolder from 'components/Sidebar/NewFolder';
@@ -58,13 +68,12 @@ const ROW_HEIGHT = 28;
 const MAX_LIST_HEIGHT = 520;
 
 const sortNodes = (nodes = []) => {
-  return [...nodes].sort((a, b) => {
-    const aFolder = a.type === 'folder' ? 0 : 1;
-    const bFolder = b.type === 'folder' ? 0 : 1;
-    if (aFolder !== bFolder) {
-      return aFolder - bFolder;
-    }
+  // Match the classic renderer's ordering: folders first using
+  // sortByNameThenSequence semantics, then requests by sequence.
+  const folders = nodes.filter((node) => node.type === 'folder');
+  const requests = nodes.filter((node) => node.type !== 'folder');
 
+  const sortedRequests = [...requests].sort((a, b) => {
     const aSeq = Number.isFinite(a.seq) ? a.seq : Number.MAX_SAFE_INTEGER;
     const bSeq = Number.isFinite(b.seq) ? b.seq : Number.MAX_SAFE_INTEGER;
     if (aSeq !== bSeq) {
@@ -73,6 +82,8 @@ const sortNodes = (nodes = []) => {
 
     return (a.name || '').localeCompare(b.name || '');
   });
+
+  return [...sortByNameThenSequence(folders), ...sortedRequests];
 };
 
 const nodeMatchesSearch = (node, searchText) => {
@@ -183,6 +194,8 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
   const isFolder = !isRequest;
   const isExpanded = expandedNodeUids.has(node.uid);
   const [renameItemModalOpen, setRenameItemModalOpen] = useState(false);
+  const [createExampleModalOpen, setCreateExampleModalOpen] = useState(false);
+  const [examplesExpanded, setExamplesExpanded] = useState(false);
   const [cloneItemModalOpen, setCloneItemModalOpen] = useState(false);
   const [deleteItemModalOpen, setDeleteItemModalOpen] = useState(false);
   const [newRequestModalOpen, setNewRequestModalOpen] = useState(false);
@@ -223,7 +236,6 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
       url: node.url || ''
     }
   };
-  const hasHydratedChildren = Boolean(item?.items?.length);
   const getActionCompatibleItem = () => {
     const hydratedItem = item || displayItem;
 
@@ -237,6 +249,9 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
   };
   const actionItem = getActionCompatibleItem();
   const displayDepth = getIndexedNodeDisplayDepth(index, node);
+  const hasExamples = isRequest
+    && normalizeRequestType(node.type) === 'http-request'
+    && Boolean(item?.examples?.length);
 
   const openRequest = () => {
     // The request panel renders indexed tabs from loadedRequestsByPath, so a
@@ -349,6 +364,160 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     return getActionCompatibleItem();
   };
 
+  const isItemRequestReady = (candidate) => Boolean(
+    candidate?.request
+    && !candidate.partial
+    && !candidate.loading
+    && !candidate.gridmanIndexOnly
+    && !candidate.request?.gridmanIndexOnly
+  );
+
+  const getFreshTreeItem = (pathname = node.pathname) => {
+    const collections = store.getState().collections.collections;
+    const freshCollection = collections?.find((c) => c.uid === collectionUid);
+    return freshCollection ? findItemInCollectionByPathname(freshCollection, pathname) : null;
+  };
+
+  // Load the request file from disk if needed and return the hydrated tree item.
+  const hydrateRequestItem = async () => {
+    activateNodeChain(node);
+    const treeItem = getFreshTreeItem();
+    if (isItemRequestReady(treeItem)) {
+      return treeItem;
+    }
+
+    await dispatch(loadRequest({ collectionUid, pathname: node.pathname }));
+    return getFreshTreeItem();
+  };
+
+  const handleRunRequest = async () => {
+    try {
+      const runItem = await hydrateRequestItem();
+      if (!runItem) {
+        toast.error('Unable to load request');
+        return;
+      }
+
+      dispatch(sendRequest(runItem, collectionUid)).catch(() =>
+        toast.custom((t) => <NetworkError onClose={() => toast.dismiss(t.id)} />, {
+          duration: 5000
+        }));
+    } catch (error) {
+      toast.error(error?.message || 'Unable to run request');
+    }
+  };
+
+  const openCreateExampleModal = async () => {
+    try {
+      const treeItem = await hydrateRequestItem();
+      if (!treeItem) {
+        toast.error('Unable to load request');
+        return;
+      }
+      setCreateExampleModalOpen(true);
+    } catch (error) {
+      toast.error(error?.message || 'Unable to load request');
+    }
+  };
+
+  const handleCreateExample = async (name, description = '') => {
+    const treeItem = getFreshTreeItem();
+    if (!treeItem) {
+      toast.error('Unable to locate request');
+      return;
+    }
+
+    const exampleData = {
+      name,
+      description,
+      status: 200,
+      statusText: 'OK',
+      headers: [],
+      body: {
+        type: 'text',
+        content: ''
+      }
+    };
+
+    const existingExamples = treeItem.draft?.examples || treeItem.examples || [];
+    const exampleIndex = existingExamples.length;
+    const exampleUid = uuid();
+
+    dispatch(addResponseExample({
+      itemUid: treeItem.uid,
+      collectionUid,
+      example: {
+        ...exampleData,
+        uid: exampleUid
+      }
+    }));
+
+    await dispatch(saveRequest(treeItem.uid, collectionUid, true));
+
+    // Task middleware opens the example in a new tab once the file reloads
+    dispatch(insertTaskIntoQueue({
+      uid: exampleUid,
+      type: 'OPEN_EXAMPLE',
+      collectionUid,
+      itemUid: treeItem.uid,
+      exampleIndex
+    }));
+
+    toast.success(`Example "${name}" created successfully`);
+    setCreateExampleModalOpen(false);
+  };
+
+  // The collection runner executes the request objects the renderer sends,
+  // so every request under the folder must be hydrated before running.
+  const hydrateFolderSubtree = async () => {
+    const freshIndex = store.getState().collections.collectionIndexes?.[collectionUid];
+    const subtreeNodes = Object.values(freshIndex?.nodesByUid || {})
+      .filter((candidate) => isSameOrDescendantPath(candidate.pathname, node.pathname))
+      .sort((a, b) => (a.depth || 0) - (b.depth || 0));
+
+    for (const subtreeNode of subtreeNodes) {
+      dispatch(collectionIndexNodeActivated({ collectionUid, node: subtreeNode }));
+    }
+
+    const pendingPathnames = [];
+    for (const subtreeNode of subtreeNodes) {
+      if (subtreeNode.type === 'folder') {
+        continue;
+      }
+      const treeItem = getFreshTreeItem(subtreeNode.pathname);
+      if (!isItemRequestReady(treeItem)) {
+        pendingPathnames.push(subtreeNode.pathname);
+      }
+    }
+
+    const CONCURRENCY = 8;
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(CONCURRENCY, pendingPathnames.length) }, async () => {
+      while (cursor < pendingPathnames.length) {
+        const pathname = pendingPathnames[cursor];
+        cursor += 1;
+        try {
+          await dispatch(loadRequest({ collectionUid, pathname }));
+        } catch (error) {
+          console.warn('Failed to load request for folder run', pathname, error);
+        }
+      }
+    });
+    await Promise.all(workers);
+  };
+
+  const handleFolderRun = async () => {
+    const toastId = toast.loading('Preparing folder run...');
+    try {
+      await hydrateFolderSubtree();
+      toast.dismiss(toastId);
+      setRunCollectionModalOpen(true);
+    } catch (error) {
+      toast.dismiss(toastId);
+      toast.error(error?.message || 'Unable to prepare folder run');
+    }
+  };
+
   const handleCopyItem = () => {
     const hydratedItem = ensureNodeHydrated();
     dispatch(copyRequest(hydratedItem));
@@ -443,9 +612,7 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
           id: 'run',
           leftSection: IconPlayerPlay,
           label: 'Run',
-          disabled: !hasHydratedChildren,
-          title: hasHydratedChildren ? 'Run this folder' : 'Run is available after this folder has loaded child request data',
-          onClick: () => openModalAfterHydration(setRunCollectionModalOpen)
+          onClick: handleFolderRun
         }
       );
     }
@@ -481,12 +648,30 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
       onClick: () => openPathModal(setRenameItemModalOpen)
     });
 
+    if (!isFolder && !['http-request', 'graphql-request'].includes(normalizeRequestType(node.type))) {
+      items.push({
+        id: 'run',
+        leftSection: IconPlayerPlay,
+        label: 'Run',
+        onClick: handleRunRequest
+      });
+    }
+
     if (!isFolder && ['http-request', 'graphql-request', 'http', 'graphql'].includes(actionItem.type)) {
       items.push({
         id: 'generate-code',
         leftSection: IconCode,
         label: 'Generate Code',
         onClick: handleGenerateCode
+      });
+    }
+
+    if (!isFolder && normalizeRequestType(node.type) === 'http-request') {
+      items.push({
+        id: 'create-example',
+        leftSection: ExampleIcon,
+        label: 'Create Example',
+        onClick: openCreateExampleModal
       });
     }
 
@@ -597,6 +782,47 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     return true;
   };
 
+  // After an adjacent drop, persist sibling order the way the classic
+  // renderer does. Computed purely from index nodes (pathname + seq), so no
+  // hydration is needed; folder moves trigger a full re-index and are skipped.
+  const resequenceAfterAdjacentDrop = async ({ movedPathname }) => {
+    const freshIndex = store.getState().collections.collectionIndexes?.[collectionUid];
+    if (!freshIndex || !movedPathname) {
+      return;
+    }
+
+    const normalizedMoved = normalizeForPathCompare(movedPathname);
+    const movedNode = Object.values(freshIndex.nodesByUid || {})
+      .find((candidate) => normalizeForPathCompare(candidate.pathname) === normalizedMoved);
+    if (!movedNode) {
+      return;
+    }
+
+    const parentKey = node.parentUid || 'root';
+    const siblingNodes = (freshIndex.childrenByParentUid?.[parentKey] || [])
+      .map((uid) => freshIndex.nodesByUid[uid])
+      .filter(Boolean)
+      .filter((candidate) => (candidate.type === 'folder') === (movedNode.type === 'folder'));
+
+    if (!siblingNodes.some((candidate) => candidate.uid === movedNode.uid)) {
+      return;
+    }
+
+    const ordered = sortNodes(siblingNodes).filter((candidate) => candidate.uid !== movedNode.uid);
+    const targetPosition = ordered.findIndex((candidate) => candidate.uid === node.uid);
+    const insertAt = targetPosition === -1 ? ordered.length : targetPosition;
+    ordered.splice(insertAt, 0, movedNode);
+
+    const itemsToResequence = ordered.map((candidate, position) => ({
+      pathname: candidate.pathname,
+      type: candidate.type === 'folder' ? 'folder' : normalizeRequestType(candidate.type),
+      seq: position + 1
+    }));
+
+    dispatch(collectionIndexNodesResequenced({ collectionUid, itemsToResequence }));
+    await dispatch(updateItemsSequences({ itemsToResequence, collectionUid }));
+  };
+
   const [{ isOver, canDrop }, drop] = useDrop({
     accept: 'collection-item',
     hover: (draggedItem, monitor) => {
@@ -615,13 +841,17 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
       }
 
       try {
-        await dispatch(moveCollectionItemByPath({
+        const result = await dispatch(moveCollectionItemByPath({
           sourceCollectionUid: draggedItem.sourceCollectionUid || collectionUid,
           targetCollectionUid: collectionUid,
           sourcePathname: draggedItem.sourcePathname || draggedItem.pathname,
           targetPathname: node.pathname,
           dropType: nextDropType
         }));
+
+        if (nextDropType === 'adjacent' && result?.pathname && !result?.skipped) {
+          await resequenceAfterAdjacentDrop({ movedPathname: result.pathname });
+        }
       } catch (error) {
         toast.error(error?.message || 'Unable to move item');
       } finally {
@@ -635,13 +865,30 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     })
   });
 
-  const handleClick = () => {
+  const handleClick = (event) => {
+    if (event && event.detail !== 1) {
+      return;
+    }
+    setTimeout(scrollToTheActiveTab, 50);
+
     if (isRequest) {
       openRequest();
       return;
     }
 
     onToggleFolder(node.uid);
+  };
+
+  const handleDoubleClick = () => {
+    if (isRequest) {
+      dispatch(makeTabPermanent({ uid: node.uid }));
+    }
+  };
+
+  const handleExamplesCollapse = (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+    setExamplesExpanded((current) => !current);
   };
 
   const handleContextMenu = (event) => {
@@ -715,6 +962,15 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
       {itemInfoModalOpen && (
         <CollectionItemInfo item={actionItem} onClose={() => setItemInfoModalOpen(false)} />
       )}
+      {!isFolder && createExampleModalOpen && (
+        <CreateExampleModal
+          isOpen={createExampleModalOpen}
+          onClose={() => setCreateExampleModalOpen(false)}
+          onSave={handleCreateExample}
+          title="Create Response Example"
+          initialName={getInitialExampleName(item || displayItem)}
+        />
+      )}
       <div
         ref={(element) => {
           rowRef.current = element;
@@ -749,6 +1005,7 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
             className="flex flex-grow items-center h-full overflow-hidden"
             style={{ paddingLeft: 8 }}
             onClick={handleClick}
+            onDoubleClick={handleDoubleClick}
           >
             {node.type === 'folder' ? (
               <ActionIcon style={{ width: 16, minWidth: 16 }}>
@@ -757,6 +1014,21 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
                   strokeWidth={2}
                   className={classnames('chevron-icon', { 'rotate-90': isExpanded })}
                   style={{ color: 'rgb(160 160 160)' }}
+                />
+              </ActionIcon>
+            ) : hasExamples ? (
+              <ActionIcon style={{ width: 16, minWidth: 16 }}>
+                <IconChevronRight
+                  size={16}
+                  strokeWidth={2}
+                  className={classnames('chevron-icon', { 'rotate-90': examplesExpanded })}
+                  style={{ color: 'rgb(160 160 160)' }}
+                  onClick={handleExamplesCollapse}
+                  onDoubleClick={(event) => {
+                    event.stopPropagation();
+                    event.preventDefault();
+                  }}
+                  data-testid="request-item-chevron"
                 />
               </ActionIcon>
             ) : null}
@@ -790,6 +1062,19 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
           </MenuDropdown>
         </div>
       </div>
+      {hasExamples && examplesExpanded && item ? (
+        <div>
+          {(item.examples || []).map((example, exampleIndex) => (
+            <ExampleItem
+              key={example.uid || exampleIndex}
+              example={example}
+              item={item}
+              index={exampleIndex}
+              collection={collection}
+            />
+          ))}
+        </div>
+      ) : null}
     </StyledWrapper>
   );
 };

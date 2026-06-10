@@ -3376,6 +3376,26 @@ export const collectionsSlice = createSlice({
     collectionIndexNodeCloned: (state, action) => {
       addCollectionIndexSubtreeByPathname(state, action.payload);
     },
+    collectionIndexNodesResequenced: (state, action) => {
+      const { collectionUid, itemsToResequence = [] } = action.payload;
+      const index = state.collectionIndexes?.[collectionUid];
+      if (!index) {
+        return;
+      }
+
+      for (const { pathname, seq } of itemsToResequence) {
+        const node = findIndexNodeByPathname(index, pathname);
+        if (node) {
+          node.seq = seq;
+        }
+
+        const collection = findCollectionByUid(state.collections, collectionUid);
+        const item = collection ? findItemInCollectionByPathname(collection, pathname) : null;
+        if (item) {
+          item.seq = seq;
+        }
+      }
+    },
     collectionIndexNodeRemoved: (state, action) => {
       const { collectionUid, sourcePathname } = action.payload;
       removeLoadedRequestsByPathname(state, collectionUid, sourcePathname, { recursive: true });
@@ -4372,6 +4392,7 @@ export const {
   collectionIndexNodeActivated,
   collectionIndexNodeMoved,
   collectionIndexNodeCloned,
+  collectionIndexNodesResequenced,
   collectionIndexNodeRemoved,
   collectionIndexReady,
   collectionIndexFailed,
