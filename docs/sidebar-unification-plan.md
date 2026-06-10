@@ -1,6 +1,26 @@
 # Sidebar Renderer Unification Plan
 
-Status: approved direction, not started. Written 2026-06-10.
+Status: Phase 1 implemented (commit `2c506fec7`, 2026-06-10), awaiting manual
+smoke test. Phases 2 and 3 not started. Written 2026-06-10.
+
+## Progress
+
+- [x] Phase 1: feature parity in IndexedCollectionItems
+      (`2c506fec7 feat(collections): close indexed sidebar feature gaps`)
+      - request-level Run (non-http types) with hydrate-on-demand
+      - Create Example + response examples as expandable child rows
+      - folder Run hydrates the subtree via a concurrency-8 loadRequest pool
+      - adjacent drops persist sibling seq (computed from index nodes,
+        written via renderer:resequence-items, synced by new
+        collectionIndexNodesResequenced reducer)
+      - click parity (multi-click guard, scroll-to-active-tab, double-click
+        makeTabPermanent) and classic-matching sort order
+      - pending: manual smoke on the large `002 (g_sabteahval)` collection
+- [ ] Phase 2: one pipeline for all collections
+- [ ] Phase 3: delete the classic render path
+
+Recommended implementer: Phase 2 with Opus-class model using this doc as the
+brief; Phase 3 is mechanical (Sonnet-class is fine).
 
 ## Problem
 
@@ -34,7 +54,7 @@ rendering for large collections.
 6. Sort logic differs slightly (indexed: folders-first -> seq -> name;
    classic: folder block + request block by seq).
 
-## Phase 1: feature parity in IndexedCollectionItems (safe, shippable alone)
+## Phase 1: feature parity in IndexedCollectionItems (DONE, see Progress)
 
 Both renderers stay; small collections untouched. All work in
 `IndexedCollectionItems.js` plus small shared helpers.
