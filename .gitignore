@@ -12,6 +12,7 @@ bun.lock
 
 # testing
 coverage
+postman
 
 # production
 build

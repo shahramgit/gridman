@@ -19,6 +19,28 @@ const tabTypeAlreadyExists = (tabs, collectionUid, type) => {
   return find(tabs, (tab) => tab.collectionUid === collectionUid && tab.type === type);
 };
 
+// Pane components historically key tab updates by the request item uid,
+// relying on tab.uid === item.uid. Indexed request tabs use synthetic
+// `indexed-request:` uids, so fall back to matching the tab's itemUid
+// (preferring the active tab) when no tab uid matches directly.
+const findTabForUpdate = (state, uid) => {
+  const tab = find(state.tabs, (t) => t.uid === uid);
+  if (tab || !uid) {
+    return tab;
+  }
+
+  const matches = filter(state.tabs, (t) => t.itemUid === uid);
+  return find(matches, (t) => t.uid === state.activeTabUid) || matches[0];
+};
+
+const debugTabEvent = (label, payload) => {
+  try {
+    window.ipcRenderer?.send?.('renderer:debug-log-event', label, payload);
+  } catch (error) {
+    // Reducers must stay side-effect tolerant for tests/non-Electron contexts.
+  }
+};
+
 export const tabsSlice = createSlice({
   name: 'tabs',
   initialState,
@@ -41,6 +63,14 @@ export const tabsSlice = createSlice({
 
       const existingTab = find(state.tabs, (tab) => tab.uid === uid);
       if (existingTab) {
+        debugTabEvent('[gridman:tabs] add-existing-tab-focus', {
+          uid,
+          collectionUid,
+          type,
+          itemUid,
+          itemPathname,
+          previousActiveTabUid: state.activeTabUid
+        });
         state.activeTabUid = existingTab.uid;
         return;
       }
@@ -121,11 +151,24 @@ export const tabsSlice = createSlice({
         ...(itemPathname ? { itemPathname } : {}),
         ...(isTransient ? { isTransient: true } : {})
       });
+      debugTabEvent('[gridman:tabs] add-new-tab', {
+        uid,
+        collectionUid,
+        type,
+        itemUid,
+        itemPathname,
+        previousActiveTabUid: state.activeTabUid
+      });
       state.activeTabUid = uid;
     },
     focusTab: (state, action) => {
       const { uid } = action.payload;
       const tabExists = state.tabs.some((t) => t.uid === uid);
+      debugTabEvent('[gridman:tabs] focus-tab', {
+        uid,
+        tabExists,
+        previousActiveTabUid: state.activeTabUid
+      });
       if (tabExists) {
         state.activeTabUid = uid;
       }
@@ -151,84 +194,84 @@ export const tabsSlice = createSlice({
       state.activeTabUid = state.tabs[toBeActivatedTabIndex].uid;
     },
     updateRequestPaneTabWidth: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.requestPaneWidth = action.payload.requestPaneWidth;
       }
     },
     updateRequestPaneTabHeight: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.requestPaneHeight = action.payload.requestPaneHeight;
       }
     },
     updateApiSpecTabLeftPaneWidth: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.apiSpecLeftPaneWidth = action.payload.apiSpecLeftPaneWidth;
       }
     },
     updateRequestPaneTab: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.requestPaneTab = action.payload.requestPaneTab;
       }
     },
     updateResponsePaneTab: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.responsePaneTab = action.payload.responsePaneTab;
       }
     },
     updateResponseFormat: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.responseFormat = action.payload.responseFormat;
       }
     },
     updateResponseViewTab: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.responseViewTab = action.payload.responseViewTab;
       }
     },
     updateResponseFilter: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.responseFilter = action.payload.responseFilter;
       }
     },
     updateResponseFilterExpanded: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.responseFilterExpanded = action.payload.responseFilterExpanded;
       }
     },
     updateDocsEditing: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.docsEditing = action.payload.docsEditing;
       }
     },
     updateGqlDocsOpen: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.gqlDocsOpen = action.payload.gqlDocsOpen;
       }
     },
     updateTableColumnWidths: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         if (!tab.tableColumnWidths) {
@@ -238,35 +281,35 @@ export const tabsSlice = createSlice({
       }
     },
     updateScriptPaneTab: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.scriptPaneTab = action.payload.scriptPaneTab;
       }
     },
     updateQueryBuilderOpen: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.queryBuilderOpen = action.payload.queryBuilderOpen;
       }
     },
     updateQueryBuilderWidth: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.queryBuilderWidth = action.payload.queryBuilderWidth;
       }
     },
     updateVariablesPaneOpen: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.variablesPaneOpen = action.payload.variablesPaneOpen;
       }
     },
     updateVariablesPaneHeight: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
 
       if (tab) {
         tab.variablesPaneHeight = action.payload.variablesPaneHeight;
@@ -335,7 +378,7 @@ export const tabsSlice = createSlice({
     },
     makeTabPermanent: (state, action) => {
       const { uid } = action.payload;
-      const tab = find(state.tabs, (t) => t.uid === uid);
+      const tab = findTabForUpdate(state, uid);
       if (tab) {
         tab.preview = false;
       } else {
@@ -343,7 +386,7 @@ export const tabsSlice = createSlice({
       }
     },
     collapseRequestPane: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
       if (tab) {
         tab.requestPaneCollapsed = true;
         tab.responsePaneCollapsed = false;
@@ -352,14 +395,14 @@ export const tabsSlice = createSlice({
       }
     },
     collapseResponsePane: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
       if (tab) {
         tab.responsePaneCollapsed = true;
         tab.requestPaneCollapsed = false;
       }
     },
     expandRequestPane: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
       if (tab) {
         tab.requestPaneCollapsed = false;
         if (tab.requestPaneWidthBeforeCollapse != null) {
@@ -373,7 +416,7 @@ export const tabsSlice = createSlice({
       }
     },
     expandResponsePane: (state, action) => {
-      const tab = find(state.tabs, (t) => t.uid === action.payload.uid);
+      const tab = findTabForUpdate(state, action.payload.uid);
       if (tab) {
         tab.responsePaneCollapsed = false;
       }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import find from 'lodash/find';
 import toast from 'react-hot-toast';
 import { useSelector, useDispatch } from 'react-redux';
@@ -7,7 +7,7 @@ import HttpRequestPane from 'components/RequestPane/HttpRequestPane';
 import GrpcRequestPane from 'components/RequestPane/GrpcRequestPane/index';
 import ResponsePane from 'components/ResponsePane';
 import GrpcResponsePane from 'components/ResponsePane/GrpcResponsePane';
-import { findItemInCollection, findItemInCollectionByPathname } from 'utils/collections';
+import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname } from 'utils/collections';
 import { sendRequest } from 'providers/ReduxStore/slices/collections/actions';
 import { updateGqlDocsOpen } from 'providers/ReduxStore/slices/tabs';
 import RequestNotFound from './RequestNotFound';
@@ -22,7 +22,6 @@ import { DocExplorer } from '@usebruno/graphql-docs';
 import StyledWrapper from './StyledWrapper';
 import FolderSettings from 'components/FolderSettings';
 import { getGlobalEnvironmentVariables, getGlobalEnvironmentVariablesMasked } from 'utils/collections/index';
-import { produce } from 'immer';
 import CollectionOverview from 'components/CollectionSettings/Overview';
 import RequestNotLoaded from './RequestNotLoaded';
 import RequestIsLoading from './RequestIsLoading';
@@ -51,6 +50,45 @@ const MIN_BOTTOM_PANE_HEIGHT = 150;
 const COLLAPSE_EDGE_THRESHOLD = 80;
 const EXPAND_EDGE_THRESHOLD = 100;
 
+const sendDebugLog = (label, payload) => {
+  try {
+    window.ipcRenderer?.send?.('renderer:debug-log-event', label, payload);
+  } catch (error) {
+    console.warn(label, payload);
+  }
+};
+
+let lastRenderEditorKey = null;
+
+const normalizePathnameForCompare = (pathname) => String(pathname || '').normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
+
+const findItemByPathWalk = (collection, pathname) => {
+  if (!collection?.items?.length || !pathname) {
+    return null;
+  }
+
+  const targetPathname = normalizePathnameForCompare(pathname);
+
+  const walk = (items = []) => {
+    for (const item of items) {
+      if (normalizePathnameForCompare(item.pathname) === targetPathname) {
+        return item;
+      }
+
+      if (item.items?.length) {
+        const nested = walk(item.items);
+        if (nested) {
+          return nested;
+        }
+      }
+    }
+
+    return null;
+  };
+
+  return walk(collection.items);
+};
+
 const RequestTabPanel = () => {
   const dispatch = useDispatch();
   const tabs = useSelector((state) => state.tabs.tabs);
@@ -58,6 +96,7 @@ const RequestTabPanel = () => {
   const focusedTab = find(tabs, (t) => t.uid === activeTabUid);
   const { globalEnvironments, activeGlobalEnvironmentUid } = useSelector((state) => state.globalEnvironments);
   const _collections = useSelector((state) => state.collections.collections);
+  const loadedRequestsByPath = useSelector((state) => state.collections.loadedRequestsByPath);
   const preferences = useSelector((state) => state.app.preferences);
   const { workspaces, activeWorkspaceUid } = useSelector((state) => state.workspaces);
   const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid);
@@ -78,25 +117,79 @@ const RequestTabPanel = () => {
     isVerticalLayoutRef.current = isVerticalLayout;
   }, [isVerticalLayout]);
 
-  // merge `globalEnvironmentVariables` into the active collection and rebuild `collections` immer proxy object
-  const collections = produce(_collections, (draft) => {
-    const collection = find(draft, (c) => c.uid === focusedTab?.collectionUid);
-
-    if (collection) {
-      // add selected global env variables to the collection object
-      const globalEnvironmentVariables = getGlobalEnvironmentVariables({
-        globalEnvironments,
-        activeGlobalEnvironmentUid
-      });
-      const globalEnvSecrets = getGlobalEnvironmentVariablesMasked({ globalEnvironments, activeGlobalEnvironmentUid });
-      collection.globalEnvironmentVariables = globalEnvironmentVariables;
-      collection.globalEnvSecrets = globalEnvSecrets;
+  const baseCollection = find(_collections, (c) => c.uid === focusedTab?.collectionUid);
+  const collection = baseCollection
+    ? {
+        ...baseCollection,
+        globalEnvironmentVariables: getGlobalEnvironmentVariables({
+          globalEnvironments,
+          activeGlobalEnvironmentUid
+        }),
+        globalEnvSecrets: getGlobalEnvironmentVariablesMasked({
+          globalEnvironments,
+          activeGlobalEnvironmentUid
+        })
+      }
+    : null;
+  const requestItemUid = focusedTab?.itemUid || activeTabUid;
+  const loadedRequestItem = focusedTab?.collectionUid && focusedTab?.itemPathname
+    ? loadedRequestsByPath?.[focusedTab.collectionUid]?.[normalizeItemPathname(focusedTab.itemPathname)]
+    : null;
+  // Indexed tabs prefer the loaded-by-path entry but must still fall back to
+  // the collection tree: after a move/clone the loaded entry can be missing
+  // while the tree item is hydrated (or is a loading stub with a load in
+  // flight), and without the fallback the tab would hang forever. The walk is
+  // memoized and skipped entirely once a loaded entry exists, so large trees
+  // are not traversed on every render.
+  const treeFallbackItem = useMemo(() => {
+    if (loadedRequestItem || !focusedTab?.itemPathname || !baseCollection) {
+      return null;
     }
-  });
-
-  const collection = find(collections, (c) => c.uid === focusedTab?.collectionUid);
+    return findItemByPathWalk(baseCollection, focusedTab.itemPathname)
+      || findItemInCollectionByPathname(baseCollection, focusedTab.itemPathname);
+  }, [loadedRequestItem, baseCollection, focusedTab?.itemPathname]);
+  const panelItem = focusedTab?.itemPathname && collection
+    ? (loadedRequestItem || treeFallbackItem)
+    : findItemInCollection(collection, requestItemUid);
   const [dragging, setDragging] = useState(false);
   const draggingRef = useRef(false);
+
+  useEffect(() => {
+    if (!isRequestTab || !focusedTab?.collectionUid) {
+      return;
+    }
+
+    sendDebugLog('[gridman:request-panel] resolved-active-tab', {
+      activeTabUid,
+      tabUid: focusedTab.uid,
+      tabType: focusedTab.type,
+      collectionUid: focusedTab.collectionUid,
+      itemUid: focusedTab.itemUid,
+      itemPathname: focusedTab.itemPathname,
+      itemFound: Boolean(panelItem),
+      itemUidResolved: panelItem?.uid,
+      itemPathnameResolved: panelItem?.pathname,
+      itemLoading: panelItem?.loading,
+      itemPartial: panelItem?.partial,
+      itemHasRequest: Boolean(panelItem?.request),
+      itemMethod: panelItem?.request?.method,
+      itemUrl: panelItem?.request?.url
+    });
+  }, [
+    activeTabUid,
+    focusedTab?.uid,
+    focusedTab?.type,
+    focusedTab?.collectionUid,
+    focusedTab?.itemUid,
+    focusedTab?.itemPathname,
+    isRequestTab,
+    panelItem?.uid,
+    panelItem?.pathname,
+    panelItem?.loading,
+    panelItem?.partial,
+    panelItem?.request?.method,
+    panelItem?.request?.url
+  ]);
 
   const {
     left: leftPaneWidth,
@@ -335,10 +428,7 @@ const RequestTabPanel = () => {
     return <ResponseExample item={item} collection={collection} example={example} />;
   }
 
-  const requestItemUid = focusedTab.itemUid || activeTabUid;
-  const item = findItemInCollection(collection, requestItemUid) || (
-    focusedTab.itemPathname ? findItemInCollectionByPathname(collection, focusedTab.itemPathname) : null
-  );
+  const item = panelItem;
   const isGrpcRequest = item?.type === 'grpc-request';
   const isWsRequest = item?.type === 'ws-request';
 
@@ -392,6 +482,12 @@ const RequestTabPanel = () => {
   }
 
   if (item?.loading) {
+    return <RequestIsLoading item={item} />;
+  }
+
+  // Index-only stubs carry placeholder request data; keep showing the loading
+  // state until the real request content arrives.
+  if (item?.gridmanIndexOnly || item?.request?.gridmanIndexOnly) {
     return <RequestIsLoading item={item} />;
   }
 
@@ -484,6 +580,18 @@ const RequestTabPanel = () => {
           width: `${Math.max(leftPaneWidth, MIN_LEFT_PANE_WIDTH)}px`
         };
   };
+
+  const renderEditorKey = `${focusedTab.uid}|${item.uid}|${item.pathname}`;
+  if (lastRenderEditorKey !== renderEditorKey) {
+    lastRenderEditorKey = renderEditorKey;
+    sendDebugLog('[gridman:request-panel] render-editor-start', {
+      tabUid: focusedTab.uid,
+      itemUid: item.uid,
+      pathname: item.pathname,
+      type: item.type,
+      fromLoadedEntry: Boolean(loadedRequestItem)
+    });
+  }
 
   return (
     <ScopedPersistenceProvider scope={focusedTab.uid}>

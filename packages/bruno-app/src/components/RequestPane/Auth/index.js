@@ -15,17 +15,7 @@ import ApiKeyAuth from './ApiKeyAuth';
 import StyledWrapper from './StyledWrapper';
 import { humanizeRequestAuthMode } from 'utils/collections';
 import OAuth2 from './OAuth2/index';
-import { findItemInCollection, findParentItemInCollection } from 'utils/collections/index';
-
-const getTreePathFromCollectionToItem = (collection, _item) => {
-  let path = [];
-  let item = findItemInCollection(collection, _item?.uid);
-  while (item) {
-    path.unshift(item);
-    item = findParentItemInCollection(collection, item?.uid);
-  }
-  return path;
-};
+import { getTreePathFromCollectionToItem } from 'utils/collections/index';
 
 const Auth = ({ item, collection }) => {
   const dispatch = useDispatch();

@@ -8,7 +8,7 @@ import { clearGlobalEnvironmentDraft } from 'providers/ReduxStore/slices/global-
 import { saveGlobalEnvironment } from 'providers/ReduxStore/slices/global-environments';
 import { useTheme } from 'providers/Theme';
 import { useDispatch, useSelector } from 'react-redux';
-import { findItemInCollection, findItemInCollectionByPathname, hasRequestChanges } from 'utils/collections';
+import { findItemInCollection, findItemInCollectionByPathname, hasRequestChanges, normalizeItemPathname } from 'utils/collections';
 import ConfirmRequestClose from './ConfirmRequestClose';
 import ConfirmCollectionClose from './ConfirmCollectionClose';
 import ConfirmFolderClose from './ConfirmFolderClose';
@@ -56,9 +56,15 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     'openapi-spec'
   ];
   const isSpecialTab = specialTabs.includes(tab.type);
+  const loadedRequestsByPath = useSelector((state) => state.collections.loadedRequestsByPath);
+  const isIndexedRequestTab = tab.uid?.startsWith?.('indexed-request:');
+  const loadedRequestItem = tab.collectionUid && tab.itemPathname
+    ? loadedRequestsByPath?.[tab.collectionUid]?.[normalizeItemPathname(tab.itemPathname)]
+    : null;
   const item = isSpecialTab ? null : (
-    findItemInCollection(collection, tab.itemUid || tab.uid)
-    || (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null)
+    loadedRequestItem
+    || (isIndexedRequestTab ? null : (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null))
+    || (isIndexedRequestTab ? null : findItemInCollection(collection, tab.itemUid || tab.uid))
   );
 
   const method = useMemo(() => {
@@ -560,6 +566,7 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
           tabIndex={tabIndex}
           collectionRequestTabs={collectionRequestTabs}
           collection={collection}
+          loadedRequestsByPath={loadedRequestsByPath}
           dispatch={dispatch}
           dropdownContainerRef={dropdownContainerRef}
         />
@@ -581,7 +588,7 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
   );
 };
 
-function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, tabIndex, collection, dispatch, dropdownContainerRef }) {
+function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, tabIndex, collection, loadedRequestsByPath, dispatch, dropdownContainerRef }) {
   const [showCloneRequestModal, setShowCloneRequestModal] = useState(false);
   const [showAddNewRequestModal, setShowAddNewRequestModal] = useState(false);
 
@@ -600,8 +607,14 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
       return null;
     }
 
-    return findItemInCollection(collection, tab.itemUid || tab.uid)
-      || (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null);
+    const isIndexedRequestTab = tab.uid?.startsWith?.('indexed-request:');
+    const loadedRequestItem = tab.collectionUid && tab.itemPathname
+      ? loadedRequestsByPath?.[tab.collectionUid]?.[normalizeItemPathname(tab.itemPathname)]
+      : null;
+
+    return loadedRequestItem
+      || (isIndexedRequestTab ? null : (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null))
+      || (isIndexedRequestTab ? null : findItemInCollection(collection, tab.itemUid || tab.uid));
   };
 
   const currentTab = collectionRequestTabs[tabIndex];

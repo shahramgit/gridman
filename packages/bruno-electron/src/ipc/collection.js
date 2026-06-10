@@ -264,7 +264,15 @@ const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollection
   }
 
   const sourceKind = getItemKindFromPath(sourcePathname, sourceCollectionPathname);
-  if (sourceKind === 'folder' && targetPathname.startsWith(`${sourcePathname}${path.sep}`)) {
+  const normalizedSourcePathname = path.resolve(sourcePathname);
+  const normalizedTargetPathname = path.resolve(targetPathname);
+  if (
+    sourceKind === 'folder'
+    && (
+      normalizedTargetPathname === normalizedSourcePathname
+      || normalizedTargetPathname.startsWith(`${normalizedSourcePathname}${path.sep}`)
+    )
+  ) {
     throw new Error('Cannot move a folder inside itself');
   }
 
@@ -810,6 +818,15 @@ const registerCollectionInWorkspace = async (mainWindow, workspacePath, collecti
 };
 
 const registerRendererEventHandlers = (mainWindow, watcher) => {
+  ipcMain.handle('renderer:debug-log', async (event, label, payload) => {
+    console.warn(label, payload);
+    return true;
+  });
+
+  ipcMain.on('renderer:debug-log-event', (event, label, payload) => {
+    console.warn(label, payload);
+  });
+
   // create collection
   ipcMain.handle(
     'renderer:create-collection',
@@ -2772,7 +2789,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           meta: {
             collectionUid,
             pathname,
-            name: path.basename(pathname)
+            name: path.basename(pathname),
+            source: 'load-request'
           }
         };
         let bruContent = fs.readFileSync(pathname, 'utf8');
@@ -2796,7 +2814,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           meta: {
             collectionUid,
             pathname,
-            name: path.basename(pathname)
+            name: path.basename(pathname),
+            source: 'load-request'
           }
         };
         let bruContent = fs.readFileSync(pathname, 'utf8');
@@ -2816,6 +2835,10 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
   ipcMain.handle('renderer:load-request', async (event, { collectionUid, pathname }) => {
     let fileStats;
     try {
+      console.warn('[gridman:load-request] main-start', {
+        collectionUid,
+        pathname
+      });
       fileStats = fs.statSync(pathname);
       if (hasRequestExtension(pathname)) {
         const file = {
@@ -2833,16 +2856,37 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         file.partial = true;
         file.size = sizeInMB(fileStats?.size);
         hydrateRequestWithUuid(file.data, pathname);
+        console.warn('[gridman:load-request] main-send-loading', {
+          collectionUid,
+          pathname,
+          uid: file.data?.uid,
+          loading: file.loading,
+          partial: file.partial
+        });
         mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
         file.data = parseRequest(bruContent, { format });
         file.partial = false;
         file.loading = false;
         file.size = sizeInMB(fileStats?.size);
         hydrateRequestWithUuid(file.data, pathname);
+        console.warn('[gridman:load-request] main-send-ready', {
+          collectionUid,
+          pathname,
+          uid: file.data?.uid,
+          loading: file.loading,
+          partial: file.partial,
+          method: file.data?.request?.method,
+          url: file.data?.request?.url
+        });
         mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
         return safeParseJSON(safeStringifyJSON(file));
       }
     } catch (error) {
+      console.warn('[gridman:load-request] main-error', {
+        collectionUid,
+        pathname,
+        message: error?.message || String(error)
+      });
       if (hasRequestExtension(pathname)) {
         const file = {
           meta: {
@@ -2875,7 +2919,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       meta: {
         collectionUid,
         pathname,
-        name: path.basename(pathname)
+        name: path.basename(pathname),
+        source: 'load-request'
       }
     };
 

@@ -18,11 +18,23 @@ import { newFolder, closeTabs, mountCollection, createCollection, browseDirector
 import { sanitizeName, validateName, validateNameError } from 'utils/common/regex';
 import { resolveRequestFilename } from 'utils/common/platform';
 import path, { normalizePath } from 'utils/common/path';
-import { transformRequestToSaveToFilesystem, findCollectionByUid, findItemInCollection, areItemsLoading } from 'utils/collections';
+import {
+  deriveTransientRequestNameFromUrl,
+  transformRequestToSaveToFilesystem,
+  findCollectionByUid,
+  findItemInCollection,
+  areItemsLoading
+} from 'utils/collections';
 import { DEFAULT_COLLECTION_FORMAT } from 'utils/common/constants';
 import { itemSchema } from '@usebruno/schema';
 import { uuid } from 'utils/common';
 import { formatIpcError } from 'utils/common/error';
+
+const getSuggestedTransientRequestName = (item) => {
+  const currentName = item?.name || '';
+  const requestUrl = item?.draft?.request?.url || item?.request?.url || '';
+  return deriveTransientRequestNameFromUrl(currentName, requestUrl) || currentName;
+};
 
 const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOpen = false, onClose }) => {
   const dispatch = useDispatch();
@@ -59,7 +71,7 @@ const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOp
     }
     dispatch(removeSaveTransientRequestModal({ itemUid: item.uid }));
   };
-  const [requestName, setRequestName] = useState(item?.name || '');
+  const [requestName, setRequestName] = useState(() => getSuggestedTransientRequestName(latestItem || item));
   const [searchText, setSearchText] = useState('');
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -103,7 +115,7 @@ const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOp
   } = useCollectionFolderTree(folderTreeCollectionUid);
 
   const resetForm = useCallback(() => {
-    setRequestName(item?.name || '');
+    setRequestName(getSuggestedTransientRequestName(latestItem || item));
     setSearchText('');
     reset();
     setShowNewFolderInput(false);
@@ -116,7 +128,7 @@ const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOp
     setIsSelectingCollection(isScratchCollection);
     // Reset new collection state
     setNewCollection({ show: false, name: '', location: '', format: DEFAULT_COLLECTION_FORMAT });
-  }, [item?.name, isScratchCollection, reset]);
+  }, [item, latestItem, isScratchCollection, reset]);
 
   useEffect(() => {
     if (isOpen && item) {

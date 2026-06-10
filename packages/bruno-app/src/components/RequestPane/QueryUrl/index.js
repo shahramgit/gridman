@@ -10,7 +10,8 @@ import {
   updateRequestGraphqlQuery,
   updateRequestGraphqlVariables,
   updateRequestAuthMode,
-  updateAuth
+  updateAuth,
+  renameAutoTransientRequest
 } from 'providers/ReduxStore/slices/collections';
 import { saveRequest, cancelRequest } from 'providers/ReduxStore/slices/collections/actions';
 import { getRequestFromCurlCommand } from 'utils/curl';
@@ -20,7 +21,7 @@ import { IconDeviceFloppy, IconCode } from '@tabler/icons';
 import SingleLineEditor from 'components/SingleLineEditor';
 import SendButton from 'components/RequestPane/SendButton';
 import { isMacOS } from 'utils/common/platform';
-import { hasRequestChanges } from 'utils/collections';
+import { deriveTransientRequestNameFromUrl, hasRequestChanges } from 'utils/collections';
 import StyledWrapper from './StyledWrapper';
 import GenerateCodeItem from 'components/Sidebar/Collections/Collection/CollectionItem/GenerateCodeItem/index';
 import toast from 'react-hot-toast';
@@ -37,6 +38,21 @@ const QueryUrl = ({ item, collection, handleRun }) => {
 
   const [generateCodeItemModalOpen, setGenerateCodeItemModalOpen] = useState(false);
   const hasChanges = useMemo(() => hasRequestChanges(item), [item]);
+
+  const renameAutoTransientFromUrl = useCallback((requestUrl) => {
+    const requestName = deriveTransientRequestNameFromUrl(item.name, requestUrl);
+    if (!requestName) {
+      return;
+    }
+
+    dispatch(
+      renameAutoTransientRequest({
+        itemUid: item.uid,
+        collectionUid: collection.uid,
+        requestName
+      })
+    );
+  }, [collection.uid, dispatch, item.name, item.uid]);
 
   useEffect(() => {
     if (item.isTransient && !url && editorRef.current?.editor) {
@@ -118,6 +134,7 @@ const QueryUrl = ({ item, collection, handleRun }) => {
         collectionUid: collection.uid,
         url: request.url
       }));
+      renameAutoTransientFromUrl(request.url);
 
       setTimeout(() => {
         const editor = editorRef.current?.editor;
@@ -170,7 +187,7 @@ const QueryUrl = ({ item, collection, handleRun }) => {
       console.error('Error parsing cURL command:', error);
       toast.error('Failed to parse GraphQL query');
     }
-  }, [dispatch, item.uid, collection.uid]);
+  }, [dispatch, item.type, item.uid, collection.uid, renameAutoTransientFromUrl]);
 
   const handleHttpPaste = useCallback((event) => {
     // Only enable curl paste detection for HTTP requests
@@ -207,6 +224,7 @@ const QueryUrl = ({ item, collection, handleRun }) => {
           url: request.url
         })
       );
+      renameAutoTransientFromUrl(request.url);
 
       setTimeout(() => {
         const editor = editorRef.current?.editor;
@@ -385,7 +403,7 @@ const QueryUrl = ({ item, collection, handleRun }) => {
       toast.error('Failed to parse cURL command');
     }
   },
-  [dispatch, item.uid, item.type, collection.uid]
+  [dispatch, item.uid, item.type, item.name, collection.uid, renameAutoTransientFromUrl]
   );
   const handleCancelRequest = (e) => {
     e.preventDefault();

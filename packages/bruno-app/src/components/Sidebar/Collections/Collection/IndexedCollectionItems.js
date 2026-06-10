@@ -17,7 +17,7 @@ import {
   IconTerminal2,
   IconTrash
 } from '@tabler/icons';
-import { useDispatch, useSelector } from 'react-redux';
+import { useDispatch, useSelector, useStore } from 'react-redux';
 import { getEmptyImage } from 'react-dnd-html5-backend';
 import { useDrag, useDrop } from 'react-dnd';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
@@ -43,8 +43,7 @@ import RunCollectionItem from './CollectionItem/RunCollectionItem';
 import GenerateCodeItem from './CollectionItem/GenerateCodeItem';
 import CollectionItemInfo from './CollectionItem/CollectionItemInfo';
 import { getDefaultRequestPaneTab } from 'utils/collections';
-import { findItemInCollection, findItemInCollectionByPathname } from 'utils/collections';
-import { isTabForItemPresent as isTabForItemPresentSelector } from 'src/selectors/tab';
+import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname } from 'utils/collections';
 import { isEqual } from 'lodash';
 import NewRequest from 'components/Sidebar/NewRequest';
 import NewFolder from 'components/Sidebar/NewFolder';
@@ -124,7 +123,19 @@ const getIndexedNodeDisplayDepth = (index, node) => {
   return Math.max(0, (node.depth || 0) + 1);
 };
 
-const normalizeForPathCompare = (pathname) => String(pathname || '').replace(/\\/g, '/').replace(/\/+$/, '');
+const normalizeForPathCompare = (pathname) => String(pathname || '').normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
+
+const getIndexedRequestTabUid = ({ collectionUid, pathname, uid }) => {
+  return `indexed-request:${collectionUid}:${pathname || uid}`;
+};
+
+const sendDebugLog = (label, payload) => {
+  try {
+    window.ipcRenderer?.send?.('renderer:debug-log-event', label, payload);
+  } catch (error) {
+    console.warn(label, payload);
+  }
+};
 
 const isSameOrDescendantPath = (targetPathname, sourcePathname) => {
   const target = normalizeForPathCompare(targetPathname);
@@ -164,6 +175,7 @@ const useVisibleRows = ({ index, expandedNodeUids, searchText }) => {
 
 const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggleFolder }) => {
   const dispatch = useDispatch();
+  const store = useStore();
   const { dropdownContainerRef } = useSidebarAccordion();
   const rowRef = useRef(null);
   const menuDropdownRef = useRef(null);
@@ -179,15 +191,24 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
   const [generateCodeItemModalOpen, setGenerateCodeItemModalOpen] = useState(false);
   const [itemInfoModalOpen, setItemInfoModalOpen] = useState(false);
   const [dropType, setDropType] = useState(null);
-  const isTabForItemPresent = useSelector(isTabForItemPresentSelector({ itemUid: node.uid }), isEqual);
+  const existingRequestTab = useSelector((state) => {
+    if (!isRequest) {
+      return null;
+    }
+
+    return state.tabs.tabs.find((tab) => (
+      tab.collectionUid === collectionUid
+      && tab.itemPathname
+      && normalizeForPathCompare(tab.itemPathname) === normalizeForPathCompare(node.pathname)
+    )) || null;
+  }, isEqual);
+  const isTabForItemPresent = Boolean(existingRequestTab);
   const { hasCopiedItems } = useSelector((state) => state.app.clipboard);
   const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
   const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid), isEqual);
   const item = useSelector((state) => {
     const collection = state.collections.collections?.find((c) => c.uid === collectionUid);
-    return collection ? (
-      findItemInCollection(collection, node.uid) || findItemInCollectionByPathname(collection, node.pathname)
-    ) : null;
+    return collection ? findItemInCollectionByPathname(collection, node.pathname) : null;
   }, isEqual);
   const displayItem = item || {
     ...node,
@@ -195,7 +216,9 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     partial: false,
     loading: false,
     error: false,
+    gridmanIndexOnly: true,
     request: {
+      gridmanIndexOnly: true,
       method: node.method || '',
       url: node.url || ''
     }
@@ -216,14 +239,71 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
   const displayDepth = getIndexedNodeDisplayDepth(index, node);
 
   const openRequest = () => {
+    // The request panel renders indexed tabs from loadedRequestsByPath, so a
+    // hydrated sidebar item alone is not enough to skip loading — after a
+    // move/clone the tree can be hydrated while the loaded entry is gone.
+    const loadedEntry = store.getState().collections.loadedRequestsByPath?.[collectionUid]?.[
+      normalizeItemPathname(node.pathname)
+    ];
+    const shouldLoadRequest = !existingRequestTab
+      || !loadedEntry
+      || !item
+      || item.loading
+      || item.partial
+      || item.gridmanIndexOnly
+      || !item.request
+      || item.request?.gridmanIndexOnly;
+    const tabUid = getIndexedRequestTabUid({ collectionUid, pathname: node.pathname, uid: node.uid });
+
+    const clickPayload = {
+      collectionUid,
+      nodeUid: node.uid,
+      nodeName: node.name,
+      pathname: node.pathname,
+      computedTabUid: tabUid,
+      existingRequestTabUid: existingRequestTab?.uid,
+      existingRequestTabPathname: existingRequestTab?.itemPathname,
+      existingRequestTabIsExpectedUid: existingRequestTab?.uid === tabUid,
+      hasHydratedItem: Boolean(item),
+      hydratedItemUid: item?.uid,
+      hydratedItemPathname: item?.pathname,
+      hydratedItemLoading: item?.loading,
+      hydratedItemPartial: item?.partial,
+      hydratedItemHasRequest: Boolean(item?.request),
+      hasLoadedEntry: Boolean(loadedEntry),
+      shouldLoadRequest
+    };
+    console.warn('[gridman:request-open] indexed-click', clickPayload);
+    sendDebugLog('[gridman:request-open] indexed-click', clickPayload);
+
     dispatch(collectionIndexNodeActivated({ collectionUid, node }));
 
-    if (isTabForItemPresent) {
-      dispatch(focusTab({ uid: node.uid }));
+    if (existingRequestTab) {
+      sendDebugLog('[gridman:request-open] focus-existing-tab', {
+        collectionUid,
+        pathname: node.pathname,
+        tabUid: existingRequestTab.uid,
+        expectedTabUid: tabUid,
+        tabPathname: existingRequestTab.itemPathname,
+        itemFound: Boolean(item),
+        itemLoading: item?.loading,
+        itemPartial: item?.partial,
+        itemHasRequest: Boolean(item?.request)
+      });
+      dispatch(focusTab({ uid: existingRequestTab.uid }));
     } else {
+      sendDebugLog('[gridman:request-open] add-new-tab', {
+        collectionUid,
+        pathname: node.pathname,
+        tabUid,
+        itemFound: Boolean(item),
+        itemLoading: item?.loading,
+        itemPartial: item?.partial,
+        itemHasRequest: Boolean(item?.request)
+      });
       dispatch(
         addTab({
-          uid: node.uid,
+          uid: tabUid,
           collectionUid,
           requestPaneTab: getDefaultRequestPaneTab(node),
           type: 'request',
@@ -233,7 +313,26 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
       );
     }
 
-    if (!item || item.loading || item.partial || !item.request) {
+    const loadDecisionPayload = {
+      collectionUid,
+      nodeUid: node.uid,
+      pathname: node.pathname,
+      action: shouldLoadRequest ? 'dispatch-load' : 'skip-load',
+      reason: {
+        indexedRequest: true,
+        missingLoadedEntry: !loadedEntry,
+        missingItem: !item,
+        loading: item?.loading,
+        partial: item?.partial,
+        missingRequest: !item?.request,
+        indexOnly: item?.gridmanIndexOnly || item?.request?.gridmanIndexOnly,
+        newIndexedTab: !existingRequestTab
+      }
+    };
+    console.warn('[gridman:request-open] load-decision', loadDecisionPayload);
+    sendDebugLog('[gridman:request-open] load-decision', loadDecisionPayload);
+
+    if (shouldLoadRequest) {
       dispatch(loadRequest({ collectionUid, pathname: node.pathname }));
     }
   };
@@ -740,6 +839,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
       <Virtuoso
         style={{ height: listHeight }}
         data={visibleRows}
+        computeItemKey={(_index, node) => node.pathname || node.uid}
         itemContent={(_index, node) => (
           <IndexedRow
             node={node}

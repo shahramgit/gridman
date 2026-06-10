@@ -1,7 +1,42 @@
 import { IconLoader2, IconFile } from '@tabler/icons';
+import { useEffect } from 'react';
 import StyledWrapper from './StyledWrapper';
 
+const sendDebugLog = (label, payload) => {
+  try {
+    window.ipcRenderer?.send?.('renderer:debug-log-event', label, payload);
+  } catch (error) {
+    console.warn(label, payload);
+  }
+};
+
 const RequestIsLoading = ({ item }) => {
+  useEffect(() => {
+    sendDebugLog('[gridman:request-loading] mounted', {
+      itemUid: item?.uid,
+      pathname: item?.pathname,
+      loading: item?.loading,
+      partial: item?.partial,
+      hasRequest: Boolean(item?.request),
+      method: item?.request?.method,
+      url: item?.request?.url
+    });
+
+    const timeout = setTimeout(() => {
+      sendDebugLog('[gridman:request-loading] still-mounted-after-1500ms', {
+        itemUid: item?.uid,
+        pathname: item?.pathname,
+        loading: item?.loading,
+        partial: item?.partial,
+        hasRequest: Boolean(item?.request),
+        method: item?.request?.method,
+        url: item?.request?.url
+      });
+    }, 1500);
+
+    return () => clearTimeout(timeout);
+  }, [item?.uid, item?.pathname, item?.loading, item?.partial, item?.request?.method, item?.request?.url]);
+
   return (
     <StyledWrapper>
       <div className="flex flex-col p-4">

@@ -15,6 +15,7 @@ import {
   findCollectionByUid,
   findEnvironmentInCollection,
   findItemInCollection,
+  findItemInCollectionByPathname,
   findParentItemInCollection,
   isItemAFolder,
   refreshUidsInItem,
@@ -49,6 +50,7 @@ import {
   updateRunnerConfiguration as _updateRunnerConfiguration,
   updateActiveConnections,
   collectionAddFileEvent,
+  collectionUnlinkDirectoryEvent,
   saveRequest as _saveRequest,
   saveEnvironment as _saveEnvironment,
   updateEnvironmentColor as _updateEnvironmentColor,
@@ -63,7 +65,9 @@ import {
   addTransientDirectory,
   addSaveTransientRequestModal,
   updatePathParam,
-  collectionIndexNodeMoved
+  collectionIndexNodeCloned,
+  collectionIndexNodeMoved,
+  collectionIndexNodeRemoved
 } from './index';
 
 import { each } from 'lodash';
@@ -1104,7 +1108,17 @@ export const cloneCollectionItemByPath = ({ collectionUid, sourcePathname, newNa
     newName,
     newFilename
   });
-  await dispatch(refreshCollectionIndex({ collectionUid }));
+  if (state.collections.collectionIndexes?.[collectionUid] && result?.pathname && result?.type !== 'folder') {
+    dispatch(collectionIndexNodeCloned({
+      sourceCollectionUid: collectionUid,
+      targetCollectionUid: collectionUid,
+      sourcePathname,
+      targetPathname: result.pathname,
+      rootName: newName
+    }));
+  } else {
+    await dispatch(refreshCollectionIndex({ collectionUid }));
+  }
   return result;
 };
 
@@ -1139,7 +1153,14 @@ export const deleteCollectionItemByPath = ({ collectionUid, sourcePathname, type
     collectionPathname: collection.pathname,
     type
   });
-  await dispatch(refreshCollectionIndex({ collectionUid }));
+  if (state.collections.collectionIndexes?.[collectionUid]) {
+    dispatch(collectionIndexNodeRemoved({
+      collectionUid,
+      sourcePathname
+    }));
+  } else {
+    await dispatch(refreshCollectionIndex({ collectionUid }));
+  }
   return result;
 };
 
@@ -1296,16 +1317,43 @@ export const moveCollectionItemByPath = ({
     dropType
   });
 
-  if (sourceCollectionUid === targetCollectionUid && shouldRefreshTargetIndex && result?.pathname && !result?.skipped) {
+  if (sourceCollectionUid === targetCollectionUid && shouldRefreshTargetIndex && result?.pathname && !result?.skipped && result?.type !== 'folder') {
     dispatch(collectionIndexNodeMoved({
       collectionUid: targetCollectionUid,
       sourcePathname,
       targetPathname: result.pathname
     }));
+  } else if (sourceCollectionUid !== targetCollectionUid && result?.pathname && !result?.skipped) {
+    if (shouldRefreshTargetIndex) {
+      dispatch(collectionIndexNodeCloned({
+        sourceCollectionUid,
+        targetCollectionUid,
+        sourcePathname,
+        targetPathname: result.pathname
+      }));
+    }
+    if (shouldRefreshSourceIndex) {
+      dispatch(collectionIndexNodeRemoved({
+        collectionUid: sourceCollectionUid,
+        sourcePathname
+      }));
+    }
   } else if (shouldRefreshTargetIndex) {
+    if (sourceCollectionUid === targetCollectionUid && result?.pathname && !result?.skipped && result?.type === 'folder') {
+      [sourcePathname, result.pathname].forEach((pathname) => {
+        dispatch(collectionUnlinkDirectoryEvent({
+          directory: {
+            meta: {
+              collectionUid: targetCollectionUid,
+              pathname
+            }
+          }
+        }));
+      });
+    }
     await dispatch(refreshCollectionIndex({ collectionUid: targetCollectionUid }));
   }
-  if (sourceCollectionUid !== targetCollectionUid && shouldRefreshSourceIndex) {
+  if (sourceCollectionUid !== targetCollectionUid && shouldRefreshSourceIndex && (!result?.pathname || result?.skipped)) {
     await dispatch(refreshCollectionIndex({ collectionUid: sourceCollectionUid }));
   }
 
@@ -3201,14 +3249,73 @@ export const loadRequest
     (dispatch, getState) => {
       return new Promise(async (resolve, reject) => {
         const { ipcRenderer } = window;
+        const sendLoadDebug = (label, payload) => {
+          try {
+            ipcRenderer?.send?.('renderer:debug-log-event', label, payload);
+          } catch (error) {
+            console.warn(label, payload);
+          }
+        };
+        const beforeState = getState();
+        const beforeCollection = findCollectionByUid(beforeState.collections.collections, collectionUid);
+        const beforeItem = beforeCollection ? findItemInCollectionByPathname(beforeCollection, pathname) : null;
+        const startPayload = {
+          collectionUid,
+          pathname,
+          beforeItemUid: beforeItem?.uid,
+          beforeItemPathname: beforeItem?.pathname,
+          beforeItemLoading: beforeItem?.loading,
+          beforeItemPartial: beforeItem?.partial,
+          beforeHasRequest: Boolean(beforeItem?.request)
+        };
+        console.warn('[gridman:load-request] renderer-start', startPayload);
+        sendLoadDebug('[gridman:load-request] renderer-start', startPayload);
         ipcRenderer.invoke('renderer:load-request', { collectionUid, pathname })
           .then((file) => {
+            const resolvedPayload = {
+              collectionUid,
+              pathname,
+              returnedPathname: file?.meta?.pathname,
+              returnedSource: file?.meta?.source,
+              returnedUid: file?.data?.uid,
+              returnedLoading: file?.loading,
+              returnedPartial: file?.partial,
+              returnedMethod: file?.data?.request?.method,
+              returnedUrl: file?.data?.request?.url
+            };
+            console.warn('[gridman:load-request] renderer-ipc-resolved', resolvedPayload);
+            sendLoadDebug('[gridman:load-request] renderer-ipc-resolved', resolvedPayload);
             if (file?.meta?.pathname) {
               dispatch(collectionAddFileEvent({ file }));
             }
+            const afterState = getState();
+            const afterCollection = findCollectionByUid(afterState.collections.collections, collectionUid);
+            const afterItem = afterCollection ? findItemInCollectionByPathname(afterCollection, pathname) : null;
+            const rendererDebugPayload = {
+              collectionUid,
+              pathname,
+              afterItemUid: afterItem?.uid,
+              afterItemPathname: afterItem?.pathname,
+              afterItemLoading: afterItem?.loading,
+              afterItemPartial: afterItem?.partial,
+              afterHasRequest: Boolean(afterItem?.request),
+              afterMethod: afterItem?.request?.method,
+              afterUrl: afterItem?.request?.url
+            };
+            console.warn('[gridman:load-request] renderer-after-dispatch', rendererDebugPayload);
+            sendLoadDebug('[gridman:load-request] renderer-after-dispatch', rendererDebugPayload);
             resolve(file);
           })
-          .catch(reject);
+          .catch((error) => {
+            const errorPayload = {
+              collectionUid,
+              pathname,
+              message: error?.message || String(error)
+            };
+            console.warn('[gridman:load-request] renderer-error', errorPayload);
+            sendLoadDebug('[gridman:load-request] renderer-error', errorPayload);
+            reject(error);
+          });
       });
     };
 

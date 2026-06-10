@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 import StyledWrapper from './StyledWrapper';
-import { findItemInCollection, findParentItemInCollection } from 'utils/collections/index';
+import { getTreePathFromCollectionToItem } from 'utils/collections/index';
 import { get } from 'lodash';
 import TimelineItem from './TimelineItem/index';
 import GrpcTimelineItem from './GrpcTimelineItem/index';
@@ -19,13 +19,8 @@ const getEffectiveAuthSource = (collection, item) => {
     auth: collectionAuth
   };
 
-  // Get path from collection to item
-  let path = [];
-  let currentItem = findItemInCollection(collection, item?.uid);
-  while (currentItem) {
-    path.unshift(currentItem);
-    currentItem = findParentItemInCollection(collection, currentItem?.uid);
-  }
+  // Get path from collection to item (cycle-safe walk)
+  const path = getTreePathFromCollectionToItem(collection, item);
 
   // Check folders in reverse to find the closest auth configuration
   for (let i of [...path].reverse()) {
