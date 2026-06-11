@@ -26,9 +26,9 @@ if [ ! -f packages/bruno-electron/web/index.html ]; then
 fi
 
 
-# Update static paths
-find packages/bruno-electron/web -maxdepth 1 -name '*.html' -type f -exec perl -pi -e 's@/static/@static/@g' {} +
-find packages/bruno-electron/web/static/css -name '*.css' -type f -exec perl -pi -e 's@/static/font@../../static/font@g' {} +
+# Asset paths are emitted relative by rsbuild (output.assetPrefix: 'auto'),
+# so no path rewriting is needed here. The previous perl rewrites assumed
+# root-absolute /static/ URLs and corrupt relative ones.
 
 # Remove sourcemaps
 find packages/bruno-electron/web -name '*.map' -type f -delete

@@ -30,9 +30,11 @@ export default defineConfig({
     title: 'Gridman'
   },
   output: {
-    // The packaged Electron app loads index.html from file://, so runtime
-    // asset URLs (JS-imported images) must be relative, not rooted at "/".
-    assetPrefix: './'
+    // The packaged Electron app loads index.html from file://, so asset URLs
+    // must be relative. 'auto' makes rspack derive correct relative paths per
+    // context: CSS url() relative to the stylesheet, JS runtime publicPath
+    // from the script location, and plain relative refs in the HTML.
+    assetPrefix: 'auto'
   },
   tools: {
     rspack: {

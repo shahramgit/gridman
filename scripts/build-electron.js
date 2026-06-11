@@ -100,31 +100,9 @@ async function main() {
       'Electron package is missing packages/bruno-electron/web/index.html.'
     );
 
-    // Update static paths
-    const files = await fs.readdir('packages/bruno-electron/web');
-    for (const file of files) {
-      if (file.endsWith('.html')) {
-        let content = await fs.readFile(`packages/bruno-electron/web/${file}`, 'utf8');
-        content = content.replace(/\/static/g, './static');
-        await fs.writeFile(`packages/bruno-electron/web/${file}`, content);
-      }
-    }
-
-    // update font load paths
-    const cssDir = path.join('packages/bruno-electron/web/static/css');
-    try {
-      const cssFiles = await fs.readdir(cssDir);
-      for (const file of cssFiles) {
-        if (file.endsWith('.css')) {
-          const filePath = path.join(cssDir, file);
-          let content = await fs.readFile(filePath, 'utf8');
-          content = content.replace(/\/static\/font/g, '../../static/font');
-          await fs.writeFile(filePath, content);
-        }
-      }
-    } catch (error) {
-      console.error(`Error updating font paths: ${error}`);
-    }
+    // Asset paths are emitted relative by rsbuild (output.assetPrefix:
+    // 'auto'), so no path rewriting is needed here. The previous rewrites
+    // assumed root-absolute /static/ URLs and corrupt relative ones.
 
     // Remove sourcemaps
     await removeSourceMapFiles('packages/bruno-electron/web');
