@@ -7,6 +7,7 @@ import { useSelector, useDispatch } from 'react-redux';
 import { updateLeftSidebarWidth, updateIsDragging, toggleSidebarSearch } from 'providers/ReduxStore/slices/app';
 import CollectionsSection from './Sections/CollectionsSection/index';
 import ApiSpecsSection from './Sections/ApiSpecsSection/index';
+import WorkflowsSection from './Sections/WorkflowsSection/index';
 import useKeybinding from 'hooks/useKeybinding';
 
 const MIN_LEFT_SIDEBAR_WIDTH = 220;
@@ -16,6 +17,10 @@ const SIDEBAR_SECTIONS = [
   {
     id: 'collections',
     component: CollectionsSection
+  },
+  {
+    id: 'workflows',
+    component: WorkflowsSection
   },
   {
     id: 'api-specs',

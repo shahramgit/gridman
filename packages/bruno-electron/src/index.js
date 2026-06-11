@@ -45,6 +45,7 @@ const registerSystemMonitorIpc = require('./ipc/system-monitor');
 const registerWorkspaceIpc = require('./ipc/workspace');
 const registerApiSpecIpc = require('./ipc/apiSpec');
 const registerGitIpc = require('./ipc/git');
+const registerWorkflowsIpc = require('./ipc/workflows');
 const registerOpenAPISyncIpc = require('./ipc/openapi-sync');
 const collectionWatcher = require('./app/collection-watcher');
 const WorkspaceWatcher = require('./app/workspace-watcher');
@@ -487,6 +488,7 @@ app.on('ready', async () => {
   registerFilesystemIpc(mainWindow);
   registerSystemMonitorIpc(mainWindow, systemMonitor);
   registerGitIpc(mainWindow);
+  registerWorkflowsIpc();
   registerOpenAPISyncIpc(mainWindow);
 });
 

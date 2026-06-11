@@ -53,7 +53,8 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     'workspaceEnvironments',
     'workspaceGit',
     'openapi-sync',
-    'openapi-spec'
+    'openapi-spec',
+    'workflow'
   ];
   const isSpecialTab = specialTabs.includes(tab.type);
   const loadedRequestsByPath = useSelector((state) => state.collections.loadedRequestsByPath);
@@ -462,6 +463,13 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
           <SpecialTab handleCloseClick={null} type={tab.type} />
         ) : tab.type === 'workspaceGit' ? (
           <SpecialTab handleCloseClick={null} type={tab.type} />
+        ) : tab.type === 'workflow' ? (
+          <SpecialTab
+            handleCloseClick={handleCloseClick}
+            handleDoubleClick={() => dispatch(makeTabPermanent({ uid: tab.uid }))}
+            type={tab.type}
+            tabName={String(tab.itemPathname || '').split(/[\\/]/).pop()?.replace(/\.flow\.yml$/, '') || 'Workflow'}
+          />
         ) : (
           <SpecialTab handleCloseClick={handleCloseClick} handleDoubleClick={() => dispatch(makeTabPermanent({ uid: tab.uid }))} type={tab.type} />
         )}

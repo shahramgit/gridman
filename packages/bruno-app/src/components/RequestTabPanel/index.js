@@ -42,6 +42,7 @@ import GlobalEnvironmentSettings from 'components/Environments/GlobalEnvironment
 import OpenAPISyncTab from 'components/OpenAPISyncTab';
 import OpenAPISpecTab from 'components/OpenAPISpecTab';
 import CollapsedPanelIndicator from './CollapsedPanelIndicator';
+import WorkflowEditor from 'components/Workflows/WorkflowEditor';
 
 const MIN_LEFT_PANE_WIDTH = 300;
 const MIN_RIGHT_PANE_WIDTH = 490;
@@ -408,6 +409,10 @@ const RequestTabPanel = () => {
 
   if (focusedTab.type === 'workspaceGit') {
     return activeWorkspace ? <WorkspaceGit workspace={activeWorkspace} /> : null;
+  }
+
+  if (focusedTab.type === 'workflow') {
+    return <WorkflowEditor pathname={focusedTab.itemPathname} />;
   }
 
   if (!focusedTab.uid || !focusedTab.collectionUid) {
