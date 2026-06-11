@@ -143,6 +143,19 @@ const Wrapper = styled.div`
       outline: none;
     }
 
+    &.reveal-flash {
+      animation: gridman-reveal-flash 1.8s ease-out;
+    }
+
+    @keyframes gridman-reveal-flash {
+      0%, 50% {
+        background: ${(props) => props.theme.colors.text.yellow}40;
+      }
+      100% {
+        background: transparent;
+      }
+    }
+
     div.tippy-box {
       position: relative;
       top: -0.625rem;

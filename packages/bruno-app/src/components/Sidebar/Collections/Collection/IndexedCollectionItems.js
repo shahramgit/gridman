@@ -219,6 +219,19 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
   const isTabForItemPresent = Boolean(existingRequestTab);
   const activeTabUid = useSelector((state) => state.tabs.activeTabUid);
   const isActiveTabRow = Boolean(existingRequestTab && existingRequestTab.uid === activeTabUid);
+  const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
+  const [revealFlash, setRevealFlash] = useState(false);
+  useEffect(() => {
+    if (!sidebarReveal || sidebarReveal.collectionUid !== collectionUid) {
+      return;
+    }
+    if (normalizeForPathCompare(sidebarReveal.pathname) !== normalizeForPathCompare(node.pathname)) {
+      return;
+    }
+    setRevealFlash(true);
+    const timer = setTimeout(() => setRevealFlash(false), 1800);
+    return () => clearTimeout(timer);
+  }, [sidebarReveal?.nonce]);
   const { hasCopiedItems } = useSelector((state) => state.app.clipboard);
   const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
   const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid), isEqual);
@@ -983,6 +996,7 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
           'cursor-pointer': true,
           'opacity-50': isDragging,
           'item-focused-in-tab': isActiveTabRow,
+          'reveal-flash': revealFlash,
           'item-hovered': isOver && canDrop && dropType,
           'drop-target': isOver && canDrop && dropType === 'inside',
           'drop-target-above': isOver && canDrop && dropType === 'adjacent'

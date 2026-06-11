@@ -155,8 +155,9 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
     }
   }, [isTabForItemActive]);
 
-  // Reveal-in-sidebar: scroll to this row when it is the reveal target
+  // Reveal-in-sidebar: scroll to this row and flash it when it is the target
   const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
+  const [revealFlash, setRevealFlash] = useState(false);
   useEffect(() => {
     if (!sidebarReveal || sidebarReveal.collectionUid !== collectionUid || !ref.current) {
       return;
@@ -170,6 +171,9 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
     } catch (err) {
       // ignore scroll errors
     }
+    setRevealFlash(true);
+    const timer = setTimeout(() => setRevealFlash(false), 1800);
+    return () => clearTimeout(timer);
   }, [sidebarReveal?.nonce]);
 
   const determineDropType = (monitor) => {
@@ -279,7 +283,8 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
     'item-hovered': isOver && canDrop,
     'drop-target': isOver && dropType === 'inside',
     'drop-target-above': isOver && dropType === 'adjacent',
-    'item-keyboard-focused': isKeyboardFocused
+    'item-keyboard-focused': isKeyboardFocused,
+    'reveal-flash': revealFlash
   });
 
   const handleRun = async () => {

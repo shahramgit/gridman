@@ -148,6 +148,41 @@ describe('workflows', () => {
     expect(result.drift['s1'].status).toBe('linked');
   });
 
+  it('yml-format requests hash deterministically despite parser-generated uids', async () => {
+    const { stringifyRequest } = require('@usebruno/filestore');
+    const ymlCollectionPath = path.join(workspacePath, 'collections', 'c-yml');
+    fs.mkdirSync(ymlCollectionPath, { recursive: true });
+    fs.writeFileSync(path.join(ymlCollectionPath, 'opencollection.yml'), 'name: c-yml\n');
+    const content = await stringifyRequest({
+      name: 'y',
+      type: 'http-request',
+      seq: 1,
+      request: {
+        url: 'http://h/p?a=1',
+        method: 'GET',
+        headers: [{ name: 'h1', value: 'v1', enabled: true }],
+        params: [{ name: 'a', value: '1', type: 'query', enabled: true }],
+        body: { mode: 'none' },
+        auth: { mode: 'none' }
+      }
+    }, { format: 'yml' });
+    fs.writeFileSync(path.join(ymlCollectionPath, 'y.yml'), content);
+
+    const first = await buildRequestSnapshot({
+      workspacePath,
+      collectionRelPath: 'collections/c-yml',
+      requestRelPath: 'y.yml'
+    });
+    const second = await buildRequestSnapshot({
+      workspacePath,
+      collectionRelPath: 'collections/c-yml',
+      requestRelPath: 'y.yml'
+    });
+
+    expect(first.hash).toBe(second.hash);
+    expect(JSON.stringify(first.snapshot)).not.toContain('"uid"');
+  });
+
   it('rejects paths escaping the workspace', async () => {
     await expect(buildRequestSnapshot({
       workspacePath,
