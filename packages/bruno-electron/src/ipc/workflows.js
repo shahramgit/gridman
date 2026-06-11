@@ -5,7 +5,8 @@ const {
   readWorkflowWithDrift,
   writeWorkflowFile,
   createWorkflow,
-  deleteWorkflow
+  deleteWorkflow,
+  evaluateWorkflowExpression
 } = require('../workflows');
 
 const registerWorkflowsIpc = () => {
@@ -29,6 +30,10 @@ const registerWorkflowsIpc = () => {
 
   ipcMain.handle('renderer:workflow-delete', async (event, { workspacePath, pathname }) => {
     return deleteWorkflow(workspacePath, pathname);
+  });
+
+  ipcMain.handle('renderer:workflow-evaluate-expression', async (event, { expression, res, vars }) => {
+    return evaluateWorkflowExpression(expression, { res, vars });
   });
 
   ipcMain.handle('renderer:workflow-snapshot-request', async (event, options) => {

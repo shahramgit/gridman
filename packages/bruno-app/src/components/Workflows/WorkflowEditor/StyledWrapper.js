@@ -210,6 +210,158 @@ const StyledWrapper = styled.div`
     &.run-failed {
       color: ${(props) => props.theme.colors.text.danger};
     }
+
+    &.run-stopped {
+      color: ${(props) => props.theme.colors.text.yellow};
+    }
+  }
+
+  .step-result.result-stopped {
+    color: ${(props) => props.theme.colors.text.yellow};
+  }
+
+  .step-block {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .step-type-icon {
+    display: flex;
+    align-items: center;
+    opacity: 0.7;
+  }
+
+  .step-name-input {
+    width: 100%;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: inherit;
+    font-size: 13px;
+    padding: 1px 4px;
+
+    &:hover,
+    &:focus {
+      border-color: ${(props) => props.theme.input.border};
+      outline: none;
+    }
+  }
+
+  .step-editor {
+    margin: 0 0 4px 76px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .workflow-inputs {
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid ${(props) => props.theme.input.border};
+    border-radius: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .inputs-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.6;
+  }
+
+  .editor-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    input,
+    select {
+      background: ${(props) => props.theme.input.bg};
+      border: 1px solid ${(props) => props.theme.input.border};
+      border-radius: 4px;
+      color: inherit;
+      font-size: 12px;
+      padding: 3px 6px;
+      min-width: 0;
+
+      &:focus {
+        outline: none;
+      }
+    }
+
+    input[type='number'] {
+      width: 90px;
+    }
+
+    .expression-input {
+      flex: 1;
+      font-family: monospace;
+    }
+  }
+
+  .editor-arrow {
+    font-size: 11px;
+    opacity: 0.6;
+    flex-shrink: 0;
+  }
+
+  .editor-add {
+    align-self: flex-start;
+    border: none;
+    background: transparent;
+    color: inherit;
+    opacity: 0.7;
+    font-size: 12px;
+    cursor: pointer;
+    padding: 1px 2px;
+
+    &:hover {
+      opacity: 1;
+      text-decoration: underline;
+    }
+  }
+
+  .editor-hint {
+    font-size: 11px;
+    opacity: 0.55;
+  }
+
+  .vars-inspector {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid ${(props) => props.theme.input.border};
+    border-radius: 5px;
+    color: ${(props) => props.theme.sidebar.color};
+  }
+
+  .vars-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.6;
+    margin-bottom: 4px;
+  }
+
+  .vars-row {
+    display: flex;
+    gap: 10px;
+    font-size: 12px;
+    font-family: monospace;
+  }
+
+  .vars-key {
+    min-width: 140px;
+    color: ${(props) => props.theme.colors.text.green};
+  }
+
+  .vars-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 `;
 

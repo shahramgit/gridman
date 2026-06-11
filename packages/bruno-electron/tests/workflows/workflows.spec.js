@@ -9,7 +9,9 @@ const {
   listWorkflows,
   readWorkflowWithDrift,
   createWorkflow,
-  writeWorkflowFile
+  writeWorkflowFile,
+  normalizeWorkflowDoc,
+  evaluateWorkflowExpression
 } = require('../../src/workflows');
 
 const REQUEST_BRU = `meta {
@@ -181,6 +183,33 @@ describe('workflows', () => {
 
     expect(first.hash).toBe(second.hash);
     expect(JSON.stringify(first.snapshot)).not.toContain('"uid"');
+  });
+
+  it('normalizes phase-2 step types and inputs', () => {
+    const doc = normalizeWorkflowDoc({
+      name: 'F',
+      inputs: [{ name: 'env', value: 'dev' }, { bad: true }, { name: '' }],
+      steps: [
+        { type: 'map', mappings: [{ from: 'weird', path: '$.x', target: 't' }, null] },
+        { type: 'condition', expression: 'res.status === 200', onFalse: 'nonsense' },
+        { type: 'delay', durationMs: 99999999 },
+        { type: 'unknown-step' }
+      ]
+    });
+
+    expect(doc.inputs).toEqual([{ name: 'env', value: 'dev' }]);
+    expect(doc.steps).toHaveLength(3);
+    expect(doc.steps[0].mappings).toEqual([{ from: 'body', path: '$.x', target: 't' }]);
+    expect(doc.steps[1].onFalse).toBe('stop');
+    expect(doc.steps[2].durationMs).toBe(5 * 60 * 1000);
+  });
+
+  it('evaluates condition expressions against res and vars', () => {
+    const res = { status: 200, headers: { 'x-a': '1' }, body: { ok: true } };
+    expect(evaluateWorkflowExpression('res.status === 200 && res.body.ok', { res, vars: {} })).toBe(true);
+    expect(evaluateWorkflowExpression('vars.token', { res, vars: { token: '' } })).toBe(false);
+    expect(evaluateWorkflowExpression('vars.count > 2', { res, vars: { count: 5 } })).toBe(true);
+    expect(() => evaluateWorkflowExpression('not valid js (', {})).toThrow();
   });
 
   it('rejects paths escaping the workspace', async () => {

@@ -30,6 +30,20 @@ export function getWorkspaceCollectionUids(state, workspace) {
 }
 
 /**
+ * Workflow tabs carry the workspace uid as collectionUid (there is no
+ * collection), so ownership is decided by the workflow file's path living
+ * inside the workspace folder. Without this, any workspace re-broadcast
+ * bounces focus away from an open workflow tab.
+ */
+const isWorkflowTabInWorkspace = (tab, workspace) => {
+  if (tab?.type !== 'workflow' || !tab.itemPathname || !workspace?.pathname) {
+    return false;
+  }
+  const workspacePath = normalizePath(workspace.pathname);
+  return normalizePath(tab.itemPathname).startsWith(`${workspacePath}/`);
+};
+
+/**
  * Returns the tab to focus so the active tab is in the current workspace, or null if no change needed.
  * Returns { uid } or { uid, addOverviewFirst: true, scratchCollectionUid }.
  */
@@ -49,10 +63,13 @@ export function getTabToFocusForCurrentWorkspace(state) {
     return null;
   }
   const workspaceCollectionUids = getWorkspaceCollectionUids(state, activeWorkspace);
-  if (workspaceCollectionUids.has(activeTab.collectionUid)) {
+  if (workspaceCollectionUids.has(activeTab.collectionUid) || isWorkflowTabInWorkspace(activeTab, activeWorkspace)) {
     return null;
   }
-  const inWorkspaceTabs = filter(state.tabs.tabs, (t) => workspaceCollectionUids.has(t.collectionUid));
+  const inWorkspaceTabs = filter(
+    state.tabs.tabs,
+    (t) => workspaceCollectionUids.has(t.collectionUid) || isWorkflowTabInWorkspace(t, activeWorkspace)
+  );
   if (inWorkspaceTabs.length > 0) {
     const overviewTab = inWorkspaceTabs.find((t) => t.type === 'workspaceOverview');
     return { uid: (overviewTab || last(inWorkspaceTabs)).uid };
