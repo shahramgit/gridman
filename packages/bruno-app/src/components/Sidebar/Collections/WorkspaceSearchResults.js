@@ -6,6 +6,7 @@ import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import { collectionIndexNodeActivated } from 'providers/ReduxStore/slices/collections';
 import { loadRequest, openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
 import { getDefaultRequestPaneTab } from 'utils/collections';
+import { foldSearchText } from '@usebruno/common';
 import SearchHighlight from './SearchHighlight';
 import { isTabForItemPresent as isTabForItemPresentSelector } from 'src/selectors/tab';
 import { isEqual } from 'lodash';
@@ -163,14 +164,14 @@ const flattenSearchTree = (nodes = [], collapsedNodeUids = new Set()) => {
 };
 
 const doesVisibleRowMatch = (node, searchText) => {
-  const query = searchText.trim().toLowerCase();
+  const query = foldSearchText(searchText.trim());
   if (!query) {
     return true;
   }
 
   return [node.name, node.filename, node.method, node.url]
     .filter(Boolean)
-    .some((value) => String(value).toLowerCase().includes(query));
+    .some((value) => foldSearchText(value).includes(query));
 };
 
 const formatMatchLabel = (field) => {
@@ -183,6 +184,10 @@ const formatMatchLabel = (field) => {
       return 'method';
     case 'filename':
       return 'file';
+    case 'headers':
+      return 'headers';
+    case 'body':
+      return 'body';
     case 'content':
       return 'content';
     case 'name':
@@ -278,7 +283,7 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
   );
 };
 
-const WorkspaceSearchResults = ({ searchText, activeWorkspace }) => {
+const WorkspaceSearchResults = ({ searchText, searchOptions, activeWorkspace }) => {
   const [results, setResults] = useState([]);
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState('');
@@ -381,7 +386,11 @@ const WorkspaceSearchResults = ({ searchText, activeWorkspace }) => {
         workspacePath: activeWorkspace.pathname,
         collectionPaths,
         query: trimmedSearchText,
-        limit: 250
+        limit: 250,
+        options: {
+          matchCase: Boolean(searchOptions?.matchCase),
+          scopes: searchOptions?.scopes
+        }
       }).catch((err) => {
         if (sessionRef.current === searchSessionId) {
           setStatus('failed');
@@ -391,7 +400,7 @@ const WorkspaceSearchResults = ({ searchText, activeWorkspace }) => {
     }, SEARCH_DEBOUNCE_MS);
 
     return () => clearTimeout(timer);
-  }, [activeWorkspace, collectionPaths, searchText]);
+  }, [activeWorkspace, collectionPaths, searchText, searchOptions]);
 
   if (searchText.trim().length < 2) {
     return (

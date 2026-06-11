@@ -1,13 +1,14 @@
 import { flattenItems, isItemARequest, isItemAFolder } from './index';
+import { foldSearchText } from '@usebruno/common';
 import find from 'lodash/find';
 
 const includesSearchText = (value, searchText = '') => {
-  const normalizedSearchText = searchText.toLowerCase().trim();
+  const normalizedSearchText = foldSearchText(searchText.trim());
   if (!normalizedSearchText) {
     return true;
   }
 
-  return String(value || '').toLowerCase().includes(normalizedSearchText);
+  return foldSearchText(value).includes(normalizedSearchText);
 };
 
 export const doesRequestMatchSearchText = (request, searchText = '') => {

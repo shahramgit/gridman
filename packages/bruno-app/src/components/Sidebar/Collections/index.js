@@ -9,8 +9,46 @@ import WorkspaceSearchResults from './WorkspaceSearchResults';
 import { normalizePath } from 'utils/common/path';
 import { isScratchCollection } from 'utils/collections';
 
+const SEARCH_OPTIONS_STORAGE_KEY = 'gridman.sidebar-search-options';
+
+const DEFAULT_SEARCH_OPTIONS = {
+  matchCase: false,
+  scopes: {
+    collections: true,
+    names: true,
+    url: true,
+    headers: true,
+    body: true
+  }
+};
+
+const readStoredSearchOptions = () => {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(SEARCH_OPTIONS_STORAGE_KEY));
+    if (!stored || typeof stored !== 'object') {
+      return DEFAULT_SEARCH_OPTIONS;
+    }
+    return {
+      matchCase: Boolean(stored.matchCase),
+      scopes: { ...DEFAULT_SEARCH_OPTIONS.scopes, ...(stored.scopes || {}) }
+    };
+  } catch (error) {
+    return DEFAULT_SEARCH_OPTIONS;
+  }
+};
+
 const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismissCreate, onOpenAdvancedCreate }) => {
   const [searchText, setSearchText] = useState('');
+  const [searchOptions, setSearchOptionsState] = useState(readStoredSearchOptions);
+
+  const setSearchOptions = (nextOptions) => {
+    setSearchOptionsState(nextOptions);
+    try {
+      window.localStorage.setItem(SEARCH_OPTIONS_STORAGE_KEY, JSON.stringify(nextOptions));
+    } catch (error) {
+      // localStorage unavailable; options stay in-memory for the session
+    }
+  };
   const { collections, collectionSortOrder } = useSelector((state) => state.collections);
   const { workspaces, activeWorkspaceUid } = useSelector((state) => state.workspaces);
 
@@ -69,7 +107,12 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
   return (
     <StyledWrapper data-testid="collections">
       {showSearch && (
-        <CollectionSearch searchText={searchText} setSearchText={setSearchText} />
+        <CollectionSearch
+          searchText={searchText}
+          setSearchText={setSearchText}
+          searchOptions={searchOptions}
+          setSearchOptions={setSearchOptions}
+        />
       )}
 
       <div className="collections-list">
@@ -81,7 +124,7 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
           />
         )}
         {searchText.trim().length >= 2 ? (
-          <WorkspaceSearchResults searchText={searchText} activeWorkspace={activeWorkspace} />
+          <WorkspaceSearchResults searchText={searchText} searchOptions={searchOptions} activeWorkspace={activeWorkspace} />
         ) : (
           sidebarEntries.map((entry) => (
             <Collection searchText={searchText} collection={entry.collection} key={entry.key} />

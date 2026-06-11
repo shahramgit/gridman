@@ -15,6 +15,7 @@ import { mountCollection } from 'providers/ReduxStore/slices/collections/actions
 import { getDefaultRequestPaneTab } from 'utils/collections';
 import { normalizePath } from 'utils/common/path';
 import { normalizeQuery, isValidQuery, highlightText, sortResults, getTypeLabel, getItemPath } from './utils/searchUtils';
+import { foldSearchText } from '@usebruno/common';
 import { SEARCH_TYPES, MATCH_TYPES, SEARCH_CONFIG, DOCUMENTATION_RESULT } from './constants';
 import StyledWrapper from './StyledWrapper';
 
@@ -67,7 +68,7 @@ const GlobalSearchModal = ({ isOpen, onClose }) => {
 
     collections.forEach((collection) => {
       // Search collection name
-      if (searchTerms.every((term) => collection.name.toLowerCase().includes(term))) {
+      if (searchTerms.every((term) => foldSearchText(collection.name).includes(term))) {
         results.push({
           type: SEARCH_TYPES.COLLECTION,
           item: collection,
@@ -82,12 +83,12 @@ const GlobalSearchModal = ({ isOpen, onClose }) => {
       const flattenedItems = flattenItems(collection.items);
       flattenedItems.forEach((item) => {
         const itemPath = getItemPath(item, collection, findParentItemInCollection);
-        const itemPathLower = itemPath.toLowerCase();
+        const itemPathLower = foldSearchText(itemPath);
 
         if (isItemARequest(item)) {
           // add an optional check for the item name to prevent a crash if it doesn’t exist.
-          const nameMatch = searchTerms.every((term) => (item.name || '').toLowerCase().includes(term));
-          const urlMatch = searchTerms.every((term) => (item.request?.url || '').toLowerCase().includes(term));
+          const nameMatch = searchTerms.every((term) => foldSearchText(item.name || '').includes(term));
+          const urlMatch = searchTerms.every((term) => foldSearchText(item.request?.url || '').includes(term));
           const pathMatch = enablePathMatch && searchTerms.every((term) => itemPathLower.includes(term));
 
           if (nameMatch || urlMatch || pathMatch) {
@@ -113,7 +114,7 @@ const GlobalSearchModal = ({ isOpen, onClose }) => {
             });
           }
         } else if (isItemAFolder(item)) {
-          const nameMatch = searchTerms.every((term) => item.name.toLowerCase().includes(term));
+          const nameMatch = searchTerms.every((term) => foldSearchText(item.name).includes(term));
           const pathMatch = enablePathMatch && searchTerms.every((term) => itemPathLower.includes(term));
 
           if (nameMatch || pathMatch) {
@@ -146,7 +147,7 @@ const GlobalSearchModal = ({ isOpen, onClose }) => {
       return;
     }
 
-    const searchTerms = normalizedQuery.toLowerCase().split(/[\s\/]+/).filter(Boolean);
+    const searchTerms = foldSearchText(normalizedQuery).split(/[\s\/]+/).filter(Boolean);
     if (!searchTerms.length) {
       setResults([]);
       return;

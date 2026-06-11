@@ -48,6 +48,7 @@ import CollectionItemInfo from './CollectionItem/CollectionItemInfo';
 import { getDefaultRequestPaneTab, getInitialExampleName } from 'utils/collections';
 import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname } from 'utils/collections';
 import { uuid } from 'utils/common';
+import { foldSearchText } from '@usebruno/common';
 import { sortByNameThenSequence } from 'utils/common/index';
 import { scrollToTheActiveTab } from 'utils/tabs';
 import ExampleItem from './CollectionItem/ExampleItem';
@@ -91,10 +92,10 @@ const nodeMatchesSearch = (node, searchText) => {
     return true;
   }
 
-  const text = searchText.toLowerCase();
+  const text = foldSearchText(searchText);
   return [node.name, node.method, node.url, node.pathname]
     .filter(Boolean)
-    .some((value) => String(value).toLowerCase().includes(text));
+    .some((value) => foldSearchText(value).includes(text));
 };
 
 const normalizeRequestType = (type) => {

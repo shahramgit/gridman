@@ -27,3 +27,10 @@ export {
   jsonToDotenv,
   DotenvVariable
 } from './jsonToDotenv';
+
+export {
+  foldSearchText,
+  foldSearchTextWithMap,
+  findFoldedMatchRange,
+  foldedIncludes
+} from './search-fold';

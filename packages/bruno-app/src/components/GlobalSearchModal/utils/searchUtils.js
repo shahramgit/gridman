@@ -1,4 +1,5 @@
 import React from 'react';
+import { findFoldedMatchRange } from '@usebruno/common';
 import { SEARCH_TYPES, MATCH_TYPES, SEARCH_CONFIG } from '../constants';
 
 export const normalizeQuery = (searchQuery) => {
@@ -8,23 +9,27 @@ export const normalizeQuery = (searchQuery) => {
 export const isValidQuery = (normalizedQuery) => {
   return normalizedQuery
     && normalizedQuery !== '/'
-    && !(normalizedQuery.length === 1 && !normalizedQuery.match(/[a-zA-Z0-9]/));
+    // Accept any single letter or digit in any script (e.g. Persian).
+    && !(normalizedQuery.length === 1 && !normalizedQuery.match(/[\p{L}\p{N}]/u));
 };
 
 export const highlightText = (text, searchQuery) => {
   if (!searchQuery) return text;
 
-  try {
-    const escapedQuery = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`(${escapedQuery})`, 'gi');
-    return text.split(regex).map((part, i) =>
-      regex.test(part) ? (
-        <span key={i} className="highlight">{part}</span>
-      ) : part
-    );
-  } catch {
-    return text;
+  const sourceText = String(text || '');
+  // Fold-aware so Persian/Arabic character variants highlight correctly.
+  const range = findFoldedMatchRange(sourceText, searchQuery.trim());
+  if (!range) {
+    return sourceText;
   }
+
+  return (
+    <>
+      {sourceText.slice(0, range.start)}
+      <span className="highlight">{sourceText.slice(range.start, range.end)}</span>
+      {sourceText.slice(range.end)}
+    </>
+  );
 };
 
 export const sortResults = (results) => {

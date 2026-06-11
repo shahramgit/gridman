@@ -420,6 +420,33 @@ const workspaceSearchJobs = new Map();
 const WORKSPACE_SEARCH_BATCH_SIZE = 25;
 const WORKSPACE_SEARCH_RESULT_LIMIT = 250;
 
+// In-memory search cache: pathname -> { mtimeMs, size, isFolderMeta, result,
+// folded: {...}, raw: {...} }. The first search after launch reads files from
+// disk; subsequent searches only stat (cheap) and match against folded
+// strings in memory, which is what makes repeated searches fast.
+const workspaceSearchFileCache = new Map();
+
+const WORKSPACE_SEARCH_DEFAULT_SCOPES = {
+  collections: true,
+  names: true,
+  url: true,
+  headers: true,
+  body: true
+};
+
+const BRU_HEADERS_BLOCK_REGEX = /(?:^|\n)headers\s*\{([\s\S]*?)\n\}/g;
+const BRU_BODY_BLOCK_REGEX = /(?:^|\n)body(?::[\w:-]+)?\s*\{([\s\S]*?)\n\}/g;
+
+const extractSearchBlocks = (content, regex) => {
+  const parts = [];
+  let match;
+  regex.lastIndex = 0;
+  while ((match = regex.exec(content)) !== null) {
+    parts.push(match[1]);
+  }
+  return parts.join('\n');
+};
+
 const cleanSearchMetaValue = (value) => {
   if (!value) {
     return '';
@@ -433,54 +460,23 @@ const extractSearchLineValue = (content, key) => {
   return cleanSearchMetaValue(match?.[1]);
 };
 
-const createSearchSnippet = (content, query) => {
+const createSearchSnippet = (content, query, foldOptions = {}) => {
   if (!content || !query) {
     return '';
   }
 
   const normalizedContent = String(content);
-  const lowerContent = normalizedContent.toLowerCase();
-  const matchIndex = lowerContent.indexOf(query);
-  if (matchIndex === -1) {
+  const range = utils.findFoldedMatchRange(normalizedContent, query, foldOptions);
+  if (!range) {
     return '';
   }
 
-  const start = Math.max(0, matchIndex - 40);
-  const end = Math.min(normalizedContent.length, matchIndex + query.length + 60);
+  const start = Math.max(0, range.start - 40);
+  const end = Math.min(normalizedContent.length, range.end + 60);
   const prefix = start > 0 ? '...' : '';
   const suffix = end < normalizedContent.length ? '...' : '';
 
   return `${prefix}${normalizedContent.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
-};
-
-const addSearchMatchInfo = (result, content, query) => {
-  const fields = [
-    ['name', result.name],
-    ['filename', result.filename],
-    ['method', result.method],
-    ['url', result.url]
-  ];
-
-  for (const [field, value] of fields) {
-    if (value && String(value).toLowerCase().includes(query)) {
-      return {
-        ...result,
-        matchField: field,
-        matchText: String(value)
-      };
-    }
-  }
-
-  const matchSnippet = createSearchSnippet(content, query);
-  if (matchSnippet) {
-    return {
-      ...result,
-      matchField: 'content',
-      matchText: matchSnippet
-    };
-  }
-
-  return result;
 };
 
 const extractSearchBruType = (content) => {
@@ -610,6 +606,79 @@ const createWorkspaceCollectionSearchResult = ({ workspacePath, collectionPath }
   };
 };
 
+const buildWorkspaceSearchCacheEntry = async ({ workspacePath, collectionPath, pathname, format, mtimeMs, size, isFolderMeta }) => {
+  const content = await readSearchText(pathname);
+  const result = isFolderMeta
+    ? createWorkspaceFolderSearchResult({ workspacePath, collectionPath, pathname, content, format })
+    : createWorkspaceSearchResult({ workspacePath, collectionPath, pathname, content, format });
+
+  const headersRaw = format === 'bru' ? extractSearchBlocks(content, BRU_HEADERS_BLOCK_REGEX) : content;
+  const bodyRaw = format === 'bru' ? extractSearchBlocks(content, BRU_BODY_BLOCK_REGEX) : content;
+
+  return {
+    mtimeMs,
+    size,
+    isFolderMeta,
+    result,
+    raw: {
+      name: result.name || '',
+      filename: result.filename || '',
+      url: result.url || '',
+      headers: headersRaw,
+      body: bodyRaw
+    },
+    folded: {
+      name: utils.foldSearchText(result.name),
+      filename: utils.foldSearchText(result.filename),
+      url: utils.foldSearchText(result.url),
+      headers: utils.foldSearchText(headersRaw),
+      body: utils.foldSearchText(bodyRaw)
+    }
+  };
+};
+
+// Match priority mirrors the result label order shown in the sidebar.
+const WORKSPACE_SEARCH_FIELD_SCOPES = [
+  ['name', 'names'],
+  ['filename', 'names'],
+  ['url', 'url'],
+  ['headers', 'headers'],
+  ['body', 'body']
+];
+
+const matchWorkspaceSearchEntry = (entry, job) => {
+  for (const [field, scope] of WORKSPACE_SEARCH_FIELD_SCOPES) {
+    if (!job.scopes[scope]) {
+      continue;
+    }
+
+    const foldedValue = entry.folded[field];
+    if (!foldedValue || !foldedValue.includes(job.foldedQueryCi)) {
+      continue;
+    }
+
+    // Case-insensitive folded strings are a superset filter; confirm against
+    // a case-preserving fold only when match-case is requested.
+    if (job.matchCase
+      && !utils.foldSearchText(entry.raw[field], { caseSensitive: true }).includes(job.foldedQueryCs)) {
+      continue;
+    }
+
+    if (field === 'headers' || field === 'body') {
+      const snippet = createSearchSnippet(
+        entry.raw[field],
+        job.query,
+        job.matchCase ? { caseSensitive: true } : {}
+      );
+      return { matchField: field, matchText: snippet || entry.raw[field].slice(0, 100) };
+    }
+
+    return { matchField: field, matchText: String(entry.raw[field]) };
+  }
+
+  return null;
+};
+
 const sendWorkspaceSearchBatch = (event, job, force = false) => {
   if (!job.results.length) {
     return;
@@ -626,7 +695,7 @@ const sendWorkspaceSearchBatch = (event, job, force = false) => {
   });
 };
 
-const walkWorkspaceSearchCollection = async ({ event, job, workspacePath, collectionPath, dirname, format, query }) => {
+const walkWorkspaceSearchCollection = async ({ event, job, workspacePath, collectionPath, dirname, format }) => {
   if (job.cancelled || job.totalResults >= job.limit) {
     return;
   }
@@ -649,7 +718,7 @@ const walkWorkspaceSearchCollection = async ({ event, job, workspacePath, collec
 
     const pathname = path.join(dirname, entry.name);
     if (entry.isDirectory()) {
-      await walkWorkspaceSearchCollection({ event, job, workspacePath, collectionPath, dirname: pathname, format, query });
+      await walkWorkspaceSearchCollection({ event, job, workspacePath, collectionPath, dirname: pathname, format });
       continue;
     }
 
@@ -661,29 +730,33 @@ const walkWorkspaceSearchCollection = async ({ event, job, workspacePath, collec
       continue;
     }
 
-    const isFolderMetadataFile = entry.name === `folder.${format}`;
+    job.seenPathnames.add(pathname);
 
-    const lowerFilename = entry.name.toLowerCase();
-    let content = '';
-    let matched = lowerFilename.includes(query);
-    if (!matched) {
-      content = await readSearchText(pathname);
-      matched = content.toLowerCase().includes(query);
-    }
-
-    if (!matched) {
+    let cacheEntry = workspaceSearchFileCache.get(pathname);
+    try {
+      const stat = await fs.promises.stat(pathname);
+      if (!cacheEntry || cacheEntry.mtimeMs !== stat.mtimeMs || cacheEntry.size !== stat.size) {
+        cacheEntry = await buildWorkspaceSearchCacheEntry({
+          workspacePath,
+          collectionPath,
+          pathname,
+          format,
+          mtimeMs: stat.mtimeMs,
+          size: stat.size,
+          isFolderMeta: entry.name === `folder.${format}`
+        });
+        workspaceSearchFileCache.set(pathname, cacheEntry);
+      }
+    } catch (_err) {
       continue;
     }
 
-    if (!content) {
-      content = await readSearchText(pathname);
+    const match = matchWorkspaceSearchEntry(cacheEntry, job);
+    if (!match) {
+      continue;
     }
 
-    const result = isFolderMetadataFile
-      ? createWorkspaceFolderSearchResult({ workspacePath, collectionPath, pathname, content, format })
-      : createWorkspaceSearchResult({ workspacePath, collectionPath, pathname, content, format });
-
-    job.results.push(addSearchMatchInfo(result, content, query));
+    job.results.push({ ...cacheEntry.result, ...match });
     job.totalResults += 1;
     sendWorkspaceSearchBatch(event, job);
   }
@@ -694,26 +767,38 @@ const startWorkspaceCollectionSearch = async (event, {
   workspacePath,
   collectionPaths = [],
   query,
-  limit = WORKSPACE_SEARCH_RESULT_LIMIT
+  limit = WORKSPACE_SEARCH_RESULT_LIMIT,
+  options = {}
 }) => {
   for (const job of workspaceSearchJobs.values()) {
     job.cancelled = true;
   }
   workspaceSearchJobs.clear();
 
-  const normalizedQuery = String(query || '').trim().toLowerCase();
+  const trimmedQuery = String(query || '').trim();
+  const matchCase = Boolean(options.matchCase);
+  const scopes = { ...WORKSPACE_SEARCH_DEFAULT_SCOPES, ...(options.scopes || {}) };
   const job = {
     searchSessionId,
     cancelled: false,
     results: [],
     totalResults: 0,
-    limit: Math.min(Math.max(Number(limit) || WORKSPACE_SEARCH_RESULT_LIMIT, 1), 500)
+    limit: Math.min(Math.max(Number(limit) || WORKSPACE_SEARCH_RESULT_LIMIT, 1), 500),
+    query: trimmedQuery,
+    matchCase,
+    scopes,
+    foldedQueryCi: utils.foldSearchText(trimmedQuery),
+    foldedQueryCs: utils.foldSearchText(trimmedQuery, { caseSensitive: true }),
+    seenPathnames: new Set()
   };
   workspaceSearchJobs.set(searchSessionId, job);
 
   event.sender.send('main:workspace-collection-search-started', { searchSessionId });
 
-  if (!normalizedQuery || normalizedQuery.length < 2 || !workspacePath || !collectionPaths.length) {
+  const searchesFileContent = scopes.names || scopes.url || scopes.headers || scopes.body;
+
+  if (!trimmedQuery || trimmedQuery.length < 2 || !workspacePath || !collectionPaths.length
+    || (!searchesFileContent && !scopes.collections)) {
     event.sender.send('main:workspace-collection-search-ready', {
       searchSessionId,
       totalResults: 0
@@ -723,6 +808,7 @@ const startWorkspaceCollectionSearch = async (event, {
   }
 
   try {
+    const searchedRoots = [];
     for (const collectionPath of collectionPaths) {
       if (job.cancelled || job.totalResults >= job.limit) {
         break;
@@ -732,29 +818,52 @@ const startWorkspaceCollectionSearch = async (event, {
         continue;
       }
 
-      if (path.basename(collectionPath).toLowerCase().includes(normalizedQuery)) {
-        job.results.push(addSearchMatchInfo(
-          createWorkspaceCollectionSearchResult({ workspacePath, collectionPath }),
-          '',
-          normalizedQuery
-        ));
-        job.totalResults += 1;
-        sendWorkspaceSearchBatch(event, job);
+      if (scopes.collections) {
+        const collectionName = path.basename(collectionPath);
+        const foldedName = utils.foldSearchText(collectionName);
+        const ciMatch = foldedName.includes(job.foldedQueryCi);
+        const matched = ciMatch && (!matchCase
+          || utils.foldSearchText(collectionName, { caseSensitive: true }).includes(job.foldedQueryCs));
+        if (matched) {
+          job.results.push({
+            ...createWorkspaceCollectionSearchResult({ workspacePath, collectionPath }),
+            matchField: 'name',
+            matchText: collectionName
+          });
+          job.totalResults += 1;
+          sendWorkspaceSearchBatch(event, job);
+        }
       }
 
-      const format = getCollectionFormat(collectionPath);
-      await walkWorkspaceSearchCollection({
-        event,
-        job,
-        workspacePath,
-        collectionPath,
-        dirname: collectionPath,
-        format,
-        query: normalizedQuery
-      });
+      if (searchesFileContent) {
+        searchedRoots.push(collectionPath);
+        const format = getCollectionFormat(collectionPath);
+        await walkWorkspaceSearchCollection({
+          event,
+          job,
+          workspacePath,
+          collectionPath,
+          dirname: collectionPath,
+          format
+        });
+      }
     }
 
     sendWorkspaceSearchBatch(event, job, true);
+
+    // Drop cache entries for files that no longer exist under the searched
+    // roots so the cache cannot grow without bound. Only prune when the walk
+    // ran to completion; a result-limit or cancellation cutoff leaves
+    // unvisited files that must not be evicted.
+    if (!job.cancelled && job.totalResults < job.limit) {
+      for (const pathname of workspaceSearchFileCache.keys()) {
+        const underSearchedRoot = searchedRoots.some((root) => pathname.startsWith(`${root}${path.sep}`));
+        if (underSearchedRoot && !job.seenPathnames.has(pathname)) {
+          workspaceSearchFileCache.delete(pathname);
+        }
+      }
+    }
+
     if (!job.cancelled) {
       event.sender.send('main:workspace-collection-search-ready', {
         searchSessionId,

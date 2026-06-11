@@ -5,3 +5,4 @@ export { default as isRequestTagsIncluded } from './tags';
 export { transformExampleStatusInCollection } from './example-status';
 
 export * as utils from './utils';
+export { foldSearchText, foldSearchTextWithMap, findFoldedMatchRange, foldedIncludes } from './utils/search-fold';
