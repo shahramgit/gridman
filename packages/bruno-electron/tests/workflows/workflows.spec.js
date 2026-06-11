@@ -188,7 +188,7 @@ describe('workflows', () => {
   it('normalizes phase-2 step types and inputs', () => {
     const doc = normalizeWorkflowDoc({
       name: 'F',
-      inputs: [{ name: 'env', value: 'dev' }, { bad: true }, { name: '' }],
+      inputs: [{ name: 'env', value: 'dev' }, null, { name: '' }],
       steps: [
         { type: 'map', mappings: [{ from: 'weird', path: '$.x', target: 't' }, null] },
         { type: 'condition', expression: 'res.status === 200', onFalse: 'nonsense' },
@@ -197,7 +197,8 @@ describe('workflows', () => {
       ]
     });
 
-    expect(doc.inputs).toEqual([{ name: 'env', value: 'dev' }]);
+    // blank-name rows survive (the editor adds empty rows the user fills in)
+    expect(doc.inputs).toEqual([{ name: 'env', value: 'dev' }, { name: '', value: '' }]);
     expect(doc.steps).toHaveLength(3);
     expect(doc.steps[0].mappings).toEqual([{ from: 'body', path: '$.x', target: 't' }]);
     expect(doc.steps[1].onFalse).toBe('stop');
