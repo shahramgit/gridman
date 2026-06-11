@@ -453,16 +453,20 @@ const RequestTabPanel = () => {
   }
 
   if (focusedTab.type === 'folder-settings') {
-    const folder = findItemInCollection(collection, focusedTab.folderUid);
-    if (!folder) {
-      return <FolderNotFound folderUid={focusedTab.folderUid} />;
+    let folder = findItemInCollection(collection, focusedTab.folderUid);
+    if (!folder && focusedTab.pathname) {
+      folder = findItemInCollectionByPathname(collection, focusedTab.pathname);
     }
 
-    return (
-      <ScopedPersistenceProvider scope={focusedTab.uid}>
-        <FolderSettings collection={collection} folder={folder} />
-      </ScopedPersistenceProvider>
-    );
+    if (folder) {
+      return (
+        <ScopedPersistenceProvider scope={focusedTab.uid}>
+          <FolderSettings collection={collection} folder={folder} />
+        </ScopedPersistenceProvider>
+      );
+    }
+
+    return <FolderNotFound folderUid={focusedTab.folderUid} />;
   }
 
   if (focusedTab.type === 'environment-settings') {
