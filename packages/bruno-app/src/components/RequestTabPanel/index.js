@@ -10,6 +10,7 @@ import GrpcResponsePane from 'components/ResponsePane/GrpcResponsePane';
 import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname } from 'utils/collections';
 import { sendRequest } from 'providers/ReduxStore/slices/collections/actions';
 import { updateGqlDocsOpen } from 'providers/ReduxStore/slices/tabs';
+import { revealRequestInSidebar } from 'providers/ReduxStore/slices/app';
 import RequestNotFound from './RequestNotFound';
 import QueryUrl from 'components/RequestPane/QueryUrl/index';
 import GrpcQueryUrl from 'components/RequestPane/GrpcQueryUrl/index';
@@ -160,6 +161,22 @@ const RequestTabPanel = () => {
     : findItemInCollection(collection, requestItemUid);
   const [dragging, setDragging] = useState(false);
   const draggingRef = useRef(false);
+
+  // When a request tab becomes active (click, double click, tab switch),
+  // reveal its request in the sidebar: expand ancestors and scroll to it.
+  useEffect(() => {
+    if (!isRequestTab || !focusedTab?.collectionUid) {
+      return;
+    }
+    const revealPathname = focusedTab.itemPathname || panelItem?.pathname;
+    if (!revealPathname) {
+      return;
+    }
+    dispatch(revealRequestInSidebar({
+      collectionUid: focusedTab.collectionUid,
+      pathname: revealPathname
+    }));
+  }, [activeTabUid]);
 
   useEffect(() => {
     if (!isRequestTab || !focusedTab?.collectionUid) {

@@ -76,7 +76,10 @@ const initialState = {
     collection: { query: '', expanded: false },
     global: { query: '', expanded: false }
   },
-  isCreatingCollection: false
+  isCreatingCollection: false,
+  // { nonce, collectionUid, pathname } - sidebar components react to nonce
+  // changes by expanding ancestors and scrolling the request into view
+  sidebarReveal: null
 };
 
 export const appSlice = createSlice({
@@ -94,6 +97,10 @@ export const appSlice = createSlice({
     },
     updateIsDragging: (state, action) => {
       state.isDragging = action.payload.isDragging;
+    },
+    revealRequestInSidebar: (state, action) => {
+      const { collectionUid, pathname } = action.payload;
+      state.sidebarReveal = { nonce: Date.now(), collectionUid, pathname };
     },
     showHomePage: (state) => {
       state.showHomePage = true;
@@ -204,6 +211,7 @@ export const {
   refreshScreenWidth,
   updateLeftSidebarWidth,
   updateIsDragging,
+  revealRequestInSidebar,
   showHomePage,
   hideHomePage,
   showManageWorkspacePage,

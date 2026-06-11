@@ -155,6 +155,23 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
     }
   }, [isTabForItemActive]);
 
+  // Reveal-in-sidebar: scroll to this row when it is the reveal target
+  const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
+  useEffect(() => {
+    if (!sidebarReveal || sidebarReveal.collectionUid !== collectionUid || !ref.current) {
+      return;
+    }
+    const normalizeSeparators = (value) => String(value || '').replace(/\\/g, '/');
+    if (normalizeSeparators(sidebarReveal.pathname) !== normalizeSeparators(item.pathname)) {
+      return;
+    }
+    try {
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } catch (err) {
+      // ignore scroll errors
+    }
+  }, [sidebarReveal?.nonce]);
+
   const determineDropType = (monitor) => {
     const hoverBoundingRect = ref.current?.getBoundingClientRect();
     const clientOffset = monitor.getClientOffset();

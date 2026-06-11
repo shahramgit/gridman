@@ -6,6 +6,8 @@ import { findEnvironmentInCollection, getGlobalEnvironmentVariables } from 'util
 import { normalizePath } from 'utils/common/path';
 import { sendNetworkRequest } from 'utils/network';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
+import { revealRequestInSidebar } from 'providers/ReduxStore/slices/app';
+import { openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
 
 const initialState = {
   // workspaceUid -> [{ pathname, filename, name }]
@@ -268,6 +270,7 @@ export const syncWorkflowSteps = (pathname, stepIds) => async (dispatch, getStat
 
   const doc = cloneDeep(openWorkflowState.doc);
   const idsToSync = new Set(stepIds || doc.steps.map((step) => step.id));
+  const failures = [];
 
   for (const step of doc.steps) {
     if (!idsToSync.has(step.id) || !step.ref?.collection || !step.ref?.request) {
@@ -284,11 +287,49 @@ export const syncWorkflowSteps = (pathname, stepIds) => async (dispatch, getStat
       step.snapshotHash = hash;
       step.name = snapshot.name || step.name;
     } catch (error) {
-      // detached steps keep their snapshot
+      // detached steps keep their snapshot; surface everything else
+      failures.push(`${step.name}: ${error?.message || 'sync failed'}`);
     }
   }
 
   await dispatch(saveWorkflowDoc(pathname, doc));
+
+  if (failures.length) {
+    throw new Error(`Could not sync ${failures.length} step(s) - ${failures[0]}`);
+  }
+};
+
+// Show the step's referenced request in the sidebar, opening its collection
+// first when it is not loaded yet.
+export const revealWorkflowStep = (pathname, stepId) => async (dispatch, getState) => {
+  const state = getState();
+  const workspace = getActiveWorkspace(state);
+  const step = state.workflows.open[pathname]?.doc?.steps?.find((candidate) => candidate.id === stepId);
+  if (!workspace?.pathname || !step?.ref?.collection || !step?.ref?.request) {
+    throw new Error('This step has no linked request');
+  }
+
+  const collectionPathname = `${workspace.pathname}/${step.ref.collection}`;
+  const requestPathname = `${collectionPathname}/${step.ref.request}`;
+  const findLoaded = () => getState().collections.collections.find(
+    (collection) => normalizePath(collection.pathname) === normalizePath(collectionPathname)
+  );
+
+  let collection = findLoaded();
+  if (!collection) {
+    await dispatch(openMultipleCollections([collectionPathname], { workspacePath: workspace.pathname }));
+    collection = findLoaded();
+  }
+  if (!collection) {
+    throw new Error('The referenced collection is not available in this workspace');
+  }
+
+  // Build the request path from the loaded collection's native pathname so
+  // separator-insensitive matching works on Windows too.
+  dispatch(revealRequestInSidebar({
+    collectionUid: collection.uid,
+    pathname: `${collection.pathname}/${step.ref.request}`
+  }));
 };
 
 const SUPPORTED_RUN_TYPES = new Set(['http-request', 'graphql-request']);

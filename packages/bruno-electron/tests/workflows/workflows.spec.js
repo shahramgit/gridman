@@ -121,6 +121,33 @@ describe('workflows', () => {
     expect(JSON.stringify(result.doc.steps[0].snapshot)).toContain('{{baseUrl}}');
   });
 
+  it('snapshots stay linked after a yaml roundtrip even with undefined fields', async () => {
+    const pathname = await createWorkflow(workspacePath, 'Roundtrip');
+    const { snapshot, hash, collectionRelPath, requestRelPath } = await snapshotRequestForWorkflow({
+      workspacePath,
+      collectionPathname: collectionPath,
+      requestPathname: requestPath
+    });
+
+    // simulate parser artifacts that yaml cannot represent
+    const dirtySnapshot = { ...snapshot, settings: { ...snapshot.settings, ghost: undefined } };
+
+    await writeWorkflowFile(pathname, {
+      name: 'Roundtrip',
+      steps: [{
+        id: 's1',
+        type: 'request',
+        name: snapshot.name,
+        ref: { collection: collectionRelPath, request: requestRelPath },
+        snapshotHash: hash,
+        snapshot: dirtySnapshot
+      }]
+    });
+
+    const result = await readWorkflowWithDrift(workspacePath, pathname);
+    expect(result.drift['s1'].status).toBe('linked');
+  });
+
   it('rejects paths escaping the workspace', async () => {
     await expect(buildRequestSnapshot({
       workspacePath,

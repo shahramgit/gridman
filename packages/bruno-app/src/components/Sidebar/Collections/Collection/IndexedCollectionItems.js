@@ -217,6 +217,8 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     )) || null;
   }, isEqual);
   const isTabForItemPresent = Boolean(existingRequestTab);
+  const activeTabUid = useSelector((state) => state.tabs.activeTabUid);
+  const isActiveTabRow = Boolean(existingRequestTab && existingRequestTab.uid === activeTabUid);
   const { hasCopiedItems } = useSelector((state) => state.app.clipboard);
   const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
   const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid), isEqual);
@@ -980,6 +982,7 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
         className={classnames('flex collection-item-name relative items-center', {
           'cursor-pointer': true,
           'opacity-50': isDragging,
+          'item-focused-in-tab': isActiveTabRow,
           'item-hovered': isOver && canDrop && dropType,
           'drop-target': isOver && canDrop && dropType === 'inside',
           'drop-target-above': isOver && canDrop && dropType === 'adjacent'
@@ -1084,6 +1087,48 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
   const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
   const [expandedNodeUids, setExpandedNodeUids] = useState(() => new Set());
   const visibleRows = useVisibleRows({ index, expandedNodeUids, searchText });
+  const virtuosoRef = useRef(null);
+  const pendingRevealNodeUidRef = useRef(null);
+  const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
+
+  // Reveal-in-sidebar: expand the ancestor chain of the revealed request,
+  // then scroll the virtualized list to its row once rows recompute.
+  useEffect(() => {
+    if (!sidebarReveal || sidebarReveal.collectionUid !== collectionUid || !index?.nodesByUid) {
+      return;
+    }
+
+    const normalizedTarget = normalizeForPathCompare(sidebarReveal.pathname);
+    const node = Object.values(index.nodesByUid)
+      .find((candidate) => normalizeForPathCompare(candidate.pathname) === normalizedTarget);
+    if (!node) {
+      return;
+    }
+
+    setExpandedNodeUids((current) => {
+      const next = new Set(current);
+      const seen = new Set();
+      let parentUid = node.parentUid;
+      while (parentUid && !seen.has(parentUid)) {
+        seen.add(parentUid);
+        next.add(parentUid);
+        parentUid = index.nodesByUid[parentUid]?.parentUid;
+      }
+      return next;
+    });
+    pendingRevealNodeUidRef.current = node.uid;
+  }, [sidebarReveal?.nonce]);
+
+  useEffect(() => {
+    if (!pendingRevealNodeUidRef.current) {
+      return;
+    }
+    const rowIndex = visibleRows.findIndex((row) => row.uid === pendingRevealNodeUidRef.current);
+    if (rowIndex >= 0) {
+      virtuosoRef.current?.scrollToIndex?.({ index: rowIndex, align: 'center' });
+      pendingRevealNodeUidRef.current = null;
+    }
+  }, [visibleRows]);
 
   const onToggleFolder = (uid) => {
     setExpandedNodeUids((current) => {
@@ -1123,6 +1168,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
         </div>
       ) : null}
       <Virtuoso
+        ref={virtuosoRef}
         style={{ height: listHeight }}
         data={visibleRows}
         computeItemKey={(_index, node) => node.pathname || node.uid}

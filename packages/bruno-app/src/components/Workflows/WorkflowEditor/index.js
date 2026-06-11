@@ -12,6 +12,7 @@ import {
   IconPlayerPlay,
   IconPlus,
   IconRefresh,
+  IconTarget,
   IconTrash
 } from '@tabler/icons';
 
@@ -20,6 +21,7 @@ import {
   moveWorkflowStep,
   refreshWorkflow,
   removeWorkflowStep,
+  revealWorkflowStep,
   runWorkflow,
   syncWorkflowSteps,
   togglePinWorkflowStep
@@ -203,10 +205,22 @@ const WorkflowEditor = ({ pathname }) => {
                 )}
 
                 <span className="step-actions">
+                  <ActionIcon
+                    label="Show request in sidebar"
+                    onClick={() => {
+                      dispatch(revealWorkflowStep(pathname, step.id))
+                        .catch((error) => toast.error(error?.message || 'Unable to locate request'));
+                    }}
+                  >
+                    <IconTarget size={14} stroke={1.5} />
+                  </ActionIcon>
                   {stepDrift.status === 'drifted' && !step.pinned && (
                     <ActionIcon
                       label="Sync snapshot from request"
-                      onClick={() => dispatch(syncWorkflowSteps(pathname, [step.id]))}
+                      onClick={() => {
+                        dispatch(syncWorkflowSteps(pathname, [step.id]))
+                          .catch((error) => toast.error(error?.message || 'Unable to sync step'));
+                      }}
                     >
                       <IconRefresh size={14} stroke={1.5} />
                     </ActionIcon>

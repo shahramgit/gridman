@@ -23,7 +23,7 @@ import {
   IconBook
 } from '@tabler/icons';
 import OpenAPISyncIcon from 'components/Icons/OpenAPISync';
-import { toggleCollection, collapseFullCollection } from 'providers/ReduxStore/slices/collections';
+import { toggleCollection, collapseFullCollection, toggleCollectionItem } from 'providers/ReduxStore/slices/collections';
 import {
   mountCollection,
   moveCollectionAndPersist,
@@ -44,7 +44,7 @@ import IndexedCollectionItems from './IndexedCollectionItems';
 import SearchHighlight from '../SearchHighlight';
 import RemoveCollection from './RemoveCollection';
 import { doesCollectionHaveItemsMatchingSearchText } from 'utils/collections/search';
-import { isItemAFolder, isItemARequest, areItemsLoading } from 'utils/collections';
+import { isItemAFolder, isItemARequest, areItemsLoading, flattenItems, findParentItemInCollection } from 'utils/collections';
 import { isTabForItemActive } from 'src/selectors/tab';
 
 import RenameCollection from './RenameCollection';
@@ -92,6 +92,39 @@ const Collection = ({ collection, searchText }) => {
 
   const isCollectionFocused = useSelector(isTabForItemActive({ itemUid: collection.uid }));
   const { hasCopiedItems } = useSelector((state) => state.app.clipboard);
+  const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
+
+  // Reveal-in-sidebar: expand this collection and (for classic trees) the
+  // collapsed ancestor folders of the revealed request. Scrolling is handled
+  // by the row components; the indexed renderer expands its own node chain.
+  useEffect(() => {
+    if (!sidebarReveal || sidebarReveal.collectionUid !== collection.uid) {
+      return;
+    }
+
+    if (collection.collapsed) {
+      dispatch(toggleCollection(collection.uid));
+    }
+
+    if (collectionIndex) {
+      return;
+    }
+
+    const normalizeSeparators = (value) => String(value || '').replace(/\\/g, '/');
+    const revealedItem = flattenItems(collection.items)
+      .find((candidate) => normalizeSeparators(candidate.pathname) === normalizeSeparators(sidebarReveal.pathname));
+    if (!revealedItem) {
+      return;
+    }
+
+    let currentItem = findParentItemInCollection(collection, revealedItem.uid);
+    while (currentItem?.type === 'folder') {
+      if (currentItem.collapsed) {
+        dispatch(toggleCollectionItem({ collectionUid: collection.uid, itemUid: currentItem.uid }));
+      }
+      currentItem = findParentItemInCollection(collection, currentItem.uid);
+    }
+  }, [sidebarReveal?.nonce]);
   const menuDropdownRef = useRef(null);
 
   // Open the OpenAPI Sync tab
