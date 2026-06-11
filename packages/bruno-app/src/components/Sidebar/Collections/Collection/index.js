@@ -272,11 +272,13 @@ const Collection = ({ collection, searchText }) => {
     drop: (draggedItem, monitor) => {
       const itemType = monitor.getItemType();
       if (isCollectionItem(itemType)) {
-        if (draggedItem.sourcePathname) {
+        const isCrossCollection = draggedItem.sourceCollectionUid && draggedItem.sourceCollectionUid !== collection.uid;
+        const isPathOnlyDragItem = Boolean(draggedItem.sourcePathname) && !draggedItem.filename;
+        if (isCrossCollection || isPathOnlyDragItem) {
           dispatch(moveCollectionItemByPath({
             sourceCollectionUid: draggedItem.sourceCollectionUid || collection.uid,
             targetCollectionUid: collection.uid,
-            sourcePathname: draggedItem.sourcePathname,
+            sourcePathname: draggedItem.sourcePathname || draggedItem.pathname,
             targetPathname: collection.pathname,
             dropType: 'inside'
           })).catch((error) => {

@@ -255,6 +255,82 @@ const createFolderByPath = async ({ parentPathname, collectionPathname, folderNa
   return targetPathname;
 };
 
+// Windows can throw EPERM/EBUSY on rename when a watcher or indexer holds a
+// handle on the directory (same issue worked around in renderer:rename-item).
+// Fall back to copy + remove in that case.
+const movePathWithWindowsFallback = async (sourcePathname, targetPathname) => {
+  try {
+    await fsExtra.move(sourcePathname, targetPathname, { overwrite: false });
+  } catch (error) {
+    const isTransientWindowsError = process.platform === 'win32'
+      && ['EPERM', 'EBUSY', 'EACCES'].includes(error?.code);
+    if (!isTransientWindowsError) {
+      throw error;
+    }
+
+    await fsExtra.copy(sourcePathname, targetPathname, { overwrite: false, errorOnExist: true });
+    await fsExtra.remove(sourcePathname);
+  }
+};
+
+const REQUEST_FILE_EXTENSION_BY_FORMAT = {
+  bru: '.bru',
+  yml: '.yml'
+};
+
+// Recursively copy a folder while converting request/folder files between
+// collection formats. Returns [sourcePath, targetPath] pairs for request uid
+// remapping.
+const convertFolderBetweenFormats = async ({ sourcePathname, targetPathname, sourceFormat, targetFormat }) => {
+  const sourceExt = REQUEST_FILE_EXTENSION_BY_FORMAT[sourceFormat] || '.bru';
+  const targetExt = REQUEST_FILE_EXTENSION_BY_FORMAT[targetFormat] || '.bru';
+  const movedPairs = [];
+
+  const walk = async (sourceDir, targetDir) => {
+    await fsExtra.ensureDir(targetDir);
+    const entries = await fs.promises.readdir(sourceDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const sourceEntryPath = path.join(sourceDir, entry.name);
+
+      if (entry.isDirectory()) {
+        await walk(sourceEntryPath, path.join(targetDir, entry.name));
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      const isFolderMeta = entry.name === `folder${sourceExt}`;
+      const isRequestFile = !isFolderMeta && entry.name.endsWith(sourceExt);
+
+      if (isFolderMeta) {
+        const content = await fs.promises.readFile(sourceEntryPath, 'utf8');
+        const parsed = await parseFolder(content, { format: sourceFormat });
+        const stringified = await stringifyFolder(parsed, { format: targetFormat });
+        await writeFile(path.join(targetDir, `folder${targetExt}`), stringified);
+        continue;
+      }
+
+      if (isRequestFile) {
+        const content = await fs.promises.readFile(sourceEntryPath, 'utf8');
+        const parsed = await parseRequest(content, { format: sourceFormat });
+        const targetEntryPath = path.join(targetDir, `${path.basename(entry.name, sourceExt)}${targetExt}`);
+        const stringified = await stringifyRequest(parsed, { format: targetFormat });
+        await writeFile(targetEntryPath, stringified);
+        movedPairs.push([sourceEntryPath, targetEntryPath]);
+        continue;
+      }
+
+      await fsExtra.copy(sourceEntryPath, path.join(targetDir, entry.name));
+    }
+  };
+
+  await walk(sourcePathname, targetPathname);
+  return movedPairs;
+};
+
 const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollectionPathname, targetCollectionPathname }) => {
   if (!fs.existsSync(sourcePathname)) {
     throw new Error(`path: ${sourcePathname} does not exist`);
@@ -278,11 +354,22 @@ const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollection
 
   const sourceFormat = getCollectionFormat(sourceCollectionPathname);
   const targetFormat = getCollectionFormat(targetCollectionPathname);
-  if (sourceKind === 'folder' && sourceFormat !== targetFormat) {
-    throw new Error('Moving folders between collections with different formats is not supported');
-  }
 
   const pathnamesBefore = await getPaths(sourcePathname);
+
+  if (sourceKind === 'folder' && sourceFormat !== targetFormat) {
+    const movedPairs = await convertFolderBetweenFormats({
+      sourcePathname,
+      targetPathname,
+      sourceFormat,
+      targetFormat
+    });
+    await removePath(sourcePathname);
+    for (const [before, after] of movedPairs) {
+      moveRequestUid(before, after);
+    }
+    return targetPathname;
+  }
 
   if (sourceKind === 'request' && sourceFormat !== targetFormat) {
     const sourceContent = await fs.promises.readFile(sourcePathname, 'utf8');
@@ -292,7 +379,7 @@ const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollection
     await writeFile(targetPathname, finalContent);
     await removePath(sourcePathname);
   } else {
-    await fsExtra.move(sourcePathname, targetPathname, { overwrite: false });
+    await movePathWithWindowsFallback(sourcePathname, targetPathname);
   }
 
   const pathnamesAfter = pathnamesBefore?.map((p) => p?.replace(sourcePathname, targetPathname));

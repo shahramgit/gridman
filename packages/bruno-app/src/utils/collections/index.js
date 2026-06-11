@@ -1515,6 +1515,14 @@ export const getReorderedItemsInSourceDirectory = ({ items }) => {
 export const calculateDraggedItemNewPathname = ({ draggedItem, targetItem, dropType, collectionPathname }) => {
   const { pathname: targetItemPathname } = targetItem;
   const { filename: draggedItemFilename } = draggedItem;
+
+  // Drag payloads from the indexed sidebar carry only pathnames; guard so a
+  // missing field surfaces as "cannot drop" instead of a path.join crash.
+  if (typeof targetItemPathname !== 'string' || !targetItemPathname
+    || typeof draggedItemFilename !== 'string' || !draggedItemFilename) {
+    return null;
+  }
+
   const targetItemDirname = path.dirname(targetItemPathname);
   const isTargetTheCollection = targetItemPathname === collectionPathname;
   const isTargetItemAFolder = isItemAFolder(targetItem);

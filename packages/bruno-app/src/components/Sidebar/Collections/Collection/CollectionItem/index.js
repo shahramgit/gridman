@@ -126,7 +126,12 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
 
   const [{ isDragging }, drag, dragPreview] = useDrag({
     type: 'collection-item',
-    item: { ...item, sourceCollectionUid: collectionUid },
+    item: {
+      ...item,
+      sourceCollectionUid: collectionUid,
+      sourcePathname: item.pathname,
+      sourceCollectionPathname: collectionPathname
+    },
     collect: (monitor) => ({
       isDragging: monitor.isDragging()
     }),
@@ -216,11 +221,17 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
       if (!dropType) return;
 
       try {
-        if (draggedItem.sourcePathname) {
+        // Cross-collection moves and drags originating from the indexed
+        // sidebar (no hydrated item fields) go through the path-based move,
+        // which handles format conversion in the main process. Same-collection
+        // classic drags keep handleCollectionItemDrop for seq reordering.
+        const isCrossCollection = draggedItem.sourceCollectionUid && draggedItem.sourceCollectionUid !== collectionUid;
+        const isPathOnlyDragItem = Boolean(draggedItem.sourcePathname) && !draggedItem.filename;
+        if (isCrossCollection || isPathOnlyDragItem) {
           await dispatch(moveCollectionItemByPath({
             sourceCollectionUid: draggedItem.sourceCollectionUid || collectionUid,
             targetCollectionUid: collectionUid,
-            sourcePathname: draggedItem.sourcePathname,
+            sourcePathname: draggedItem.sourcePathname || draggedItem.pathname,
             targetPathname: item.pathname,
             dropType
           }));
