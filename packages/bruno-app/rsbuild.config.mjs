@@ -29,6 +29,11 @@ export default defineConfig({
   html: {
     title: 'Gridman'
   },
+  output: {
+    // The packaged Electron app loads index.html from file://, so runtime
+    // asset URLs (JS-imported images) must be relative, not rooted at "/".
+    assetPrefix: './'
+  },
   tools: {
     rspack: {
       module: {

@@ -41,6 +41,11 @@ const formatErrorMessage = (error) => {
   return error;
 };
 
+// Content types that say nothing about the actual payload (chunked
+// downloads, generic binary). For these, trust the magic-byte sniffed type
+// so previewable content (images, pdf, audio, video) still opens in preview.
+const GENERIC_CONTENT_TYPE_REGEX = /octet-stream|application\/binary|application\/unknown/i;
+
 // Custom hook to determine the initial format and tab based on the data buffer and headers
 export const useInitialResponseFormat = (dataBuffer, headers) => {
   return useMemo(() => {
@@ -52,7 +57,10 @@ export const useInitialResponseFormat = (dataBuffer, headers) => {
       return { initialFormat: null, initialTab: null, contentType: contentType };
     }
 
-    const initial = getDefaultResponseFormat(contentType);
+    const headerTypeIsGeneric = !contentType || GENERIC_CONTENT_TYPE_REGEX.test(contentType);
+    const effectiveContentType = headerTypeIsGeneric && detectedContentType ? detectedContentType : contentType;
+
+    const initial = getDefaultResponseFormat(effectiveContentType);
     return { initialFormat: initial.format, initialTab: initial.tab, contentType: contentType };
   }, [dataBuffer, headers]);
 };
