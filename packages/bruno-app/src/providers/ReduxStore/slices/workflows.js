@@ -93,6 +93,20 @@ export const loadWorkflows = () => async (dispatch, getState) => {
   dispatch(workflowsListed({ workspaceUid: workspace.uid, workflows }));
 };
 
+// Re-read the workflow document and recompute drift without touching tabs.
+export const refreshWorkflow = (pathname) => async (dispatch, getState) => {
+  const workspace = getActiveWorkspace(getState());
+  if (!workspace?.pathname) {
+    return;
+  }
+
+  const { doc, drift } = await window.ipcRenderer.invoke('renderer:workflow-read', {
+    workspacePath: workspace.pathname,
+    pathname
+  });
+  dispatch(workflowOpened({ pathname, doc, drift }));
+};
+
 export const openWorkflow = (pathname) => async (dispatch, getState) => {
   const state = getState();
   const workspace = getActiveWorkspace(state);

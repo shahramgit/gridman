@@ -18,7 +18,7 @@ import {
 import {
   addWorkflowRequestStep,
   moveWorkflowStep,
-  openWorkflow,
+  refreshWorkflow,
   removeWorkflowStep,
   runWorkflow,
   syncWorkflowSteps,
@@ -49,11 +49,11 @@ const WorkflowEditor = ({ pathname }) => {
   const openWorkflowState = useSelector((state) => state.workflows.open[pathname]);
   const run = useSelector((state) => state.workflows.runs[pathname]);
 
+  // Re-read the document and drift every time this tab is shown, so request
+  // edits saved while the user was elsewhere are reflected immediately.
   useEffect(() => {
-    if (!openWorkflowState) {
-      dispatch(openWorkflow(pathname)).catch(() => {});
-    }
-  }, [openWorkflowState, dispatch, pathname]);
+    dispatch(refreshWorkflow(pathname)).catch(() => {});
+  }, [dispatch, pathname]);
 
   if (!openWorkflowState) {
     return <StyledWrapper><div className="p-4">Loading workflow...</div></StyledWrapper>;

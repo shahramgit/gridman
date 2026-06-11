@@ -136,21 +136,27 @@ const RequestTabPanel = () => {
   const loadedRequestItem = focusedTab?.collectionUid && focusedTab?.itemPathname
     ? loadedRequestsByPath?.[focusedTab.collectionUid]?.[normalizeItemPathname(focusedTab.itemPathname)]
     : null;
-  // Indexed tabs prefer the loaded-by-path entry but must still fall back to
-  // the collection tree: after a move/clone the loaded entry can be missing
-  // while the tree item is hydrated (or is a loading stub with a load in
-  // flight), and without the fallback the tab would hang forever. The walk is
-  // memoized and skipped entirely once a loaded entry exists, so large trees
-  // are not traversed on every render.
-  const treeFallbackItem = useMemo(() => {
-    if (loadedRequestItem || !focusedTab?.itemPathname || !baseCollection) {
+  // The hydrated collection-tree item is the canonical editing object: all
+  // edit reducers write drafts onto it. The loadedRequestsByPath entry is a
+  // detached snapshot used only when the tree item is missing or still a
+  // loading stub (e.g. right after a move/clone) - rendering it while a tree
+  // item exists would hide drafts and make the editor appear read-only.
+  const treeItem = useMemo(() => {
+    if (!focusedTab?.itemPathname || !baseCollection) {
       return null;
     }
     return findItemByPathWalk(baseCollection, focusedTab.itemPathname)
       || findItemInCollectionByPathname(baseCollection, focusedTab.itemPathname);
-  }, [loadedRequestItem, baseCollection, focusedTab?.itemPathname]);
+  }, [baseCollection, focusedTab?.itemPathname]);
+  const isTreeItemReady = Boolean(
+    treeItem?.request
+    && !treeItem.loading
+    && !treeItem.partial
+    && !treeItem.gridmanIndexOnly
+    && !treeItem.request?.gridmanIndexOnly
+  );
   const panelItem = focusedTab?.itemPathname && collection
-    ? (loadedRequestItem || treeFallbackItem)
+    ? (isTreeItemReady ? treeItem : (loadedRequestItem || treeItem))
     : findItemInCollection(collection, requestItemUid);
   const [dragging, setDragging] = useState(false);
   const draggingRef = useRef(false);

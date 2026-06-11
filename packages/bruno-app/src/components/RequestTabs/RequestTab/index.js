@@ -58,15 +58,17 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
   ];
   const isSpecialTab = specialTabs.includes(tab.type);
   const loadedRequestsByPath = useSelector((state) => state.collections.loadedRequestsByPath);
-  const isIndexedRequestTab = tab.uid?.startsWith?.('indexed-request:');
   const loadedRequestItem = tab.collectionUid && tab.itemPathname
     ? loadedRequestsByPath?.[tab.collectionUid]?.[normalizeItemPathname(tab.itemPathname)]
     : null;
-  const item = isSpecialTab ? null : (
-    loadedRequestItem
-    || (isIndexedRequestTab ? null : (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null))
-    || (isIndexedRequestTab ? null : findItemInCollection(collection, tab.itemUid || tab.uid))
+  // Prefer the hydrated tree item (it carries drafts); the loaded-by-path
+  // snapshot is only a fallback for tabs whose tree item is missing/stub.
+  const treeItem = isSpecialTab ? null : (
+    (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null)
+    || findItemInCollection(collection, tab.itemUid || tab.uid)
   );
+  const isTreeItemReady = Boolean(treeItem?.request && !treeItem.gridmanIndexOnly && !treeItem.request?.gridmanIndexOnly);
+  const item = isSpecialTab ? null : (isTreeItemReady ? treeItem : (loadedRequestItem || treeItem));
 
   const method = useMemo(() => {
     if (!item) return;
@@ -615,14 +617,14 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
       return null;
     }
 
-    const isIndexedRequestTab = tab.uid?.startsWith?.('indexed-request:');
     const loadedRequestItem = tab.collectionUid && tab.itemPathname
       ? loadedRequestsByPath?.[tab.collectionUid]?.[normalizeItemPathname(tab.itemPathname)]
       : null;
+    const treeItem = (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null)
+      || findItemInCollection(collection, tab.itemUid || tab.uid);
+    const isTreeItemUsable = Boolean(treeItem?.request && !treeItem.gridmanIndexOnly && !treeItem.request?.gridmanIndexOnly);
 
-    return loadedRequestItem
-      || (isIndexedRequestTab ? null : (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null))
-      || (isIndexedRequestTab ? null : findItemInCollection(collection, tab.itemUid || tab.uid));
+    return isTreeItemUsable ? treeItem : (loadedRequestItem || treeItem);
   };
 
   const currentTab = collectionRequestTabs[tabIndex];
