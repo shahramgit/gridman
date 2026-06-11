@@ -35,10 +35,10 @@ chmod +x gridman_<version>_x86_64_linux.AppImage
 Upload only the final installer/runtime files:
 
 - macOS: `*.dmg`
-- Windows: `*.exe`
+- Windows: `*_x64_win.exe`, `*_arm64_win.exe`
 - Linux: `*.AppImage`
 
-Do not upload unpacked folders, `.blockmap`, `.yml`, `.7z`, or generated intermediate files unless you intentionally add auto-update support later.
+Do not upload unpacked folders, `.blockmap`, `.yml`, `.7z`, the generic `*_win.exe` combined installer, or generated intermediate files unless you intentionally add auto-update support later.
 
 ## macOS unsigned app note
 
@@ -124,7 +124,7 @@ gridman_<version>_x64_linux.AppImage
 
 ## Stage final artifacts
 
-After each build, run:
+To stage existing build output, run:
 
 ```sh
 scripts/github-release.sh <version>
@@ -144,6 +144,14 @@ releases/v3.3.0-vasl.2/
 
 It also keeps any final artifacts already present in that directory.
 
+To build all supported platform assets first and then stage them:
+
+```sh
+scripts/github-release.sh <version> --build
+```
+
+The `--build` mode prepares the Electron web bundle once, builds macOS `.dmg`, Windows `.exe`, Linux ARM64 `.AppImage`, and Linux x64 `.AppImage`. It copies final release assets into `releases/<version>/` after each platform build so later builds cannot remove earlier artifacts from the release folder.
+
 ## Create tag
 
 Create and push an annotated tag:
@@ -154,6 +162,14 @@ git push origin v3.3.0-vasl.2
 git push vasl v3.3.0-vasl.2
 ```
 
+Or let the release helper create and push the tag:
+
+```sh
+scripts/github-release.sh v3.3.0-vasl.2 --tag
+```
+
+The helper creates the annotated tag only if it does not already exist. If the tag already exists at another commit, the script stops instead of moving the tag.
+
 ## Create or upload the GitHub release
 
 To create or update the GitHub release and upload the staged files:
@@ -161,6 +177,39 @@ To create or update the GitHub release and upload the staged files:
 ```sh
 scripts/github-release.sh v3.3.0-vasl.2 --upload
 ```
+
+To continue a release upload after a network failure:
+
+```sh
+scripts/github-release.sh v3.3.0-vasl.2 --upload --resume
+```
+
+`--resume` is release-level resume, not byte-range resume. GitHub Releases does not support continuing a partially uploaded file from the failed byte offset. Gridman checks existing uploaded assets by GitHub `sha256` digest when available, otherwise by file size. Matching assets are skipped; missing, incomplete, or mismatched assets are uploaded again.
+
+To build, stage, create/push the tag, create/update the GitHub release, and upload in one command:
+
+```sh
+scripts/github-release.sh v3.3.0-vasl.2 --build --tag --upload
+```
+
+By default, upload uses Gridman's progress uploader. It shows real byte progress for each final asset and replaces any existing release asset with the same filename.
+
+To upload with limited parallelism:
+
+```sh
+scripts/github-release.sh v3.3.0-vasl.2 --upload --upload-jobs 2
+```
+
+Parallel upload is optional. Keep the default sequential upload on weak or unstable networks.
+
+To use the simpler GitHub CLI upload path instead:
+
+```sh
+scripts/github-release.sh v3.3.0-vasl.2 --upload --simple
+```
+
+The `--simple` option uses `gh release upload --clobber` and does not show byte-level progress.
+It cannot be combined with `--resume`.
 
 The default GitHub repository is:
 
@@ -174,14 +223,16 @@ To use another repository:
 scripts/github-release.sh v3.3.0-vasl.2 --repo owner/repo --upload
 ```
 
-The script uses `gh release upload --clobber`, so rerunning it replaces existing assets with the same names.
+Rerunning upload replaces existing assets with the same names. Only `.dmg`, arch-specific Windows `.exe`, and `.AppImage` files are uploaded.
 
 ## Manual upload command
 
 If you prefer manual upload:
 
 ```sh
-gh release upload v3.3.0-vasl.2 releases/v3.3.0-vasl.2/* --repo shahramgit/gridman
+find releases/v3.3.0-vasl.2 -maxdepth 1 -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' \) -print0 \
+  | grep -z -Ev '_win\.exe$' \
+  | xargs -0 gh release upload v3.3.0-vasl.2 --repo shahramgit/gridman
 ```
 
 Use this only after checking the staged directory:
