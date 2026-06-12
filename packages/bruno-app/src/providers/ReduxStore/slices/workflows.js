@@ -218,8 +218,59 @@ export const saveWorkflowDoc = (pathname, doc) => async (dispatch, getState) => 
   await dispatch(loadWorkflows());
 };
 
+const removeStepDeep = (steps, stepId) => {
+  const index = steps.findIndex((step) => step.id === stepId);
+  if (index !== -1) {
+    return steps.splice(index, 1)[0];
+  }
+  for (const step of steps) {
+    if (step.type === 'loop') {
+      const removed = removeStepDeep(step.steps || [], stepId);
+      if (removed) {
+        return removed;
+      }
+    }
+  }
+  return null;
+};
+
+// Move a step to a new container (document root or a loop body) and index.
+// Used by canvas drag interactions.
+export const restructureWorkflowStep = (pathname, stepId, { parentStepId = null, index }) => async (dispatch, getState) => {
+  const openWorkflowState = getState().workflows.open[pathname];
+  if (!openWorkflowState) {
+    return;
+  }
+
+  const doc = cloneDeep(openWorkflowState.doc);
+  const step = findStepDeep(doc.steps, stepId);
+  if (!step) {
+    return;
+  }
+  // loops stay at the root (no nested loops)
+  if (step.type === 'loop' && parentStepId) {
+    return;
+  }
+
+  const removed = removeStepDeep(doc.steps, stepId);
+  if (!removed) {
+    return;
+  }
+
+  const container = getStepsContainer(doc, parentStepId);
+  if (!container) {
+    // target loop vanished; restore at root end
+    doc.steps.push(removed);
+  } else {
+    const boundedIndex = Math.min(Math.max(Number(index) || 0, 0), container.length);
+    container.splice(boundedIndex, 0, removed);
+  }
+
+  await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
 // picked: { collectionPathname, requestPathname, name } (absolute paths)
-export const addWorkflowRequestStep = (pathname, picked, parentStepId) => async (dispatch, getState) => {
+export const addWorkflowRequestStep = (pathname, picked, parentStepId, insertIndex) => async (dispatch, getState) => {
   const state = getState();
   const workspace = getActiveWorkspace(state);
   const openWorkflowState = state.workflows.open[pathname];
@@ -241,7 +292,7 @@ export const addWorkflowRequestStep = (pathname, picked, parentStepId) => async 
   if (!container) {
     return;
   }
-  container.push({
+  const newStep = {
     id: uuid(),
     type: 'request',
     name: picked.name || snapshot.name,
@@ -252,7 +303,11 @@ export const addWorkflowRequestStep = (pathname, picked, parentStepId) => async 
     },
     snapshotHash: hash,
     snapshot
-  });
+  };
+  const boundedIndex = Number.isInteger(insertIndex)
+    ? Math.min(Math.max(insertIndex, 0), container.length)
+    : container.length;
+  container.splice(boundedIndex, 0, newStep);
 
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
@@ -309,6 +364,24 @@ export const updateWorkflowInputs = (pathname, inputs) => async (dispatch, getSt
   const doc = cloneDeep(openWorkflowState.doc);
   doc.inputs = inputs;
   await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
+// Accepts a react-dnd 'collection-item' drag payload (sidebar rows, both
+// classic and indexed) and adds it as a request step.
+export const addWorkflowRequestStepFromDragItem = (pathname, draggedItem, parentStepId, insertIndex) => async (dispatch, getState) => {
+  const state = getState();
+  const collectionPathname = draggedItem.sourceCollectionPathname
+    || state.collections.collections.find((c) => c.uid === draggedItem.sourceCollectionUid)?.pathname;
+  const requestPathname = draggedItem.sourcePathname || draggedItem.pathname;
+  if (!collectionPathname || !requestPathname) {
+    throw new Error('Unable to resolve the dragged request');
+  }
+
+  return dispatch(addWorkflowRequestStep(pathname, {
+    collectionPathname,
+    requestPathname,
+    name: draggedItem.name
+  }, parentStepId, insertIndex));
 };
 
 export const removeWorkflowStep = (pathname, stepId, parentStepId) => async (dispatch, getState) => {

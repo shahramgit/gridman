@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import toast from 'react-hot-toast';
 import {
@@ -26,11 +26,13 @@ import {
 
 import {
   addWorkflowRequestStep,
+  addWorkflowRequestStepFromDragItem,
   addWorkflowStep,
   loadWorkflowRunHistory,
   moveWorkflowStep,
   refreshWorkflow,
   removeWorkflowStep,
+  restructureWorkflowStep,
   revealWorkflowStep,
   runWorkflow,
   syncWorkflowSteps,
@@ -311,6 +313,21 @@ const RunHistory = ({ runs }) => {
 
 const VIEW_STORAGE_KEY = 'gridman.workflow-view';
 
+const findStepInDoc = (steps, stepId) => {
+  for (const step of steps || []) {
+    if (step.id === stepId) {
+      return step;
+    }
+    if (step.type === 'loop') {
+      const nested = findStepInDoc(step.steps, stepId);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+  return null;
+};
+
 const WorkflowEditor = ({ pathname }) => {
   const dispatch = useDispatch();
   const [pickerTarget, setPickerTarget] = useState(null); // null | { parentStepId }
@@ -324,9 +341,31 @@ const WorkflowEditor = ({ pathname }) => {
       return 'list';
     }
   });
+  const [selectedStepId, setSelectedStepId] = useState(null);
   const openWorkflowState = useSelector((state) => state.workflows.open[pathname]);
   const run = useSelector((state) => state.workflows.runs[pathname]);
   const history = useSelector((state) => state.workflows.history[pathname]);
+
+  // Stable handler object for the canvas (it participates in node memoization)
+  const canvasHandlers = useMemo(() => ({
+    onDeleteStep: (stepId, parentStepId) => {
+      setSelectedStepId(null);
+      dispatch(removeWorkflowStep(pathname, stepId, parentStepId))
+        .catch((error) => toast.error(error?.message || 'Unable to remove step'));
+    },
+    onRevealStep: (stepId) => {
+      dispatch(revealWorkflowStep(pathname, stepId))
+        .catch((error) => toast.error(error?.message || 'Unable to locate request'));
+    },
+    onRestructureStep: (stepId, target) => {
+      dispatch(restructureWorkflowStep(pathname, stepId, target))
+        .catch((error) => toast.error(error?.message || 'Unable to move step'));
+    },
+    onDropRequest: (draggedItem, target) => {
+      dispatch(addWorkflowRequestStepFromDragItem(pathname, draggedItem, target.parentStepId, target.index))
+        .catch((error) => toast.error(error?.message || 'Unable to add request'));
+    }
+  }), [dispatch, pathname]);
 
   const setView = (nextView) => {
     setViewState(nextView);
@@ -660,7 +699,94 @@ const WorkflowEditor = ({ pathname }) => {
       )}
 
       {view === 'canvas' ? (
-        <WorkflowCanvas doc={doc} stepResults={run?.stepResults} />
+        <div className="canvas-wrap">
+          <WorkflowCanvas
+            doc={doc}
+            stepResults={run?.stepResults}
+            handlers={canvasHandlers}
+            onSelectStep={setSelectedStepId}
+          />
+          {(() => {
+            const selectedStep = selectedStepId ? findStepInDoc(doc.steps, selectedStepId) : null;
+            if (!selectedStep) {
+              return (
+                <div className="canvas-panel canvas-panel-empty" data-testid="workflow-step-panel">
+                  Select a node to edit it. Drag requests from the sidebar onto the canvas to add steps;
+                  drag nodes to reorder or move them into a loop.
+                </div>
+              );
+            }
+
+            const selectedDrift = drift?.[selectedStep.id];
+            return (
+              <div className="canvas-panel" data-testid="workflow-step-panel">
+                <div className="panel-title">
+                  {selectedStep.type === 'request' ? (
+                    <span>{selectedStep.name}</span>
+                  ) : (
+                    <input
+                      className="step-name-input"
+                      type="text"
+                      defaultValue={selectedStep.name}
+                      onBlur={(e) => handleStepPatch(selectedStep.id)({ name: e.target.value })}
+                    />
+                  )}
+                </div>
+
+                {selectedStep.type === 'request' && (
+                  <div className="panel-section">
+                    <div className="step-ref">{selectedStep.ref.collection}/{selectedStep.ref.request}</div>
+                    {selectedDrift && (
+                      <div className={`step-status status-${selectedDrift.status}`} style={{ alignSelf: 'flex-start' }}>
+                        {selectedStep.pinned ? 'pinned' : STATUS_LABELS[selectedDrift.status] || selectedDrift.status}
+                      </div>
+                    )}
+                    <div className="panel-actions">
+                      <button type="button" className="add-button" onClick={() => canvasHandlers.onRevealStep(selectedStep.id)}>
+                        <IconTarget size={14} /> <span>Show in sidebar</span>
+                      </button>
+                      {selectedDrift?.status === 'drifted' && !selectedStep.pinned && (
+                        <button
+                          type="button"
+                          className="add-button"
+                          onClick={() => {
+                            dispatch(syncWorkflowSteps(pathname, [selectedStep.id]))
+                              .catch((error) => toast.error(error?.message || 'Unable to sync step'));
+                          }}
+                        >
+                          <IconRefresh size={14} /> <span>Sync</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="add-button"
+                        onClick={() => dispatch(togglePinWorkflowStep(pathname, selectedStep.id))}
+                      >
+                        {selectedStep.pinned ? <IconPinned size={14} /> : <IconPin size={14} />}
+                        <span>{selectedStep.pinned ? 'Unpin' : 'Pin'}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {selectedStep.type === 'map' && (
+                  <MapStepEditor step={selectedStep} onChange={handleStepPatch(selectedStep.id)} />
+                )}
+                {selectedStep.type === 'condition' && (
+                  <ConditionStepEditor step={selectedStep} onChange={handleStepPatch(selectedStep.id)} />
+                )}
+                {selectedStep.type === 'delay' && (
+                  <DelayStepEditor step={selectedStep} onChange={handleStepPatch(selectedStep.id)} />
+                )}
+                {selectedStep.type === 'loop' && (
+                  <LoopStepEditor step={selectedStep} onChange={handleStepPatch(selectedStep.id)} />
+                )}
+
+                <StepResult result={run?.stepResults?.[selectedStep.id]} />
+              </div>
+            );
+          })()}
+        </div>
       ) : (
         <div className="steps-list">
           {doc.steps.length === 0 ? (

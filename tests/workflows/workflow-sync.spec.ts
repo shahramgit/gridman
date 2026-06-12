@@ -174,6 +174,22 @@ test.describe('Workflows', () => {
     await page.getByTestId('workflow-view-toggle').click();
     await expect(page.getByTestId('workflow-canvas')).toBeVisible({ timeout: 5000 });
     await expect(page.getByTestId('workflow-canvas')).toContainText('For each');
+
+    // selecting a node opens the editor panel
+    await page.locator('.react-flow__node').first().click();
+    await expect(page.getByTestId('workflow-step-panel')).toContainText('Show in sidebar', { timeout: 5000 });
+
+    // dragging a request from the sidebar onto the canvas adds a step
+    const nodeCountBefore = await page.locator('.react-flow__node').count();
+    const sidebarRequest = page.locator('.collection-item-name').filter({ hasText: requestName }).first();
+    await sidebarRequest.dragTo(page.getByTestId('workflow-canvas'));
+    await expect(page.locator('.react-flow__node')).toHaveCount(nodeCountBefore + 1, { timeout: 10000 });
+
+    // the node toolbar can delete the selected step
+    await page.locator('.react-flow__node').last().click();
+    await page.getByTitle('Delete step').click();
+    await expect(page.locator('.react-flow__node')).toHaveCount(nodeCountBefore, { timeout: 10000 });
+
     await page.getByTestId('workflow-view-toggle').click();
 
     // run history records the run
