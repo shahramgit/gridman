@@ -363,6 +363,121 @@ const StyledWrapper = styled.div`
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  .add-button.active {
+    border-color: ${(props) => props.theme.colors.text.yellow};
+    color: ${(props) => props.theme.colors.text.yellow};
+  }
+
+  .loop-body {
+    margin: 2px 0 8px 44px;
+    padding-left: 10px;
+    border-left: 2px dashed ${(props) => props.theme.input.border};
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .loop-add {
+    padding: 2px 0 2px 8px;
+  }
+
+  .history-empty {
+    margin-bottom: 10px;
+    font-size: 12px;
+    opacity: 0.6;
+  }
+
+  .history-list {
+    margin-bottom: 12px;
+    border: 1px solid ${(props) => props.theme.input.border};
+    border-radius: 5px;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+
+  .history-run summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 3px 0;
+    list-style: none;
+
+    &::-webkit-details-marker {
+      display: none;
+    }
+  }
+
+  .history-status {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+
+    &.status-dot-passed {
+      background: ${(props) => props.theme.colors.text.green};
+    }
+
+    &.status-dot-failed {
+      background: ${(props) => props.theme.colors.text.danger};
+    }
+
+    &.status-dot-stopped {
+      background: ${(props) => props.theme.colors.text.yellow};
+    }
+  }
+
+  .history-time {
+    opacity: 0.7;
+    flex-shrink: 0;
+  }
+
+  .history-summary {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .history-details {
+    padding: 2px 0 6px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .history-step {
+    display: flex;
+    gap: 10px;
+    font-size: 11px;
+
+    &.step-failed .history-step-info {
+      color: ${(props) => props.theme.colors.text.danger};
+    }
+
+    &.step-stopped .history-step-info {
+      color: ${(props) => props.theme.colors.text.yellow};
+    }
+  }
+
+  .history-step-name {
+    min-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .history-step-info {
+    opacity: 0.8;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 `;
 
 export default StyledWrapper;

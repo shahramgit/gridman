@@ -8,6 +8,9 @@ const {
   deleteWorkflow,
   evaluateWorkflowExpression
 } = require('../workflows');
+const { WorkflowRunsStore } = require('../store/workflow-runs');
+
+const workflowRunsStore = new WorkflowRunsStore();
 
 const registerWorkflowsIpc = () => {
   ipcMain.handle('renderer:workflows-list', async (event, { workspacePath }) => {
@@ -34,6 +37,14 @@ const registerWorkflowsIpc = () => {
 
   ipcMain.handle('renderer:workflow-evaluate-expression', async (event, { expression, res, vars }) => {
     return evaluateWorkflowExpression(expression, { res, vars });
+  });
+
+  ipcMain.handle('renderer:workflow-runs-list', async (event, { pathname }) => {
+    return workflowRunsStore.listRuns(pathname);
+  });
+
+  ipcMain.handle('renderer:workflow-runs-append', async (event, { pathname, run }) => {
+    return workflowRunsStore.appendRun(pathname, run);
   });
 
   ipcMain.handle('renderer:workflow-snapshot-request', async (event, options) => {

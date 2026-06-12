@@ -205,6 +205,62 @@ describe('workflows', () => {
     expect(doc.steps[2].durationMs).toBe(5 * 60 * 1000);
   });
 
+  it('normalizes loop steps, nests their bodies and rejects nested loops', () => {
+    const doc = normalizeWorkflowDoc({
+      name: 'L',
+      steps: [
+        {
+          type: 'loop',
+          source: 'items',
+          maxIterations: 999999,
+          steps: [
+            { type: 'delay', durationMs: 50 },
+            { type: 'loop', source: 'nested', steps: [] },
+            { type: 'condition', expression: 'true' }
+          ]
+        }
+      ]
+    });
+
+    expect(doc.steps).toHaveLength(1);
+    const loop = doc.steps[0];
+    expect(loop.type).toBe('loop');
+    expect(loop.itemVar).toBe('item');
+    expect(loop.maxIterations).toBe(1000);
+    // nested loop is dropped; delay + condition survive
+    expect(loop.steps.map((s) => s.type)).toEqual(['delay', 'condition']);
+  });
+
+  it('computes drift for request steps inside loop bodies', async () => {
+    const pathname = await createWorkflow(workspacePath, 'LoopDrift');
+    const { snapshot, hash, collectionRelPath, requestRelPath } = await snapshotRequestForWorkflow({
+      workspacePath,
+      collectionPathname: collectionPath,
+      requestPathname: requestPath
+    });
+
+    await writeWorkflowFile(pathname, {
+      name: 'LoopDrift',
+      steps: [{
+        id: 'loop-1',
+        type: 'loop',
+        source: 'items',
+        steps: [{
+          id: 'nested-req',
+          type: 'request',
+          name: snapshot.name,
+          ref: { collection: collectionRelPath, request: requestRelPath },
+          snapshotHash: hash,
+          snapshot
+        }]
+      }]
+    });
+
+    const result = await readWorkflowWithDrift(workspacePath, pathname);
+    expect(result.doc.steps[0].steps).toHaveLength(1);
+    expect(result.drift['nested-req'].status).toBe('linked');
+  });
+
   it('evaluates condition expressions against res and vars', () => {
     const res = { status: 200, headers: { 'x-a': '1' }, body: { ok: true } };
     expect(evaluateWorkflowExpression('res.status === 200 && res.body.ok', { res, vars: {} })).toBe(true);

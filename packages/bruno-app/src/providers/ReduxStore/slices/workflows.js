@@ -16,7 +16,38 @@ const initialState = {
   // workflow pathname -> { doc, drift }
   open: {},
   // workflow pathname -> { status, stepResults: { stepId: {...} }, startedAt }
-  runs: {}
+  runs: {},
+  // workflow pathname -> [{ startedAt, finishedAt, status, steps, flowVars }]
+  history: {}
+};
+
+// Locate the steps array a step operation targets: the document root or a
+// loop step's body.
+const getStepsContainer = (doc, parentStepId) => {
+  if (!parentStepId) {
+    return doc.steps;
+  }
+  const parent = doc.steps.find((step) => step.id === parentStepId);
+  return parent?.type === 'loop' ? parent.steps : null;
+};
+
+const walkSteps = (steps, visit) => {
+  for (const step of steps || []) {
+    visit(step);
+    if (step.type === 'loop') {
+      walkSteps(step.steps, visit);
+    }
+  }
+};
+
+const findStepDeep = (steps, stepId) => {
+  let found = null;
+  walkSteps(steps, (step) => {
+    if (step.id === stepId) {
+      found = step;
+    }
+  });
+  return found;
 };
 
 export const workflowsSlice = createSlice({
@@ -66,6 +97,10 @@ export const workflowsSlice = createSlice({
         run.finishedAt = Date.now();
         run.flowVars = flowVars || {};
       }
+    },
+    workflowHistoryLoaded: (state, action) => {
+      const { pathname, runs } = action.payload;
+      state.history[pathname] = runs || [];
     }
   }
 });
@@ -77,7 +112,8 @@ export const {
   workflowRunStarted,
   workflowRunStepStarted,
   workflowRunStepFinished,
-  workflowRunFinished
+  workflowRunFinished,
+  workflowHistoryLoaded
 } = workflowsSlice.actions;
 
 const getActiveWorkspace = (state) => {
@@ -183,7 +219,7 @@ export const saveWorkflowDoc = (pathname, doc) => async (dispatch, getState) => 
 };
 
 // picked: { collectionPathname, requestPathname, name } (absolute paths)
-export const addWorkflowRequestStep = (pathname, picked) => async (dispatch, getState) => {
+export const addWorkflowRequestStep = (pathname, picked, parentStepId) => async (dispatch, getState) => {
   const state = getState();
   const workspace = getActiveWorkspace(state);
   const openWorkflowState = state.workflows.open[pathname];
@@ -201,7 +237,11 @@ export const addWorkflowRequestStep = (pathname, picked) => async (dispatch, get
   );
 
   const doc = cloneDeep(openWorkflowState.doc);
-  doc.steps.push({
+  const container = getStepsContainer(doc, parentStepId);
+  if (!container) {
+    return;
+  }
+  container.push({
     id: uuid(),
     type: 'request',
     name: picked.name || snapshot.name,
@@ -217,8 +257,8 @@ export const addWorkflowRequestStep = (pathname, picked) => async (dispatch, get
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
-// Append a non-request step (map / condition / delay) with sane defaults.
-export const addWorkflowStep = (pathname, stepType) => async (dispatch, getState) => {
+// Append a non-request step (map / condition / delay / loop) with defaults.
+export const addWorkflowStep = (pathname, stepType, parentStepId) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
   if (!openWorkflowState) {
     return;
@@ -227,18 +267,24 @@ export const addWorkflowStep = (pathname, stepType) => async (dispatch, getState
   const defaults = {
     map: { name: 'Map response', mappings: [{ from: 'body', path: '$.', target: '' }] },
     condition: { name: 'Condition', expression: 'res.status === 200', onFalse: 'stop' },
-    delay: { name: 'Delay', durationMs: 1000 }
+    delay: { name: 'Delay', durationMs: 1000 },
+    loop: { name: 'For each', source: '', itemVar: 'item', maxIterations: 100, steps: [] }
   };
-  if (!defaults[stepType]) {
+  if (!defaults[stepType] || (stepType === 'loop' && parentStepId)) {
     return;
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  doc.steps.push({ id: uuid(), type: stepType, ...defaults[stepType] });
+  const container = getStepsContainer(doc, parentStepId);
+  if (!container) {
+    return;
+  }
+  container.push({ id: uuid(), type: stepType, ...defaults[stepType] });
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
-// Patch fields of a step (used by the inline editors).
+// Patch fields of a step (used by the inline editors). Steps are looked up
+// recursively so loop bodies are covered.
 export const updateWorkflowStep = (pathname, stepId, patch) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
   if (!openWorkflowState) {
@@ -246,7 +292,7 @@ export const updateWorkflowStep = (pathname, stepId, patch) => async (dispatch, 
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const step = doc.steps.find((candidate) => candidate.id === stepId);
+  const step = findStepDeep(doc.steps, stepId);
   if (!step) {
     return;
   }
@@ -265,32 +311,44 @@ export const updateWorkflowInputs = (pathname, inputs) => async (dispatch, getSt
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
-export const removeWorkflowStep = (pathname, stepId) => async (dispatch, getState) => {
+export const removeWorkflowStep = (pathname, stepId, parentStepId) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
   if (!openWorkflowState) {
     return;
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  doc.steps = doc.steps.filter((step) => step.id !== stepId);
+  const container = getStepsContainer(doc, parentStepId);
+  if (!container) {
+    return;
+  }
+  const index = container.findIndex((step) => step.id === stepId);
+  if (index === -1) {
+    return;
+  }
+  container.splice(index, 1);
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
-export const moveWorkflowStep = (pathname, stepId, direction) => async (dispatch, getState) => {
+export const moveWorkflowStep = (pathname, stepId, direction, parentStepId) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
   if (!openWorkflowState) {
     return;
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const index = doc.steps.findIndex((step) => step.id === stepId);
+  const container = getStepsContainer(doc, parentStepId);
+  if (!container) {
+    return;
+  }
+  const index = container.findIndex((step) => step.id === stepId);
   const targetIndex = index + direction;
-  if (index === -1 || targetIndex < 0 || targetIndex >= doc.steps.length) {
+  if (index === -1 || targetIndex < 0 || targetIndex >= container.length) {
     return;
   }
 
-  const [step] = doc.steps.splice(index, 1);
-  doc.steps.splice(targetIndex, 0, step);
+  const [step] = container.splice(index, 1);
+  container.splice(targetIndex, 0, step);
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
@@ -301,7 +359,7 @@ export const togglePinWorkflowStep = (pathname, stepId) => async (dispatch, getS
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const step = doc.steps.find((candidate) => candidate.id === stepId);
+  const step = findStepDeep(doc.steps, stepId);
   if (!step) {
     return;
   }
@@ -319,10 +377,16 @@ export const syncWorkflowSteps = (pathname, stepIds) => async (dispatch, getStat
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const idsToSync = new Set(stepIds || doc.steps.map((step) => step.id));
+  const allRequestSteps = [];
+  walkSteps(doc.steps, (step) => {
+    if (step.type === 'request') {
+      allRequestSteps.push(step);
+    }
+  });
+  const idsToSync = new Set(stepIds || allRequestSteps.map((step) => step.id));
   const failures = [];
 
-  for (const step of doc.steps) {
+  for (const step of allRequestSteps) {
     if (!idsToSync.has(step.id) || !step.ref?.collection || !step.ref?.request) {
       continue;
     }
@@ -354,7 +418,7 @@ export const syncWorkflowSteps = (pathname, stepIds) => async (dispatch, getStat
 export const revealWorkflowStep = (pathname, stepId) => async (dispatch, getState) => {
   const state = getState();
   const workspace = getActiveWorkspace(state);
-  const step = state.workflows.open[pathname]?.doc?.steps?.find((candidate) => candidate.id === stepId);
+  const step = findStepDeep(state.workflows.open[pathname]?.doc?.steps || [], stepId);
   if (!workspace?.pathname || !step?.ref?.collection || !step?.ref?.request) {
     throw new Error('This step has no linked request');
   }
@@ -505,6 +569,11 @@ const applyMapStep = (step, responseContext) => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+export const loadWorkflowRunHistory = (pathname) => async (dispatch) => {
+  const runs = await window.ipcRenderer.invoke('renderer:workflow-runs-list', { pathname });
+  dispatch(workflowHistoryLoaded({ pathname, runs }));
+};
+
 export const runWorkflow = (pathname) => async (dispatch, getState) => {
   const state = getState();
   const workspace = getActiveWorkspace(state);
@@ -515,6 +584,7 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
 
   const { doc } = openWorkflowState;
   dispatch(workflowRunStarted({ pathname }));
+  const runStartedAt = Date.now();
 
   // flow vars: seeded by workflow inputs, written by map steps, read by
   // condition steps and {{var}} interpolation in request steps
@@ -525,122 +595,196 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
     }
   }
 
-  let lastResponseContext = null;
-  let runStatus = 'passed';
-
-  const finishStep = (stepId, result) => {
-    dispatch(workflowRunStepFinished({ pathname, stepId, result }));
+  // shared executor state across nesting levels
+  const exec = {
+    lastResponseContext: null,
+    // 'passed' | 'failed' | 'stopped'
+    runStatus: 'passed',
+    // flat per-step summaries for the run history record
+    recordedSteps: []
   };
 
-  for (const step of doc.steps) {
-    dispatch(workflowRunStepStarted({ pathname, stepId: step.id }));
+  const finishStep = (step, result) => {
+    dispatch(workflowRunStepFinished({ pathname, stepId: step.id, result }));
+    exec.recordedSteps.push({
+      id: step.id,
+      name: step.name,
+      type: step.type,
+      status: result.status,
+      httpStatus: result.httpStatus,
+      durationMs: result.durationMs,
+      iterations: result.iterations,
+      error: result.error
+    });
+  };
 
-    if (step.type === 'delay') {
-      await sleep(step.durationMs || 0);
-      finishStep(step.id, { status: 'passed', durationMs: step.durationMs || 0 });
-      continue;
-    }
+  // Executes steps sequentially; returns false when the run must not
+  // continue (failure or condition stop).
+  const executeSteps = async (steps) => {
+    for (const step of steps) {
+      dispatch(workflowRunStepStarted({ pathname, stepId: step.id }));
 
-    if (step.type === 'map') {
-      const { mapped, errors } = applyMapStep(step, lastResponseContext);
-      Object.assign(flowVars, mapped);
-
-      if (errors.length) {
-        finishStep(step.id, { status: 'failed', error: errors.join('; '), mappedVars: mapped });
-        runStatus = 'failed';
-        break;
+      if (step.type === 'delay') {
+        await sleep(step.durationMs || 0);
+        finishStep(step, { status: 'passed', durationMs: step.durationMs || 0 });
+        continue;
       }
-      finishStep(step.id, { status: 'passed', mappedVars: mapped });
-      continue;
-    }
 
-    if (step.type === 'condition') {
+      if (step.type === 'map') {
+        const { mapped, errors } = applyMapStep(step, exec.lastResponseContext);
+        Object.assign(flowVars, mapped);
+
+        if (errors.length) {
+          finishStep(step, { status: 'failed', error: errors.join('; '), mappedVars: mapped });
+          exec.runStatus = 'failed';
+          return false;
+        }
+        finishStep(step, { status: 'passed', mappedVars: mapped });
+        continue;
+      }
+
+      if (step.type === 'condition') {
+        try {
+          const passed = await window.ipcRenderer.invoke('renderer:workflow-evaluate-expression', {
+            expression: step.expression || 'true',
+            res: exec.lastResponseContext,
+            vars: flowVars
+          });
+
+          if (passed) {
+            finishStep(step, { status: 'passed', conditionResult: true });
+            continue;
+          }
+
+          if (step.onFalse === 'continue') {
+            finishStep(step, { status: 'passed', conditionResult: false });
+            continue;
+          }
+
+          finishStep(step, { status: 'stopped', conditionResult: false });
+          exec.runStatus = 'stopped';
+          return false;
+        } catch (error) {
+          finishStep(step, { status: 'failed', error: error?.message || 'Invalid expression' });
+          exec.runStatus = 'failed';
+          return false;
+        }
+      }
+
+      if (step.type === 'loop') {
+        const source = flowVars[step.source];
+        if (!Array.isArray(source)) {
+          finishStep(step, {
+            status: 'failed',
+            error: `Loop source "${step.source}" is not an array flow variable`
+          });
+          exec.runStatus = 'failed';
+          return false;
+        }
+
+        const itemVar = step.itemVar || 'item';
+        const iterations = Math.min(source.length, step.maxIterations || 100);
+        const loopStartedAt = Date.now();
+
+        for (let index = 0; index < iterations; index += 1) {
+          flowVars[itemVar] = source[index];
+          flowVars[`${itemVar}Index`] = index;
+          const ok = await executeSteps(step.steps || []);
+          if (!ok) {
+            finishStep(step, {
+              status: exec.runStatus,
+              iterations: index + 1,
+              durationMs: Date.now() - loopStartedAt
+            });
+            return false;
+          }
+        }
+
+        finishStep(step, { status: 'passed', iterations, durationMs: Date.now() - loopStartedAt });
+        continue;
+      }
+
+      // request step
+      if (!step.snapshot?.request) {
+        finishStep(step, { status: 'failed', error: 'Step has no snapshot to run' });
+        exec.runStatus = 'failed';
+        return false;
+      }
+
+      const stepType = step.snapshot.type || 'http-request';
+      if (!SUPPORTED_RUN_TYPES.has(stepType)) {
+        finishStep(step, { status: 'failed', error: `${stepType} steps are not supported in workflow runs yet` });
+        exec.runStatus = 'failed';
+        return false;
+      }
+
+      const item = {
+        uid: `workflow-step-${step.id}`,
+        name: step.name,
+        type: stepType,
+        request: cloneDeep(step.snapshot.request),
+        settings: cloneDeep(step.snapshot.settings || {})
+      };
+
+      const { collection, environment, runtimeVariables } = buildRunContextForStep(getState(), workspace, step);
+      const startedAt = Date.now();
+
       try {
-        const passed = await window.ipcRenderer.invoke('renderer:workflow-evaluate-expression', {
-          expression: step.expression || 'true',
-          res: lastResponseContext,
-          vars: flowVars
+        // flow vars win over collection runtime vars during interpolation
+        const mergedRuntimeVariables = { ...(runtimeVariables || {}), ...flowVars };
+        const response = await sendNetworkRequest(item, collection, environment, mergedRuntimeVariables);
+        const httpStatus = Number(response?.status) || 0;
+        const failed = httpStatus >= 400;
+        exec.lastResponseContext = buildResponseContext(response);
+
+        finishStep(step, {
+          status: failed ? 'failed' : 'passed',
+          httpStatus,
+          statusText: response?.statusText || '',
+          durationMs: response?.duration ?? (Date.now() - startedAt),
+          size: response?.size
         });
 
-        if (passed) {
-          finishStep(step.id, { status: 'passed', conditionResult: true });
-          continue;
+        if (failed) {
+          exec.runStatus = 'failed';
+          return false;
         }
-
-        if (step.onFalse === 'continue') {
-          finishStep(step.id, { status: 'passed', conditionResult: false });
-          continue;
-        }
-
-        finishStep(step.id, { status: 'stopped', conditionResult: false });
-        runStatus = 'stopped';
-        break;
       } catch (error) {
-        finishStep(step.id, { status: 'failed', error: error?.message || 'Invalid expression' });
-        runStatus = 'failed';
-        break;
+        finishStep(step, {
+          status: 'failed',
+          error: error?.message || 'Request failed',
+          durationMs: Date.now() - startedAt
+        });
+        exec.runStatus = 'failed';
+        return false;
       }
     }
 
-    // request step
-    if (!step.snapshot?.request) {
-      finishStep(step.id, { status: 'failed', error: 'Step has no snapshot to run' });
-      runStatus = 'failed';
-      break;
-    }
+    return true;
+  };
 
-    const stepType = step.snapshot.type || 'http-request';
-    if (!SUPPORTED_RUN_TYPES.has(stepType)) {
-      finishStep(step.id, { status: 'failed', error: `${stepType} steps are not supported in workflow runs yet` });
-      runStatus = 'failed';
-      break;
-    }
+  await executeSteps(doc.steps);
 
-    const item = {
-      uid: `workflow-step-${step.id}`,
-      name: step.name,
-      type: stepType,
-      request: cloneDeep(step.snapshot.request),
-      settings: cloneDeep(step.snapshot.settings || {})
-    };
-
-    const { collection, environment, runtimeVariables } = buildRunContextForStep(getState(), workspace, step);
-    const startedAt = Date.now();
-
-    try {
-      // flow vars win over collection runtime vars during interpolation
-      const mergedRuntimeVariables = { ...(runtimeVariables || {}), ...flowVars };
-      const response = await sendNetworkRequest(item, collection, environment, mergedRuntimeVariables);
-      const httpStatus = Number(response?.status) || 0;
-      const failed = httpStatus >= 400;
-      lastResponseContext = buildResponseContext(response);
-
-      finishStep(step.id, {
-        status: failed ? 'failed' : 'passed',
-        httpStatus,
-        statusText: response?.statusText || '',
-        durationMs: response?.duration ?? (Date.now() - startedAt),
-        size: response?.size
-      });
-
-      if (failed) {
-        runStatus = 'failed';
-        break;
-      }
-    } catch (error) {
-      finishStep(step.id, {
-        status: 'failed',
-        error: error?.message || 'Request failed',
-        durationMs: Date.now() - startedAt
-      });
-      runStatus = 'failed';
-      break;
-    }
+  dispatch(workflowRunFinished({ pathname, status: exec.runStatus, flowVars }));
+  if (exec.runStatus === 'failed') {
+    toast.error('Workflow run failed');
   }
 
-  dispatch(workflowRunFinished({ pathname, status: runStatus, flowVars }));
-  if (runStatus === 'failed') {
-    toast.error('Workflow run failed');
+  // persist to run history (best effort)
+  try {
+    const runs = await window.ipcRenderer.invoke('renderer:workflow-runs-append', {
+      pathname,
+      run: {
+        startedAt: runStartedAt,
+        finishedAt: Date.now(),
+        status: exec.runStatus,
+        steps: exec.recordedSteps,
+        flowVars: JSON.parse(JSON.stringify(flowVars))
+      }
+    });
+    dispatch(workflowHistoryLoaded({ pathname, runs }));
+  } catch (error) {
+    // history is non-critical
   }
 };
 
