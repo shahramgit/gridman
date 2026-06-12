@@ -2743,12 +2743,14 @@ export const collectionsSlice = createSlice({
         item.draft = cloneDeep(item);
       }
       item.draft.request.vars = item.draft.request.vars || {};
-      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false }) => ({
+      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false, datatype, annotations }) => ({
         uid: uid || uuid(),
         name,
         value,
         description,
         enabled,
+        ...(datatype ? { datatype } : {}),
+        ...(annotations?.length ? { annotations } : {}),
         ...(type === 'response' ? { local } : {})
       }));
       if (type === 'request') {
@@ -3098,12 +3100,14 @@ export const collectionsSlice = createSlice({
       if (!folder.draft) {
         folder.draft = cloneDeep(folder.root);
       }
-      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false }) => ({
+      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false, datatype, annotations }) => ({
         uid: uid || uuid(),
         name,
         value,
         description,
         enabled,
+        ...(datatype ? { datatype } : {}),
+        ...(annotations?.length ? { annotations } : {}),
         ...(type === 'response' ? { local } : {})
       }));
       if (type === 'request') {
@@ -3337,12 +3341,14 @@ export const collectionsSlice = createSlice({
           root: cloneDeep(collection.root)
         };
       }
-      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false }) => ({
+      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false, datatype, annotations }) => ({
         uid: uid || uuid(),
         name,
         value,
         description,
         enabled,
+        ...(datatype ? { datatype } : {}),
+        ...(annotations?.length ? { annotations } : {}),
         ...(type === 'response' ? { local } : {})
       }));
       if (type === 'request') {
@@ -3726,6 +3732,7 @@ export const collectionsSlice = createSlice({
           existingEnv.name = environment.name;
           existingEnv.variables = environment.variables;
           existingEnv.color = environment.color;
+          existingEnv.externalSecrets = environment.externalSecrets;
           /*
            Apply temporary (ephemeral) values only to variables that actually exist in the file. This prevents deleted temporaries from “popping back” after a save. If a variable is present in the file, we temporarily override the UI value while also remembering the on-disk value in persistedValue for future saves.
           */
