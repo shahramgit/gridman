@@ -97,15 +97,23 @@ const Collection = ({ collection, searchText }) => {
   // Reveal-in-sidebar: expand this collection and (for classic trees) the
   // collapsed ancestor folders of the revealed request. Scrolling is handled
   // by the row components; the indexed renderer expands its own node chain.
+  // Re-attempts as the collection hydrates/indexes (deps include the tree
+  // and index), so revealing into a just-opened collection works once its
+  // data arrives. The reveal is consumed (pending->false) by the row that
+  // scrolls, so this stops re-firing afterwards.
   useEffect(() => {
-    if (!sidebarReveal || sidebarReveal.collectionUid !== collection.uid) {
+    if (!sidebarReveal?.pending || sidebarReveal.collectionUid !== collection.uid) {
       return;
     }
+
+    // A freshly opened collection needs mounting before its tree exists.
+    ensureCollectionIsMounted();
 
     if (collection.collapsed) {
       dispatch(toggleCollection(collection.uid));
     }
 
+    // The indexed renderer expands its own node chain and consumes the reveal.
     if (collectionIndex) {
       return;
     }
@@ -124,7 +132,7 @@ const Collection = ({ collection, searchText }) => {
       }
       currentItem = findParentItemInCollection(collection, currentItem.uid);
     }
-  }, [sidebarReveal?.nonce]);
+  }, [sidebarReveal?.nonce, sidebarReveal?.pending, collection.items, collection.mountStatus, collectionIndex?.totalNodes]);
   const menuDropdownRef = useRef(null);
 
   // Open the OpenAPI Sync tab

@@ -35,7 +35,7 @@ import {
   showInFolder,
   updateItemsSequences
 } from 'providers/ReduxStore/slices/collections/actions';
-import { copyRequest, insertTaskIntoQueue } from 'providers/ReduxStore/slices/app';
+import { clearSidebarReveal, copyRequest, insertTaskIntoQueue } from 'providers/ReduxStore/slices/app';
 import SearchHighlight from '../SearchHighlight';
 import CollectionItemIcon from './CollectionItem/CollectionItemIcon';
 import StyledWrapper from './CollectionItem/StyledWrapper';
@@ -1098,6 +1098,7 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
 };
 
 const IndexedCollectionItems = ({ collectionUid, searchText }) => {
+  const dispatch = useDispatch();
   const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
   const [expandedNodeUids, setExpandedNodeUids] = useState(() => new Set());
   const visibleRows = useVisibleRows({ index, expandedNodeUids, searchText });
@@ -1107,8 +1108,10 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
 
   // Reveal-in-sidebar: expand the ancestor chain of the revealed request,
   // then scroll the virtualized list to its row once rows recompute.
+  // Re-attempts as the index builds (deps include node count) so revealing
+  // into a just-opened collection works once indexing completes.
   useEffect(() => {
-    if (!sidebarReveal || sidebarReveal.collectionUid !== collectionUid || !index?.nodesByUid) {
+    if (!sidebarReveal?.pending || sidebarReveal.collectionUid !== collectionUid || !index?.nodesByUid) {
       return;
     }
 
@@ -1131,7 +1134,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
       return next;
     });
     pendingRevealNodeUidRef.current = node.uid;
-  }, [sidebarReveal?.nonce]);
+  }, [sidebarReveal?.nonce, sidebarReveal?.pending, index?.totalNodes]);
 
   useEffect(() => {
     if (!pendingRevealNodeUidRef.current) {
@@ -1141,8 +1144,9 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
     if (rowIndex >= 0) {
       virtuosoRef.current?.scrollToIndex?.({ index: rowIndex, align: 'center' });
       pendingRevealNodeUidRef.current = null;
+      dispatch(clearSidebarReveal());
     }
-  }, [visibleRows]);
+  }, [visibleRows, dispatch]);
 
   const onToggleFolder = (uid) => {
     setExpandedNodeUids((current) => {

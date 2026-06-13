@@ -100,7 +100,15 @@ export const appSlice = createSlice({
     },
     revealRequestInSidebar: (state, action) => {
       const { collectionUid, pathname } = action.payload;
-      state.sidebarReveal = { nonce: Date.now(), collectionUid, pathname };
+      // `pending` keeps the reveal alive until a row consumes it, so a
+      // just-opened collection that hydrates/indexes after the dispatch still
+      // gets scrolled into view (effects re-attempt as data arrives).
+      state.sidebarReveal = { nonce: Date.now(), collectionUid, pathname, pending: true };
+    },
+    clearSidebarReveal: (state) => {
+      if (state.sidebarReveal) {
+        state.sidebarReveal = { ...state.sidebarReveal, pending: false };
+      }
     },
     showHomePage: (state) => {
       state.showHomePage = true;
@@ -212,6 +220,7 @@ export const {
   updateLeftSidebarWidth,
   updateIsDragging,
   revealRequestInSidebar,
+  clearSidebarReveal,
   showHomePage,
   hideHomePage,
   showManageWorkspacePage,

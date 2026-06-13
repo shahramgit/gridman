@@ -33,7 +33,7 @@ import {
 import { toggleCollectionItem, addResponseExample } from 'providers/ReduxStore/slices/collections';
 import { insertTaskIntoQueue } from 'providers/ReduxStore/slices/app';
 import { uuid } from 'utils/common';
-import { copyRequest, setFocusedSidebarPath } from 'providers/ReduxStore/slices/app';
+import { clearSidebarReveal, copyRequest, setFocusedSidebarPath } from 'providers/ReduxStore/slices/app';
 import NewRequest from 'components/Sidebar/NewRequest';
 import NewFolder from 'components/Sidebar/NewFolder';
 import SearchHighlight from '../../SearchHighlight';
@@ -155,11 +155,14 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
     }
   }, [isTabForItemActive]);
 
-  // Reveal-in-sidebar: scroll to this row and flash it when it is the target
+  // Reveal-in-sidebar: scroll to this row and flash it when it is the target.
+  // This effect runs on mount too, so a row that renders only after its
+  // collection hydrates still consumes a still-pending reveal. It then clears
+  // the reveal so it does not re-fire on unrelated re-renders.
   const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
   const [revealFlash, setRevealFlash] = useState(false);
   useEffect(() => {
-    if (!sidebarReveal || sidebarReveal.collectionUid !== collectionUid || !ref.current) {
+    if (!sidebarReveal?.pending || sidebarReveal.collectionUid !== collectionUid || !ref.current) {
       return;
     }
     const normalizeSeparators = (value) => String(value || '').replace(/\\/g, '/');
@@ -172,9 +175,10 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
       // ignore scroll errors
     }
     setRevealFlash(true);
+    dispatch(clearSidebarReveal());
     const timer = setTimeout(() => setRevealFlash(false), 1800);
     return () => clearTimeout(timer);
-  }, [sidebarReveal?.nonce]);
+  }, [sidebarReveal?.nonce, sidebarReveal?.pending]);
 
   const determineDropType = (monitor) => {
     const hoverBoundingRect = ref.current?.getBoundingClientRect();
