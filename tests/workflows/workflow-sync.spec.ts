@@ -135,26 +135,37 @@ test.describe('Workflows', () => {
     await expect(vars).toContainText('code');
     await expect(vars).toContainText('200');
 
-    // canvas renders Start + request + map nodes
+    // canvas renders Start + request + map nodes, plus the node palette
     await page.getByTestId('workflow-view-toggle').click();
     await expect(page.getByTestId('workflow-canvas')).toBeVisible({ timeout: 5000 });
     await expect(page.getByTestId('workflow-canvas')).toContainText('Start');
     await expect(page.getByTestId('workflow-canvas')).toContainText('Map response');
+    await expect(page.getByTestId('workflow-palette')).toBeVisible();
 
-    // selecting the request node opens its editor panel
+    // selecting the request node opens its editor panel with input/output data
+    // (do this before adding overlapping nodes so the click hits the right one)
     await page.locator('.react-flow__node').filter({ hasText: requestName }).first().click({ force: true });
     await expect(page.getByTestId('workflow-node-panel')).toContainText('Show in sidebar', { timeout: 5000 });
+    await expect(page.getByTestId('workflow-node-io')).toContainText('Output', { timeout: 5000 });
 
-    // dragging a request from the sidebar onto the canvas adds a node
-    const nodeCountBefore = await page.locator('.react-flow__node').count();
+    // dragging a palette chip onto the canvas adds that node type
+    const beforePalette = await page.locator('.react-flow__node').count();
+    await page.locator('.palette-chip').filter({ hasText: 'Delay' }).dragTo(page.getByTestId('workflow-canvas'));
+    await expect(page.locator('.react-flow__node')).toHaveCount(beforePalette + 1, { timeout: 10000 });
+
+    // dragging a request from the sidebar onto the canvas adds a node, and the
+    // node toolbar deletes it again
+    const beforeSidebar = await page.locator('.react-flow__node').count();
     const sidebarRequest = page.locator('.collection-item-name').filter({ hasText: requestName }).first();
     await sidebarRequest.dragTo(page.getByTestId('workflow-canvas'));
-    await expect(page.locator('.react-flow__node')).toHaveCount(nodeCountBefore + 1, { timeout: 10000 });
-
-    // the node toolbar deletes the selected node
+    await expect(page.locator('.react-flow__node')).toHaveCount(beforeSidebar + 1, { timeout: 10000 });
     await page.locator('.react-flow__node').last().click({ force: true });
     await page.getByTitle('Delete node').click();
-    await expect(page.locator('.react-flow__node')).toHaveCount(nodeCountBefore, { timeout: 10000 });
+    await expect(page.locator('.react-flow__node')).toHaveCount(beforeSidebar, { timeout: 10000 });
+
+    // the log pane records the run
+    await page.getByTestId('workflow-logs-toggle').click();
+    await expect(page.getByTestId('workflow-logs')).toContainText('Run passed', { timeout: 5000 });
 
     // run history records the run
     await page.getByTestId('workflow-history-toggle').click();

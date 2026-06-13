@@ -7,7 +7,8 @@ const SCOPE_OPTIONS = [
   { key: 'names', label: 'Folder & request names' },
   { key: 'url', label: 'URL' },
   { key: 'headers', label: 'Headers' },
-  { key: 'body', label: 'Body' }
+  { key: 'body', label: 'Body' },
+  { key: 'examples', label: 'Examples' }
 ];
 
 const CollectionSearch = ({ searchText, setSearchText, searchOptions, setSearchOptions }) => {

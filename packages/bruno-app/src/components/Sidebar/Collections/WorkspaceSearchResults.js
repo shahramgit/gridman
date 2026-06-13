@@ -188,6 +188,8 @@ const formatMatchLabel = (field) => {
       return 'headers';
     case 'body':
       return 'body';
+    case 'examples':
+      return 'example';
     case 'content':
       return 'content';
     case 'name':

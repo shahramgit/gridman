@@ -56,6 +56,129 @@ const StyledWrapper = styled.div`
     color: ${(props) => props.theme.colors.text.green};
   }
 
+  .cancel-button {
+    color: ${(props) => props.theme.colors.text.danger};
+  }
+
+  .node-palette {
+    width: 110px;
+    flex-shrink: 0;
+    border: 1px solid ${(props) => props.theme.input.border};
+    border-radius: 6px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    height: 480px;
+  }
+
+  .palette-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.55;
+  }
+
+  .palette-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border: 1px solid ${(props) => props.theme.input.border};
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: grab;
+    background: ${(props) => props.theme.sidebar.bg};
+
+    &:hover {
+      background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
+    }
+  }
+
+  .palette-hint {
+    margin-top: auto;
+    font-size: 10px;
+    opacity: 0.5;
+  }
+
+  .log-pane {
+    margin-top: 12px;
+    border: 1px solid ${(props) => props.theme.input.border};
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .log-pane-title {
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.6;
+    border-bottom: 1px solid ${(props) => props.theme.input.border};
+  }
+
+  .log-lines {
+    max-height: 200px;
+    overflow-y: auto;
+    padding: 6px 10px;
+    font-family: monospace;
+    font-size: 12px;
+  }
+
+  .log-empty {
+    opacity: 0.5;
+  }
+
+  .log-line {
+    display: flex;
+    gap: 10px;
+    padding: 1px 0;
+
+    &.log-error .log-msg {
+      color: ${(props) => props.theme.colors.text.danger};
+    }
+
+    &.log-warn .log-msg {
+      color: ${(props) => props.theme.colors.text.yellow};
+    }
+  }
+
+  .log-time {
+    opacity: 0.5;
+    flex-shrink: 0;
+  }
+
+  .node-io {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+
+    summary {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      opacity: 0.6;
+      cursor: pointer;
+    }
+
+    .io-pre {
+      margin: 4px 0 0;
+      max-height: 160px;
+      overflow: auto;
+      font-size: 11px;
+      font-family: monospace;
+      background: ${(props) => props.theme.sidebar.bg};
+      border: 1px solid ${(props) => props.theme.input.border};
+      border-radius: 4px;
+      padding: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  }
+
   .drift-banner {
     display: flex;
     align-items: center;

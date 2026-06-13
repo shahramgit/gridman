@@ -220,17 +220,23 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
   }, [onSelectNode]);
 
   const [{ isOver }, dropRef] = useDrop({
-    accept: 'collection-item',
+    accept: ['collection-item', 'workflow-node-template'],
     drop: (draggedItem, monitor) => {
-      if (draggedItem.type === 'folder') {
-        return;
-      }
       const clientOffset = monitor.getClientOffset();
       if (!clientOffset) {
         return;
       }
-      const position = screenToFlowPosition({ x: clientOffset.x, y: clientOffset.y });
-      handlers.onDropRequest(draggedItem, { x: Math.round(position.x), y: Math.round(position.y) });
+      const flow = screenToFlowPosition({ x: clientOffset.x, y: clientOffset.y });
+      const position = { x: Math.round(flow.x), y: Math.round(flow.y) };
+
+      if (monitor.getItemType() === 'workflow-node-template') {
+        handlers.onDropNode(draggedItem.nodeType, position);
+        return;
+      }
+      if (draggedItem.type === 'folder') {
+        return;
+      }
+      handlers.onDropRequest(draggedItem, position);
     },
     collect: (monitor) => ({ isOver: monitor.isOver() })
   });

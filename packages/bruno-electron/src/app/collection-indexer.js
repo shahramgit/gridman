@@ -81,6 +81,22 @@ const normalizeRequestType = (type) => {
   return typeMap[normalizedType] || normalizedType || 'http-request';
 };
 
+// Cheap example detection from raw content (no full parse), so indexed rows
+// can show an "has examples" indicator without hydrating the request.
+const countExamples = (content, format) => {
+  if (!content) {
+    return 0;
+  }
+  if (format === 'bru') {
+    return (content.match(/(^|\n)example\s*\{/g) || []).length;
+  }
+  // yml: a non-empty `examples:` list
+  if (/(^|\n)examples:\s*\[\s*\]/.test(content)) {
+    return 0;
+  }
+  return /(^|\n)examples:\s*(\n\s+-|\[)/.test(content) ? 1 : 0;
+};
+
 const extractBruMethod = (content) => {
   const blockMatch = content.match(/^\s*(get|post|put|delete|patch|head|options|trace)\s*\{/im);
   if (blockMatch?.[1]) {
@@ -138,7 +154,8 @@ const extractRequestMeta = async (pathname, format) => {
       seq: parsed.seq,
       tags: parsed.tags || [],
       method: parsed.request?.method || parsed.method || '',
-      url: parsed.request?.url || parsed.url || ''
+      url: parsed.request?.url || parsed.url || '',
+      exampleCount: countExamples(content, format)
     };
   } catch (_err) {
     return {
@@ -230,6 +247,7 @@ const scanDirectory = async (win, job, dirname, parentUid, depth) => {
         tags: requestMeta.tags,
         method: requestMeta.method,
         url: requestMeta.url,
+        exampleCount: requestMeta.exampleCount || 0,
         partial: true,
         loading: false,
         error: requestMeta.error

@@ -265,9 +265,11 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
   };
   const actionItem = getActionCompatibleItem();
   const displayDepth = getIndexedNodeDisplayDepth(index, node);
+  // Show the examples chevron from the index's exampleCount even before the
+  // request is hydrated, so large (lazy) collections still indicate examples.
   const hasExamples = isRequest
     && normalizeRequestType(node.type) === 'http-request'
-    && Boolean(item?.examples?.length);
+    && (Boolean(item?.examples?.length) || (node.exampleCount || 0) > 0);
 
   const openRequest = () => {
     // The request panel renders indexed tabs from loadedRequestsByPath, so a
@@ -904,7 +906,14 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
   const handleExamplesCollapse = (event) => {
     event.stopPropagation();
     event.preventDefault();
-    setExamplesExpanded((current) => !current);
+    const next = !examplesExpanded;
+    setExamplesExpanded(next);
+    // Hydrate the request so item.examples is populated when expanding an
+    // indexed (partial) request that we only know has examples from the index.
+    if (next && !item?.examples?.length && node.pathname) {
+      activateNodeChain(node);
+      dispatch(loadRequest({ collectionUid, pathname: node.pathname })).catch(() => {});
+    }
   };
 
   const handleContextMenu = (event) => {
@@ -1080,18 +1089,24 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
           </MenuDropdown>
         </div>
       </div>
-      {hasExamples && examplesExpanded && item ? (
-        <div>
-          {(item.examples || []).map((example, exampleIndex) => (
-            <ExampleItem
-              key={example.uid || exampleIndex}
-              example={example}
-              item={item}
-              index={exampleIndex}
-              collection={collection}
-            />
-          ))}
-        </div>
+      {hasExamples && examplesExpanded ? (
+        item?.examples?.length ? (
+          <div>
+            {(item.examples || []).map((example, exampleIndex) => (
+              <ExampleItem
+                key={example.uid || exampleIndex}
+                example={example}
+                item={item}
+                index={exampleIndex}
+                collection={collection}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs text-muted" style={{ paddingLeft: 8 + displayDepth * 16 + 24 }}>
+            Loading examples...
+          </div>
+        )
       ) : null}
     </StyledWrapper>
   );

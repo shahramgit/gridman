@@ -72,8 +72,24 @@ export const workflowsSlice = createSlice({
       state.runs[pathname] = {
         status: 'running',
         stepResults: {},
-        startedAt: Date.now()
+        startedAt: Date.now(),
+        cancelling: false,
+        log: [{ ts: Date.now(), level: 'info', message: 'Run started' }]
       };
+    },
+    workflowRunLogged: (state, action) => {
+      const { pathname, entry } = action.payload;
+      const run = state.runs[pathname];
+      if (run) {
+        run.log = run.log || [];
+        run.log.push(entry);
+      }
+    },
+    workflowRunCancelling: (state, action) => {
+      const run = state.runs[action.payload.pathname];
+      if (run) {
+        run.cancelling = true;
+      }
     },
     workflowRunStepStarted: (state, action) => {
       const { pathname, stepId } = action.payload;
@@ -87,6 +103,14 @@ export const workflowsSlice = createSlice({
       const run = state.runs[pathname];
       if (run) {
         run.stepResults[stepId] = { ...run.stepResults[stepId], ...result };
+      }
+    },
+    workflowRunNodeData: (state, action) => {
+      const { pathname, nodeId, data } = action.payload;
+      const run = state.runs[pathname];
+      if (run) {
+        run.nodeData = run.nodeData || {};
+        run.nodeData[nodeId] = data;
       }
     },
     workflowRunFinished: (state, action) => {
@@ -112,9 +136,25 @@ export const {
   workflowRunStarted,
   workflowRunStepStarted,
   workflowRunStepFinished,
+  workflowRunNodeData,
   workflowRunFinished,
+  workflowRunLogged,
+  workflowRunCancelling,
   workflowHistoryLoaded
 } = workflowsSlice.actions;
+
+// Cancellation tokens keyed by workflow pathname. The run loop checks the
+// token between nodes; an in-flight request still finishes (cancellation
+// takes effect at the next node boundary).
+const runCancellation = new Map();
+
+export const cancelWorkflowRun = (pathname) => (dispatch) => {
+  const token = runCancellation.get(pathname);
+  if (token) {
+    token.cancelled = true;
+    dispatch(workflowRunCancelling({ pathname }));
+  }
+};
 
 const getActiveWorkspace = (state) => {
   const { workspaces, activeWorkspaceUid } = state.workspaces;
@@ -642,6 +682,9 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
   const { doc } = openWorkflowState;
   dispatch(workflowRunStarted({ pathname }));
   const runStartedAt = Date.now();
+  const cancelToken = { cancelled: false };
+  runCancellation.set(pathname, cancelToken);
+  const log = (level, message) => dispatch(workflowRunLogged({ pathname, entry: { ts: Date.now(), level, message } }));
 
   const nodesById = {};
   for (const node of doc.nodes) {
@@ -666,6 +709,13 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
 
   const finishNode = (node, result) => {
     dispatch(workflowRunStepFinished({ pathname, stepId: node.id, result }));
+    const bits = [
+      result.httpStatus ? `${result.httpStatus}` : '',
+      typeof result.iterations === 'number' ? `${result.iterations}x` : '',
+      result.durationMs ? `${Math.round(result.durationMs)}ms` : '',
+      result.error || ''
+    ].filter(Boolean).join(' ');
+    log(result.status === 'failed' ? 'error' : 'info', `${node.name}: ${result.status}${bits ? ` (${bits})` : ''}`);
     recordedNodes.push({
       id: node.id,
       name: node.name,
@@ -683,11 +733,20 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
   let executions = 0;
 
   while (currentId && executions < MAX_NODE_EXECUTIONS) {
+    if (cancelToken.cancelled) {
+      runStatus = 'cancelled';
+      break;
+    }
     executions += 1;
     const node = nodesById[currentId];
     if (!node) {
       break;
     }
+
+    // Snapshot what this node sees as input (the previous response + current
+    // flow vars) so the node panel can show Input on the left.
+    const inputSnapshot = { response: lastResponseContext, vars: { ...flowVars } };
+    const recordData = (output) => dispatch(workflowRunNodeData({ pathname, nodeId: node.id, data: { input: inputSnapshot, output } }));
 
     // Loop re-entry (via body back-edge) should not reset the loop's UI row.
     const isLoopReentry = node.type === 'loop' && loopState[node.id];
@@ -700,9 +759,11 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
     if (node.type === 'delay') {
       await sleep(node.durationMs || 0);
       finishNode(node, { status: 'passed', durationMs: node.durationMs || 0 });
+      recordData({ delayedMs: node.durationMs || 0 });
     } else if (node.type === 'map') {
       const { mapped, errors } = applyMapStep(node, lastResponseContext);
       Object.assign(flowVars, mapped);
+      recordData(mapped);
       if (errors.length) {
         finishNode(node, { status: 'failed', error: errors.join('; '), mappedVars: mapped });
         runStatus = 'failed';
@@ -718,6 +779,7 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
         });
         firedPort = passed ? 'true' : 'false';
         finishNode(node, { status: 'passed', conditionResult: passed });
+        recordData({ result: passed });
       } catch (error) {
         finishNode(node, { status: 'failed', error: error?.message || 'Invalid expression' });
         runStatus = 'failed';
@@ -790,6 +852,7 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
           durationMs: response?.duration ?? (Date.now() - startedAt),
           size: response?.size
         });
+        recordData(lastResponseContext);
         if (failed) {
           runStatus = 'failed';
           break;
@@ -813,6 +876,8 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
     toast.error('Workflow stopped: too many steps (possible loop without a Loop node)');
   }
 
+  runCancellation.delete(pathname);
+  log(runStatus === 'failed' ? 'error' : runStatus === 'cancelled' ? 'warn' : 'info', `Run ${runStatus}`);
   dispatch(workflowRunFinished({ pathname, status: runStatus, flowVars }));
   if (runStatus === 'failed') {
     toast.error('Workflow run failed');

@@ -518,11 +518,13 @@ const WORKSPACE_SEARCH_DEFAULT_SCOPES = {
   names: true,
   url: true,
   headers: true,
-  body: true
+  body: true,
+  examples: false
 };
 
 const BRU_HEADERS_BLOCK_REGEX = /(?:^|\n)headers\s*\{([\s\S]*?)\n\}/g;
 const BRU_BODY_BLOCK_REGEX = /(?:^|\n)body(?::[\w:-]+)?\s*\{([\s\S]*?)\n\}/g;
+const BRU_EXAMPLE_BLOCK_REGEX = /(?:^|\n)example\s*\{([\s\S]*?)\n\}/g;
 
 const extractSearchBlocks = (content, regex) => {
   const parts = [];
@@ -701,6 +703,7 @@ const buildWorkspaceSearchCacheEntry = async ({ workspacePath, collectionPath, p
 
   const headersRaw = format === 'bru' ? extractSearchBlocks(content, BRU_HEADERS_BLOCK_REGEX) : content;
   const bodyRaw = format === 'bru' ? extractSearchBlocks(content, BRU_BODY_BLOCK_REGEX) : content;
+  const examplesRaw = format === 'bru' ? extractSearchBlocks(content, BRU_EXAMPLE_BLOCK_REGEX) : content;
 
   return {
     mtimeMs,
@@ -712,14 +715,16 @@ const buildWorkspaceSearchCacheEntry = async ({ workspacePath, collectionPath, p
       filename: result.filename || '',
       url: result.url || '',
       headers: headersRaw,
-      body: bodyRaw
+      body: bodyRaw,
+      examples: examplesRaw
     },
     folded: {
       name: utils.foldSearchText(result.name),
       filename: utils.foldSearchText(result.filename),
       url: utils.foldSearchText(result.url),
       headers: utils.foldSearchText(headersRaw),
-      body: utils.foldSearchText(bodyRaw)
+      body: utils.foldSearchText(bodyRaw),
+      examples: utils.foldSearchText(examplesRaw)
     }
   };
 };
@@ -730,7 +735,8 @@ const WORKSPACE_SEARCH_FIELD_SCOPES = [
   ['filename', 'names'],
   ['url', 'url'],
   ['headers', 'headers'],
-  ['body', 'body']
+  ['body', 'body'],
+  ['examples', 'examples']
 ];
 
 const matchWorkspaceSearchEntry = (entry, job) => {
@@ -751,7 +757,7 @@ const matchWorkspaceSearchEntry = (entry, job) => {
       continue;
     }
 
-    if (field === 'headers' || field === 'body') {
+    if (field === 'headers' || field === 'body' || field === 'examples') {
       const snippet = createSearchSnippet(
         entry.raw[field],
         job.query,
@@ -882,7 +888,7 @@ const startWorkspaceCollectionSearch = async (event, {
 
   event.sender.send('main:workspace-collection-search-started', { searchSessionId });
 
-  const searchesFileContent = scopes.names || scopes.url || scopes.headers || scopes.body;
+  const searchesFileContent = scopes.names || scopes.url || scopes.headers || scopes.body || scopes.examples;
 
   if (!trimmedQuery || trimmedQuery.length < 2 || !workspacePath || !collectionPaths.length
     || (!searchesFileContent && !scopes.collections)) {

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useDrag } from 'react-dnd';
+import { getEmptyImage } from 'react-dnd-html5-backend';
 import toast from 'react-hot-toast';
 import {
   IconArrowsSplit,
@@ -12,11 +14,13 @@ import {
   IconPin,
   IconPinned,
   IconPlayerPlay,
+  IconPlayerStop,
   IconPlus,
   IconRefresh,
   IconRepeat,
   IconRoute,
   IconTarget,
+  IconTerminal2,
   IconTrash,
   IconVariable,
   IconWand,
@@ -27,6 +31,7 @@ import {
   addWorkflowNode,
   addWorkflowRequestNode,
   addWorkflowRequestNodeFromDragItem,
+  cancelWorkflowRun,
   connectWorkflowNodes,
   disconnectWorkflowConnection,
   loadWorkflowRunHistory,
@@ -262,6 +267,63 @@ const RunHistory = ({ runs }) => {
 const TYPE_ICONS = { request: IconWorld, map: IconWand, condition: IconArrowsSplit, delay: IconClock, loop: IconRepeat };
 const VIEW_STORAGE_KEY = 'gridman.workflow-view';
 
+const PALETTE_ITEMS = [
+  { type: 'map', label: 'Map', icon: IconWand },
+  { type: 'condition', label: 'Condition', icon: IconArrowsSplit },
+  { type: 'delay', label: 'Delay', icon: IconClock },
+  { type: 'loop', label: 'Loop', icon: IconRepeat }
+];
+
+// A draggable palette chip (react-dnd source) that the canvas accepts as a
+// 'workflow-node-template' drop to add a node at the cursor.
+const PaletteChip = ({ item }) => {
+  const [{ isDragging }, drag, dragPreview] = useDrag({
+    type: 'workflow-node-template',
+    item: { nodeType: item.type },
+    collect: (monitor) => ({ isDragging: monitor.isDragging() })
+  });
+  useEffect(() => {
+    dragPreview(getEmptyImage(), { captureDraggingState: true });
+  }, [dragPreview]);
+  const Icon = item.icon;
+  return (
+    <div ref={drag} className="palette-chip" style={{ opacity: isDragging ? 0.4 : 1 }} title={`Drag ${item.label} onto the canvas`}>
+      <Icon size={15} stroke={1.6} />
+      <span>{item.label}</span>
+    </div>
+  );
+};
+
+const NodePalette = () => (
+  <div className="node-palette" data-testid="workflow-palette">
+    <div className="palette-title">Nodes</div>
+    {PALETTE_ITEMS.map((item) => <PaletteChip key={item.type} item={item} />)}
+    <div className="palette-hint">Drag requests from the sidebar too.</div>
+  </div>
+);
+
+const LOG_LEVEL_PREFIX = { info: '·', warn: '!', error: '✗' };
+
+const LogPane = ({ run }) => (
+  <div className="log-pane" data-testid="workflow-logs">
+    <div className="log-pane-title">
+      Logs{run?.status ? ` — ${run.status}` : ''}
+    </div>
+    <div className="log-lines">
+      {(run?.log || []).length === 0 ? (
+        <div className="log-empty">No run yet.</div>
+      ) : (
+        run.log.map((entry, i) => (
+          <div key={i} className={`log-line log-${entry.level}`}>
+            <span className="log-time">{new Date(entry.ts).toLocaleTimeString()}</span>
+            <span className="log-msg">{LOG_LEVEL_PREFIX[entry.level] || '·'} {entry.message}</span>
+          </div>
+        ))
+      )}
+    </div>
+  </div>
+);
+
 // Follow the primary output from Start to produce a linear order, and report
 // whether the graph is a simple chain (no branches/loops/fan-in).
 const analyzeGraph = (doc) => {
@@ -323,6 +385,7 @@ const WorkflowEditor = ({ pathname }) => {
   const [syncPromptOpen, setSyncPromptOpen] = useState(false);
   const [inputsOpen, setInputsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [view, setViewState] = useState(() => {
     try {
@@ -364,7 +427,8 @@ const WorkflowEditor = ({ pathname }) => {
       dispatch(removeWorkflowNode(pathname, id)).catch((e) => toast.error(e?.message || 'Unable to delete node'));
     },
     onRevealNode: (id) => dispatch(revealWorkflowNode(pathname, id)).catch((e) => toast.error(e?.message || 'Unable to locate request')),
-    onDropRequest: (item, position) => dispatch(addWorkflowRequestNodeFromDragItem(pathname, item, position)).catch((e) => toast.error(e?.message || 'Unable to add request'))
+    onDropRequest: (item, position) => dispatch(addWorkflowRequestNodeFromDragItem(pathname, item, position)).catch((e) => toast.error(e?.message || 'Unable to add request')),
+    onDropNode: (nodeType, position) => dispatch(addWorkflowNode(pathname, nodeType, position)).catch((e) => toast.error(e?.message || 'Unable to add node'))
   }), [dispatch, pathname]);
 
   if (!openWorkflowState) {
@@ -514,6 +578,32 @@ const WorkflowEditor = ({ pathname }) => {
         )}
         <NodeParamEditor node={selectedNode} onChange={handleNodePatch(selectedNode.id)} />
         <StepResult result={run?.stepResults?.[selectedNode.id]} />
+
+        {(() => {
+          const data = run?.nodeData?.[selectedNode.id];
+          if (!data) {
+            return null;
+          }
+          const preview = (value) => {
+            try {
+              return JSON.stringify(value, null, 2).slice(0, 4000);
+            } catch (error) {
+              return String(value);
+            }
+          };
+          return (
+            <div className="node-io" data-testid="workflow-node-io">
+              <details open>
+                <summary>Input</summary>
+                <pre className="io-pre">{preview(data.input)}</pre>
+              </details>
+              <details open>
+                <summary>Output</summary>
+                <pre className="io-pre">{preview(data.output)}</pre>
+              </details>
+            </div>
+          );
+        })()}
       </div>
     );
   };
@@ -623,10 +713,17 @@ const WorkflowEditor = ({ pathname }) => {
       <div className="workflow-header">
         <div className="workflow-title" title={pathname}>{doc.name}</div>
         <div className="workflow-actions">
-          <button type="button" className="run-button" data-testid="workflow-run" disabled={isRunning || doc.nodes.length <= 1} onClick={handleRunClick}>
-            {isRunning ? <IconLoader2 size={15} className="animate-spin" /> : <IconPlayerPlay size={15} />}
-            <span>Run</span>
-          </button>
+          {isRunning ? (
+            <button type="button" className="run-button cancel-button" data-testid="workflow-cancel" disabled={run?.cancelling} onClick={() => dispatch(cancelWorkflowRun(pathname))}>
+              <IconPlayerStop size={15} />
+              <span>{run?.cancelling ? 'Cancelling...' : 'Cancel'}</span>
+            </button>
+          ) : (
+            <button type="button" className="run-button" data-testid="workflow-run" disabled={doc.nodes.length <= 1} onClick={handleRunClick}>
+              <IconPlayerPlay size={15} />
+              <span>Run</span>
+            </button>
+          )}
           <button type="button" className={`add-button ${view === 'canvas' ? 'active' : ''}`} data-testid="workflow-view-toggle" onClick={() => setView(view === 'canvas' ? 'list' : 'canvas')}>
             {view === 'canvas' ? <IconLayoutList size={15} /> : <IconRoute size={15} />}
             <span>{view === 'canvas' ? 'List' : 'Canvas'}</span>
@@ -634,6 +731,10 @@ const WorkflowEditor = ({ pathname }) => {
           <button type="button" className="add-button" data-testid="workflow-inputs-toggle" onClick={() => setInputsOpen((open) => !open)}>
             <IconVariable size={15} />
             <span>Inputs{doc.inputs?.length ? ` (${doc.inputs.length})` : ''}</span>
+          </button>
+          <button type="button" className={`add-button ${logsOpen ? 'active' : ''}`} data-testid="workflow-logs-toggle" onClick={() => setLogsOpen((open) => !open)}>
+            <IconTerminal2 size={15} />
+            <span>Logs</span>
           </button>
           <button type="button" className="add-button" data-testid="workflow-history-toggle" onClick={() => setHistoryOpen((open) => !open)}>
             <IconHistory size={15} />
@@ -662,6 +763,7 @@ const WorkflowEditor = ({ pathname }) => {
 
       {view === 'canvas' ? (
         <div className="canvas-wrap">
+          <NodePalette />
           <WorkflowCanvas
             doc={doc}
             drift={drift}
@@ -675,6 +777,8 @@ const WorkflowEditor = ({ pathname }) => {
       ) : (
         renderListView()
       )}
+
+      {logsOpen && <LogPane run={run} />}
 
       {run && run.status !== 'running' && (
         <div className={`run-summary run-${run.status}`}>
