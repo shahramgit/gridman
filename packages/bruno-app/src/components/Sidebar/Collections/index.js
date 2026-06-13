@@ -19,7 +19,7 @@ const DEFAULT_SEARCH_OPTIONS = {
     url: true,
     headers: true,
     body: true,
-    examples: false
+    examples: true
   }
 };
 

@@ -1,15 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import toast from 'react-hot-toast';
+import { useDispatch, useSelector, useStore } from 'react-redux';
 import { IconChevronRight, IconFolder, IconLoader2, IconSearch } from '@tabler/icons';
 import classnames from 'classnames';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import { collectionIndexNodeActivated } from 'providers/ReduxStore/slices/collections';
-import { loadRequest, openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
+import { loadRequest, mountCollection, openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
 import { getDefaultRequestPaneTab } from 'utils/collections';
+import { normalizePath } from 'utils/common/path';
 import { foldSearchText } from '@usebruno/common';
 import SearchHighlight from './SearchHighlight';
-import { isTabForItemPresent as isTabForItemPresentSelector } from 'src/selectors/tab';
-import { isEqual } from 'lodash';
 
 const SEARCH_DEBOUNCE_MS = 200;
 
@@ -200,27 +200,60 @@ const formatMatchLabel = (field) => {
 
 const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNodeUids, onToggleNode }) => {
   const dispatch = useDispatch();
+  const store = useStore();
   const isRequest = node.nodeKind === 'request';
   const isCollapsed = collapsedNodeUids.has(node.uid);
   const showMatchContext = node.matchText && !doesVisibleRowMatch(node, searchText);
-  const isTabForItemPresent = useSelector(isTabForItemPresentSelector({ itemUid: node.uid }), isEqual);
-  const collectionExists = useSelector((state) => {
-    return Boolean(state.collections.collections?.find((collection) => collection.uid === node.collectionUid));
-  });
+
+  // Resolve the renderer's collection (by pathname) for this search node. Its
+  // uid is the source of truth for tabs/loadRequest - using the search node's
+  // hash uid can mismatch a freshly opened collection and never resolve.
+  const findCollection = () => store.getState().collections.collections.find(
+    (collection) => normalizePath(collection.pathname) === normalizePath(node.collectionPathname)
+  );
 
   const openRequest = async () => {
-    if (!collectionExists) {
+    let collection = findCollection();
+
+    if (!collection) {
       await dispatch(openMultipleCollections([node.collectionPathname], { workspacePath }));
+      // Opening is async (collection state arrives via separate events); wait
+      // for it so loadRequest can attach the file and the tab can resolve.
+      const startedAt = Date.now();
+      while (!collection && Date.now() - startedAt < 8000) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        collection = findCollection();
+      }
     }
 
-    dispatch(collectionIndexNodeActivated({ collectionUid: node.collectionUid, node }));
+    if (!collection) {
+      toast.error('Unable to open the collection for this result');
+      return;
+    }
 
-    if (isTabForItemPresent) {
-      dispatch(focusTab({ uid: node.uid }));
+    const collectionUid = collection.uid;
+
+    // Classic (non-indexed) collections need mounting before their tree and
+    // loaded-request entries are available.
+    const hasIndex = Boolean(store.getState().collections.collectionIndexes?.[collectionUid]);
+    if (!hasIndex && collection.mountStatus !== 'mounted' && collection.mountStatus !== 'mounting') {
+      dispatch(mountCollection({
+        collectionUid,
+        collectionPathname: collection.pathname,
+        brunoConfig: collection.brunoConfig
+      }));
+    } else if (hasIndex) {
+      dispatch(collectionIndexNodeActivated({ collectionUid, node }));
+    }
+
+    const tabUid = `indexed-request:${collectionUid}:${node.pathname}`;
+    const existing = store.getState().tabs.tabs.find((tab) => tab.uid === tabUid);
+    if (existing) {
+      dispatch(focusTab({ uid: existing.uid }));
     } else {
       dispatch(addTab({
-        uid: node.uid,
-        collectionUid: node.collectionUid,
+        uid: tabUid,
+        collectionUid,
         requestPaneTab: getDefaultRequestPaneTab(node),
         type: 'request',
         itemUid: node.uid,
@@ -228,7 +261,7 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
       }));
     }
 
-    dispatch(loadRequest({ collectionUid: node.collectionUid, pathname: node.pathname }));
+    dispatch(loadRequest({ collectionUid, pathname: node.pathname }));
   };
 
   const handleClick = () => {

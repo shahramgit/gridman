@@ -545,22 +545,13 @@ const WORKSPACE_SEARCH_DEFAULT_SCOPES = {
   url: true,
   headers: true,
   body: true,
-  examples: false
+  examples: true
 };
 
-const BRU_HEADERS_BLOCK_REGEX = /(?:^|\n)headers\s*\{([\s\S]*?)\n\}/g;
-const BRU_BODY_BLOCK_REGEX = /(?:^|\n)body(?::[\w:-]+)?\s*\{([\s\S]*?)\n\}/g;
-const BRU_EXAMPLE_BLOCK_REGEX = /(?:^|\n)example\s*\{([\s\S]*?)\n\}/g;
-
-const extractSearchBlocks = (content, regex) => {
-  const parts = [];
-  let match;
-  regex.lastIndex = 0;
-  while ((match = regex.exec(content)) !== null) {
-    parts.push(match[1]);
-  }
-  return parts.join('\n');
-};
+const {
+  buildSearchFields,
+  matchSearchFields
+} = require('../utils/workspace-search-match');
 
 const cleanSearchMetaValue = (value) => {
   if (!value) {
@@ -727,75 +718,47 @@ const buildWorkspaceSearchCacheEntry = async ({ workspacePath, collectionPath, p
     ? createWorkspaceFolderSearchResult({ workspacePath, collectionPath, pathname, content, format })
     : createWorkspaceSearchResult({ workspacePath, collectionPath, pathname, content, format });
 
-  const headersRaw = format === 'bru' ? extractSearchBlocks(content, BRU_HEADERS_BLOCK_REGEX) : content;
-  const bodyRaw = format === 'bru' ? extractSearchBlocks(content, BRU_BODY_BLOCK_REGEX) : content;
-  const examplesRaw = format === 'bru' ? extractSearchBlocks(content, BRU_EXAMPLE_BLOCK_REGEX) : content;
+  const fields = buildSearchFields({
+    content,
+    format,
+    name: result.name,
+    filename: result.filename,
+    url: result.url
+  });
 
   return {
     mtimeMs,
     size,
     isFolderMeta,
     result,
-    raw: {
-      name: result.name || '',
-      filename: result.filename || '',
-      url: result.url || '',
-      headers: headersRaw,
-      body: bodyRaw,
-      examples: examplesRaw
-    },
-    folded: {
-      name: utils.foldSearchText(result.name),
-      filename: utils.foldSearchText(result.filename),
-      url: utils.foldSearchText(result.url),
-      headers: utils.foldSearchText(headersRaw),
-      body: utils.foldSearchText(bodyRaw),
-      examples: utils.foldSearchText(examplesRaw)
-    }
+    raw: fields.raw,
+    folded: fields.folded
   };
 };
 
-// Match priority mirrors the result label order shown in the sidebar.
-const WORKSPACE_SEARCH_FIELD_SCOPES = [
-  ['name', 'names'],
-  ['filename', 'names'],
-  ['url', 'url'],
-  ['headers', 'headers'],
-  ['body', 'body'],
-  ['examples', 'examples']
-];
+const SNIPPET_FIELDS = new Set(['headers', 'body', 'examples']);
 
 const matchWorkspaceSearchEntry = (entry, job) => {
-  for (const [field, scope] of WORKSPACE_SEARCH_FIELD_SCOPES) {
-    if (!job.scopes[scope]) {
-      continue;
-    }
-
-    const foldedValue = entry.folded[field];
-    if (!foldedValue || !foldedValue.includes(job.foldedQueryCi)) {
-      continue;
-    }
-
-    // Case-insensitive folded strings are a superset filter; confirm against
-    // a case-preserving fold only when match-case is requested.
-    if (job.matchCase
-      && !utils.foldSearchText(entry.raw[field], { caseSensitive: true }).includes(job.foldedQueryCs)) {
-      continue;
-    }
-
-    if (field === 'headers' || field === 'body' || field === 'examples') {
-      const snippet = createSearchSnippet(
-        entry.raw[field],
-        job.query,
-        job.matchCase ? { caseSensitive: true } : {}
-      );
-      return { matchField: field, matchText: snippet || entry.raw[field].slice(0, 100) };
-    }
-
-    return { matchField: field, matchText: String(entry.raw[field]) };
+  const match = matchSearchFields(entry, {
+    scopes: job.scopes,
+    foldedQueryCi: job.foldedQueryCi,
+    foldedQueryCs: job.foldedQueryCs,
+    matchCase: job.matchCase
+  });
+  if (!match) {
+    return null;
   }
 
-  return null;
+  const { field } = match;
+  if (SNIPPET_FIELDS.has(field)) {
+    const snippet = createSearchSnippet(
+      entry.raw[field],
+      job.query,
+      job.matchCase ? { caseSensitive: true } : {}
+    );
+    return { matchField: field, matchText: snippet || entry.raw[field].slice(0, 100) };
+  }
+  return { matchField: field, matchText: String(entry.raw[field]) };
 };
 
 const sendWorkspaceSearchBatch = (event, job, force = false) => {
