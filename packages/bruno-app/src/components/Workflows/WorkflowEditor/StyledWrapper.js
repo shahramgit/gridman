@@ -419,6 +419,83 @@ const StyledWrapper = styled.div`
         }
       }
     }
+
+    .wf-node {
+      position: relative;
+      width: 210px;
+      border: 1.5px solid #8886;
+      border-radius: 8px;
+      background: ${(props) => props.theme.sidebar.bg};
+      padding: 8px 10px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+    }
+
+    .wf-node-selected {
+      box-shadow: 0 0 0 2px ${(props) => props.theme.colors.text.yellow};
+    }
+
+    .wf-node-start {
+      width: 120px;
+      text-align: center;
+      border-radius: 18px;
+      background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
+    }
+
+    .wf-node-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .wf-node-icon {
+      flex-shrink: 0;
+      opacity: 0.8;
+    }
+
+    .wf-node-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .wf-node-sub {
+      margin-top: 2px;
+      font-size: 10px;
+      opacity: 0.55;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .wf-node-result {
+      margin-top: 4px;
+      font-size: 10px;
+
+      &.result-passed {
+        color: ${(props) => props.theme.colors.text.green};
+      }
+
+      &.result-failed {
+        color: ${(props) => props.theme.colors.text.danger};
+      }
+    }
+
+    .wf-port-label {
+      position: absolute;
+      right: 8px;
+      font-size: 9px;
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    .react-flow__handle {
+      width: 9px;
+      height: 9px;
+      background: ${(props) => props.theme.colors.text.yellow};
+      border: 1px solid ${(props) => props.theme.sidebar.bg};
+    }
   }
 
   .canvas-panel {

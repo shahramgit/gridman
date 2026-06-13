@@ -176,9 +176,17 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
     }
     setRevealFlash(true);
     dispatch(clearSidebarReveal());
+  }, [sidebarReveal?.nonce, sidebarReveal?.pending]);
+
+  // Auto-clear the flash on its own timer so flipping the reveal's pending
+  // flag (above) cannot cancel it.
+  useEffect(() => {
+    if (!revealFlash) {
+      return undefined;
+    }
     const timer = setTimeout(() => setRevealFlash(false), 1800);
     return () => clearTimeout(timer);
-  }, [sidebarReveal?.nonce, sidebarReveal?.pending]);
+  }, [revealFlash]);
 
   const determineDropType = (monitor) => {
     const hoverBoundingRect = ref.current?.getBoundingClientRect();

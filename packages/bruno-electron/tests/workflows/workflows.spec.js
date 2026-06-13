@@ -14,6 +14,16 @@ const {
   evaluateWorkflowExpression
 } = require('../../src/workflows');
 
+const requestNode = (id, ref, snapshot, hash) => ({
+  id,
+  type: 'request',
+  name: snapshot.name,
+  position: { x: 320, y: 200 },
+  ref,
+  snapshotHash: hash,
+  snapshot
+});
+
 const REQUEST_BRU = `meta {
   name: Get User
   type: http
@@ -90,37 +100,30 @@ describe('workflows', () => {
 
     await writeWorkflowFile(pathname, {
       name: 'My Flow',
-      steps: [
-        {
-          id: 'step-1',
-          type: 'request',
-          name: snapshot.name,
-          ref: { collection: collectionRelPath, request: requestRelPath },
-          snapshotHash: hash,
-          snapshot
-        }
-      ]
+      nodes: [requestNode('node-1', { collection: collectionRelPath, request: requestRelPath }, snapshot, hash)],
+      connections: []
     });
 
     const workflows = await listWorkflows(workspacePath);
     expect(workflows).toHaveLength(1);
     expect(workflows[0].name).toBe('My Flow');
 
-    // linked while the request is unchanged
+    // linked while the request is unchanged (Start node is auto-added)
     let result = await readWorkflowWithDrift(workspacePath, pathname);
-    expect(result.doc.steps).toHaveLength(1);
-    expect(result.drift['step-1'].status).toBe('linked');
+    expect(result.doc.nodes.some((n) => n.type === 'start')).toBe(true);
+    expect(result.doc.nodes.find((n) => n.id === 'node-1')).toBeTruthy();
+    expect(result.drift['node-1'].status).toBe('linked');
 
     // drifted after the request changes on disk
     fs.writeFileSync(requestPath, REQUEST_BRU.replace('{{userId}}', '{{accountId}}'));
     result = await readWorkflowWithDrift(workspacePath, pathname);
-    expect(result.drift['step-1'].status).toBe('drifted');
+    expect(result.drift['node-1'].status).toBe('drifted');
 
     // detached after the request is deleted; the snapshot survives
     fs.unlinkSync(requestPath);
     result = await readWorkflowWithDrift(workspacePath, pathname);
-    expect(result.drift['step-1'].status).toBe('detached');
-    expect(JSON.stringify(result.doc.steps[0].snapshot)).toContain('{{baseUrl}}');
+    expect(result.drift['node-1'].status).toBe('detached');
+    expect(JSON.stringify(result.doc.nodes.find((n) => n.id === 'node-1').snapshot)).toContain('{{baseUrl}}');
   });
 
   it('snapshots stay linked after a yaml roundtrip even with undefined fields', async () => {
@@ -136,14 +139,8 @@ describe('workflows', () => {
 
     await writeWorkflowFile(pathname, {
       name: 'Roundtrip',
-      steps: [{
-        id: 's1',
-        type: 'request',
-        name: snapshot.name,
-        ref: { collection: collectionRelPath, request: requestRelPath },
-        snapshotHash: hash,
-        snapshot: dirtySnapshot
-      }]
+      nodes: [requestNode('s1', { collection: collectionRelPath, request: requestRelPath }, dirtySnapshot, hash)],
+      connections: []
     });
 
     const result = await readWorkflowWithDrift(workspacePath, pathname);
@@ -185,54 +182,64 @@ describe('workflows', () => {
     expect(JSON.stringify(first.snapshot)).not.toContain('"uid"');
   });
 
-  it('normalizes phase-2 step types and inputs', () => {
+  it('normalizes v2 node types, inputs and connections', () => {
     const doc = normalizeWorkflowDoc({
+      version: 2,
       name: 'F',
       inputs: [{ name: 'env', value: 'dev' }, null, { name: '' }],
-      steps: [
-        { type: 'map', mappings: [{ from: 'weird', path: '$.x', target: 't' }, null] },
-        { type: 'condition', expression: 'res.status === 200', onFalse: 'nonsense' },
-        { type: 'delay', durationMs: 99999999 },
-        { type: 'unknown-step' }
+      nodes: [
+        { id: 'm', type: 'map', mappings: [{ from: 'weird', path: '$.x', target: 't' }, null] },
+        { id: 'c', type: 'condition', expression: 'res.status === 200' },
+        { id: 'd', type: 'delay', durationMs: 99999999 },
+        { id: 'bad', type: 'unknown-node' }
+      ],
+      connections: [
+        { source: 'm', sourcePort: 'main', target: 'c' },
+        { source: 'm', sourcePort: 'main', target: 'd' }, // dup port -> dropped
+        { source: 'c', sourcePort: 'nope', target: 'd' }, // invalid port -> dropped
+        { source: 'c', sourcePort: 'false', target: 'd' }
       ]
     });
 
-    // blank-name rows survive (the editor adds empty rows the user fills in)
+    // blank-name input rows survive
     expect(doc.inputs).toEqual([{ name: 'env', value: 'dev' }, { name: '', value: '' }]);
-    expect(doc.steps).toHaveLength(3);
-    expect(doc.steps[0].mappings).toEqual([{ from: 'body', path: '$.x', target: 't' }]);
-    expect(doc.steps[1].onFalse).toBe('stop');
-    expect(doc.steps[2].durationMs).toBe(5 * 60 * 1000);
+    // unknown node dropped; Start node auto-added
+    expect(doc.nodes.some((n) => n.type === 'start')).toBe(true);
+    expect(doc.nodes.find((n) => n.id === 'bad')).toBeUndefined();
+    expect(doc.nodes.find((n) => n.id === 'm').mappings).toEqual([{ from: 'body', path: '$.x', target: 't' }]);
+    expect(doc.nodes.find((n) => n.id === 'c').onFalse).toBeUndefined();
+    expect(doc.nodes.find((n) => n.id === 'd').durationMs).toBe(5 * 60 * 1000);
+    // one connection per (source, port); invalid port dropped
+    expect(doc.connections.filter((c) => c.source === 'm')).toHaveLength(1);
+    expect(doc.connections.filter((c) => c.source === 'c')).toHaveLength(1);
+    expect(doc.connections.find((c) => c.source === 'c').sourcePort).toBe('false');
   });
 
-  it('normalizes loop steps, nests their bodies and rejects nested loops', () => {
+  it('migrates a v1 ordered-steps document (with a loop) into a connected graph', () => {
     const doc = normalizeWorkflowDoc({
-      name: 'L',
+      name: 'Legacy',
       steps: [
-        {
-          type: 'loop',
-          source: 'items',
-          maxIterations: 999999,
-          steps: [
-            { type: 'delay', durationMs: 50 },
-            { type: 'loop', source: 'nested', steps: [] },
-            { type: 'condition', expression: 'true' }
-          ]
-        }
+        { id: 'req', type: 'request', name: 'r', ref: { collection: 'c', request: 'r.bru' }, snapshot: { name: 'r', type: 'http-request', request: {} }, snapshotHash: 'h' },
+        { id: 'lp', type: 'loop', source: 'items', steps: [{ id: 'body', type: 'delay', durationMs: 10 }] },
+        { id: 'tail', type: 'delay', durationMs: 5 }
       ]
     });
 
-    expect(doc.steps).toHaveLength(1);
-    const loop = doc.steps[0];
-    expect(loop.type).toBe('loop');
-    expect(loop.itemVar).toBe('item');
-    expect(loop.maxIterations).toBe(1000);
-    // nested loop is dropped; delay + condition survive
-    expect(loop.steps.map((s) => s.type)).toEqual(['delay', 'condition']);
+    expect(doc.version).toBe(2);
+    const ids = doc.nodes.map((n) => n.type === 'start' ? 'start' : n.id);
+    expect(ids).toEqual(expect.arrayContaining(['start', 'req', 'lp', 'body', 'tail']));
+
+    const start = doc.nodes.find((n) => n.type === 'start');
+    const edge = (source, port) => doc.connections.find((c) => c.source === source && c.sourcePort === port)?.target;
+    expect(edge(start.id, 'main')).toBe('req');
+    expect(edge('req', 'main')).toBe('lp');
+    expect(edge('lp', 'loop')).toBe('body');
+    expect(edge('body', 'main')).toBe('lp'); // body wires back to advance the loop
+    expect(edge('lp', 'done')).toBe('tail');
   });
 
-  it('computes drift for request steps inside loop bodies', async () => {
-    const pathname = await createWorkflow(workspacePath, 'LoopDrift');
+  it('computes drift for request nodes in a graph', async () => {
+    const pathname = await createWorkflow(workspacePath, 'GraphDrift');
     const { snapshot, hash, collectionRelPath, requestRelPath } = await snapshotRequestForWorkflow({
       workspacePath,
       collectionPathname: collectionPath,
@@ -240,25 +247,13 @@ describe('workflows', () => {
     });
 
     await writeWorkflowFile(pathname, {
-      name: 'LoopDrift',
-      steps: [{
-        id: 'loop-1',
-        type: 'loop',
-        source: 'items',
-        steps: [{
-          id: 'nested-req',
-          type: 'request',
-          name: snapshot.name,
-          ref: { collection: collectionRelPath, request: requestRelPath },
-          snapshotHash: hash,
-          snapshot
-        }]
-      }]
+      name: 'GraphDrift',
+      nodes: [requestNode('req-1', { collection: collectionRelPath, request: requestRelPath }, snapshot, hash)],
+      connections: []
     });
 
     const result = await readWorkflowWithDrift(workspacePath, pathname);
-    expect(result.doc.steps[0].steps).toHaveLength(1);
-    expect(result.drift['nested-req'].status).toBe('linked');
+    expect(result.drift['req-1'].status).toBe('linked');
   });
 
   it('evaluates condition expressions against res and vars', () => {

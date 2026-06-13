@@ -21,34 +21,34 @@ const initialState = {
   history: {}
 };
 
-// Locate the steps array a step operation targets: the document root or a
-// loop step's body.
-const getStepsContainer = (doc, parentStepId) => {
-  if (!parentStepId) {
-    return doc.steps;
-  }
-  const parent = doc.steps.find((step) => step.id === parentStepId);
-  return parent?.type === 'loop' ? parent.steps : null;
+// Output ports per node type (mirror of the main-process schema).
+const NODE_OUTPUT_PORTS = {
+  start: ['main'],
+  request: ['main'],
+  map: ['main'],
+  delay: ['main'],
+  condition: ['true', 'false'],
+  loop: ['loop', 'done']
 };
 
-const walkSteps = (steps, visit) => {
-  for (const step of steps || []) {
-    visit(step);
-    if (step.type === 'loop') {
-      walkSteps(step.steps, visit);
-    }
+const findNode = (doc, nodeId) => (doc.nodes || []).find((node) => node.id === nodeId) || null;
+
+// Replace any existing connection from (source, sourcePort) so each output
+// port drives exactly one target.
+const setConnection = (doc, source, sourcePort, target) => {
+  doc.connections = (doc.connections || []).filter(
+    (conn) => !(conn.source === source && conn.sourcePort === sourcePort)
+  );
+  if (target) {
+    doc.connections.push({ id: uuid(), source, sourcePort, target });
   }
 };
 
-const findStepDeep = (steps, stepId) => {
-  let found = null;
-  walkSteps(steps, (step) => {
-    if (step.id === stepId) {
-      found = step;
-    }
-  });
-  return found;
-};
+const outgoingConnection = (doc, source, sourcePort) =>
+  (doc.connections || []).find((conn) => conn.source === source && conn.sourcePort === sourcePort) || null;
+
+const incomingConnections = (doc, target) =>
+  (doc.connections || []).filter((conn) => conn.target === target);
 
 export const workflowsSlice = createSlice({
   name: 'workflows',
@@ -218,64 +218,14 @@ export const saveWorkflowDoc = (pathname, doc) => async (dispatch, getState) => 
   await dispatch(loadWorkflows());
 };
 
-const removeStepDeep = (steps, stepId) => {
-  const index = steps.findIndex((step) => step.id === stepId);
-  if (index !== -1) {
-    return steps.splice(index, 1)[0];
-  }
-  for (const step of steps) {
-    if (step.type === 'loop') {
-      const removed = removeStepDeep(step.steps || [], stepId);
-      if (removed) {
-        return removed;
-      }
-    }
-  }
-  return null;
-};
-
-// Move a step to a new container (document root or a loop body) and index.
-// Used by canvas drag interactions.
-export const restructureWorkflowStep = (pathname, stepId, { parentStepId = null, index }) => async (dispatch, getState) => {
-  const openWorkflowState = getState().workflows.open[pathname];
-  if (!openWorkflowState) {
-    return;
-  }
-
-  const doc = cloneDeep(openWorkflowState.doc);
-  const step = findStepDeep(doc.steps, stepId);
-  if (!step) {
-    return;
-  }
-  // loops stay at the root (no nested loops)
-  if (step.type === 'loop' && parentStepId) {
-    return;
-  }
-
-  const removed = removeStepDeep(doc.steps, stepId);
-  if (!removed) {
-    return;
-  }
-
-  const container = getStepsContainer(doc, parentStepId);
-  if (!container) {
-    // target loop vanished; restore at root end
-    doc.steps.push(removed);
-  } else {
-    const boundedIndex = Math.min(Math.max(Number(index) || 0, 0), container.length);
-    container.splice(boundedIndex, 0, removed);
-  }
-
-  await dispatch(saveWorkflowDoc(pathname, doc));
-};
-
-// picked: { collectionPathname, requestPathname, name } (absolute paths)
-export const addWorkflowRequestStep = (pathname, picked, parentStepId, insertIndex) => async (dispatch, getState) => {
+// Add a request node from a picked request (absolute paths). Returns the new
+// node id so the caller can auto-wire it.
+export const addWorkflowRequestNode = (pathname, picked, position) => async (dispatch, getState) => {
   const state = getState();
   const workspace = getActiveWorkspace(state);
   const openWorkflowState = state.workflows.open[pathname];
   if (!workspace?.pathname || !openWorkflowState) {
-    return;
+    return null;
   }
 
   const { snapshot, hash, collectionRelPath, requestRelPath } = await window.ipcRenderer.invoke(
@@ -288,70 +238,168 @@ export const addWorkflowRequestStep = (pathname, picked, parentStepId, insertInd
   );
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const container = getStepsContainer(doc, parentStepId);
-  if (!container) {
-    return;
-  }
-  const newStep = {
-    id: uuid(),
+  const id = uuid();
+  doc.nodes.push({
+    id,
     type: 'request',
     name: picked.name || snapshot.name,
+    position: position || { x: 320, y: 200 },
     pinned: false,
-    ref: {
-      collection: collectionRelPath,
-      request: requestRelPath
-    },
+    ref: { collection: collectionRelPath, request: requestRelPath },
     snapshotHash: hash,
     snapshot
-  };
-  const boundedIndex = Number.isInteger(insertIndex)
-    ? Math.min(Math.max(insertIndex, 0), container.length)
-    : container.length;
-  container.splice(boundedIndex, 0, newStep);
+  });
 
   await dispatch(saveWorkflowDoc(pathname, doc));
+  return id;
 };
 
-// Append a non-request step (map / condition / delay / loop) with defaults.
-export const addWorkflowStep = (pathname, stepType, parentStepId) => async (dispatch, getState) => {
+// Add a non-request node (map / condition / delay / loop) with defaults.
+export const addWorkflowNode = (pathname, nodeType, position) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
   if (!openWorkflowState) {
-    return;
+    return null;
   }
 
   const defaults = {
     map: { name: 'Map response', mappings: [{ from: 'body', path: '$.', target: '' }] },
-    condition: { name: 'Condition', expression: 'res.status === 200', onFalse: 'stop' },
+    condition: { name: 'Condition', expression: 'res.status === 200' },
     delay: { name: 'Delay', durationMs: 1000 },
-    loop: { name: 'For each', source: '', itemVar: 'item', maxIterations: 100, steps: [] }
+    loop: { name: 'For each', source: '', itemVar: 'item', maxIterations: 100 }
   };
-  if (!defaults[stepType] || (stepType === 'loop' && parentStepId)) {
-    return;
+  if (!defaults[nodeType]) {
+    return null;
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const container = getStepsContainer(doc, parentStepId);
-  if (!container) {
-    return;
-  }
-  container.push({ id: uuid(), type: stepType, ...defaults[stepType] });
+  const id = uuid();
+  doc.nodes.push({ id, type: nodeType, position: position || { x: 320, y: 200 }, ...defaults[nodeType] });
   await dispatch(saveWorkflowDoc(pathname, doc));
+  return id;
 };
 
-// Patch fields of a step (used by the inline editors). Steps are looked up
-// recursively so loop bodies are covered.
-export const updateWorkflowStep = (pathname, stepId, patch) => async (dispatch, getState) => {
+// Accepts a react-dnd 'collection-item' drag payload (sidebar rows, both
+// classic and indexed) and adds it as a request node at the given position.
+export const addWorkflowRequestNodeFromDragItem = (pathname, draggedItem, position) => async (dispatch, getState) => {
+  const state = getState();
+  const collectionPathname = draggedItem.sourceCollectionPathname
+    || state.collections.collections.find((c) => c.uid === draggedItem.sourceCollectionUid)?.pathname;
+  const requestPathname = draggedItem.sourcePathname || draggedItem.pathname;
+  if (!collectionPathname || !requestPathname) {
+    throw new Error('Unable to resolve the dragged request');
+  }
+
+  return dispatch(addWorkflowRequestNode(pathname, {
+    collectionPathname,
+    requestPathname,
+    name: draggedItem.name
+  }, position));
+};
+
+export const updateWorkflowNode = (pathname, nodeId, patch) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
   if (!openWorkflowState) {
     return;
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const step = findStepDeep(doc.steps, stepId);
-  if (!step) {
+  const node = findNode(doc, nodeId);
+  if (!node) {
     return;
   }
-  Object.assign(step, patch);
+  Object.assign(node, patch);
+  await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
+// Persist a node's canvas position (called on drag stop).
+export const updateWorkflowNodePosition = (pathname, nodeId, position) => async (dispatch, getState) => {
+  const openWorkflowState = getState().workflows.open[pathname];
+  if (!openWorkflowState) {
+    return;
+  }
+
+  const doc = cloneDeep(openWorkflowState.doc);
+  const node = findNode(doc, nodeId);
+  if (!node) {
+    return;
+  }
+  node.position = { x: Math.round(position.x), y: Math.round(position.y) };
+  await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
+export const removeWorkflowNode = (pathname, nodeId) => async (dispatch, getState) => {
+  const openWorkflowState = getState().workflows.open[pathname];
+  if (!openWorkflowState) {
+    return;
+  }
+
+  const doc = cloneDeep(openWorkflowState.doc);
+  const node = findNode(doc, nodeId);
+  if (!node || node.type === 'start') {
+    return; // the Start node is permanent
+  }
+
+  // Heal a simple in/out: if the node has one incoming and a single 'main'
+  // output, reconnect the predecessor to the successor.
+  const incoming = incomingConnections(doc, nodeId);
+  const mainOut = outgoingConnection(doc, nodeId, 'main');
+  if (incoming.length === 1 && mainOut) {
+    setConnection(doc, incoming[0].source, incoming[0].sourcePort, mainOut.target);
+  }
+
+  doc.nodes = doc.nodes.filter((candidate) => candidate.id !== nodeId);
+  doc.connections = (doc.connections || []).filter(
+    (conn) => conn.source !== nodeId && conn.target !== nodeId
+  );
+  await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
+export const connectWorkflowNodes = (pathname, { source, sourcePort = 'main', target }) => async (dispatch, getState) => {
+  const openWorkflowState = getState().workflows.open[pathname];
+  if (!openWorkflowState || !source || !target || source === target) {
+    return;
+  }
+
+  const doc = cloneDeep(openWorkflowState.doc);
+  const sourceNode = findNode(doc, source);
+  if (!sourceNode || !findNode(doc, target)) {
+    return;
+  }
+  if (!(NODE_OUTPUT_PORTS[sourceNode.type] || []).includes(sourcePort)) {
+    return;
+  }
+  setConnection(doc, source, sourcePort, target);
+  await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
+// Rewire an existing edge to a new source/port/target in one save.
+export const reconnectWorkflowConnection = (pathname, connectionId, { source, sourcePort = 'main', target }) => async (dispatch, getState) => {
+  const openWorkflowState = getState().workflows.open[pathname];
+  if (!openWorkflowState || !source || !target || source === target) {
+    return;
+  }
+
+  const doc = cloneDeep(openWorkflowState.doc);
+  const sourceNode = findNode(doc, source);
+  if (!sourceNode || !findNode(doc, target)) {
+    return;
+  }
+  if (!(NODE_OUTPUT_PORTS[sourceNode.type] || []).includes(sourcePort)) {
+    return;
+  }
+  doc.connections = (doc.connections || []).filter((conn) => conn.id !== connectionId);
+  setConnection(doc, source, sourcePort, target);
+  await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
+export const disconnectWorkflowConnection = (pathname, connectionId) => async (dispatch, getState) => {
+  const openWorkflowState = getState().workflows.open[pathname];
+  if (!openWorkflowState) {
+    return;
+  }
+
+  const doc = cloneDeep(openWorkflowState.doc);
+  doc.connections = (doc.connections || []).filter((conn) => conn.id !== connectionId);
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
@@ -366,82 +414,23 @@ export const updateWorkflowInputs = (pathname, inputs) => async (dispatch, getSt
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
-// Accepts a react-dnd 'collection-item' drag payload (sidebar rows, both
-// classic and indexed) and adds it as a request step.
-export const addWorkflowRequestStepFromDragItem = (pathname, draggedItem, parentStepId, insertIndex) => async (dispatch, getState) => {
-  const state = getState();
-  const collectionPathname = draggedItem.sourceCollectionPathname
-    || state.collections.collections.find((c) => c.uid === draggedItem.sourceCollectionUid)?.pathname;
-  const requestPathname = draggedItem.sourcePathname || draggedItem.pathname;
-  if (!collectionPathname || !requestPathname) {
-    throw new Error('Unable to resolve the dragged request');
-  }
-
-  return dispatch(addWorkflowRequestStep(pathname, {
-    collectionPathname,
-    requestPathname,
-    name: draggedItem.name
-  }, parentStepId, insertIndex));
-};
-
-export const removeWorkflowStep = (pathname, stepId, parentStepId) => async (dispatch, getState) => {
+export const togglePinWorkflowNode = (pathname, nodeId) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
   if (!openWorkflowState) {
     return;
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const container = getStepsContainer(doc, parentStepId);
-  if (!container) {
+  const node = findNode(doc, nodeId);
+  if (!node) {
     return;
   }
-  const index = container.findIndex((step) => step.id === stepId);
-  if (index === -1) {
-    return;
-  }
-  container.splice(index, 1);
+  node.pinned = !node.pinned;
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
-export const moveWorkflowStep = (pathname, stepId, direction, parentStepId) => async (dispatch, getState) => {
-  const openWorkflowState = getState().workflows.open[pathname];
-  if (!openWorkflowState) {
-    return;
-  }
-
-  const doc = cloneDeep(openWorkflowState.doc);
-  const container = getStepsContainer(doc, parentStepId);
-  if (!container) {
-    return;
-  }
-  const index = container.findIndex((step) => step.id === stepId);
-  const targetIndex = index + direction;
-  if (index === -1 || targetIndex < 0 || targetIndex >= container.length) {
-    return;
-  }
-
-  const [step] = container.splice(index, 1);
-  container.splice(targetIndex, 0, step);
-  await dispatch(saveWorkflowDoc(pathname, doc));
-};
-
-export const togglePinWorkflowStep = (pathname, stepId) => async (dispatch, getState) => {
-  const openWorkflowState = getState().workflows.open[pathname];
-  if (!openWorkflowState) {
-    return;
-  }
-
-  const doc = cloneDeep(openWorkflowState.doc);
-  const step = findStepDeep(doc.steps, stepId);
-  if (!step) {
-    return;
-  }
-  step.pinned = !step.pinned;
-  await dispatch(saveWorkflowDoc(pathname, doc));
-};
-
-// Refresh step snapshots from their referenced request files.
-export const syncWorkflowSteps = (pathname, stepIds) => async (dispatch, getState) => {
+// Refresh request-node snapshots from their referenced request files.
+export const syncWorkflowNodes = (pathname, nodeIds) => async (dispatch, getState) => {
   const state = getState();
   const workspace = getActiveWorkspace(state);
   const openWorkflowState = state.workflows.open[pathname];
@@ -450,54 +439,47 @@ export const syncWorkflowSteps = (pathname, stepIds) => async (dispatch, getStat
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const allRequestSteps = [];
-  walkSteps(doc.steps, (step) => {
-    if (step.type === 'request') {
-      allRequestSteps.push(step);
-    }
-  });
-  const idsToSync = new Set(stepIds || allRequestSteps.map((step) => step.id));
+  const requestNodes = doc.nodes.filter((node) => node.type === 'request');
+  const idsToSync = new Set(nodeIds || requestNodes.map((node) => node.id));
   const failures = [];
 
-  for (const step of allRequestSteps) {
-    if (!idsToSync.has(step.id) || !step.ref?.collection || !step.ref?.request) {
+  for (const node of requestNodes) {
+    if (!idsToSync.has(node.id) || !node.ref?.collection || !node.ref?.request) {
       continue;
     }
 
     try {
       const { snapshot, hash } = await window.ipcRenderer.invoke('renderer:workflow-snapshot-request', {
         workspacePath: workspace.pathname,
-        collectionRelPath: step.ref.collection,
-        requestRelPath: step.ref.request
+        collectionRelPath: node.ref.collection,
+        requestRelPath: node.ref.request
       });
-      step.snapshot = snapshot;
-      step.snapshotHash = hash;
-      step.name = snapshot.name || step.name;
+      node.snapshot = snapshot;
+      node.snapshotHash = hash;
+      node.name = snapshot.name || node.name;
     } catch (error) {
-      // detached steps keep their snapshot; surface everything else
-      failures.push(`${step.name}: ${error?.message || 'sync failed'}`);
+      failures.push(`${node.name}: ${error?.message || 'sync failed'}`);
     }
   }
 
   await dispatch(saveWorkflowDoc(pathname, doc));
 
   if (failures.length) {
-    throw new Error(`Could not sync ${failures.length} step(s) - ${failures[0]}`);
+    throw new Error(`Could not sync ${failures.length} node(s) - ${failures[0]}`);
   }
 };
 
-// Show the step's referenced request in the sidebar, opening its collection
+// Show the node's referenced request in the sidebar, opening its collection
 // first when it is not loaded yet.
-export const revealWorkflowStep = (pathname, stepId) => async (dispatch, getState) => {
+export const revealWorkflowNode = (pathname, nodeId) => async (dispatch, getState) => {
   const state = getState();
   const workspace = getActiveWorkspace(state);
-  const step = findStepDeep(state.workflows.open[pathname]?.doc?.steps || [], stepId);
-  if (!workspace?.pathname || !step?.ref?.collection || !step?.ref?.request) {
-    throw new Error('This step has no linked request');
+  const node = findNode(state.workflows.open[pathname]?.doc || { nodes: [] }, nodeId);
+  if (!workspace?.pathname || !node?.ref?.collection || !node?.ref?.request) {
+    throw new Error('This node has no linked request');
   }
 
-  const collectionPathname = `${workspace.pathname}/${step.ref.collection}`;
-  const requestPathname = `${collectionPathname}/${step.ref.request}`;
+  const collectionPathname = `${workspace.pathname}/${node.ref.collection}`;
   const findLoaded = () => getState().collections.collections.find(
     (collection) => normalizePath(collection.pathname) === normalizePath(collectionPathname)
   );
@@ -511,30 +493,28 @@ export const revealWorkflowStep = (pathname, stepId) => async (dispatch, getStat
     throw new Error('The referenced collection is not available in this workspace');
   }
 
-  // Build the request path from the loaded collection's native pathname so
-  // separator-insensitive matching works on Windows too.
   dispatch(revealRequestInSidebar({
     collectionUid: collection.uid,
-    pathname: `${collection.pathname}/${step.ref.request}`
+    pathname: `${collection.pathname}/${node.ref.request}`
   }));
 };
 
 const SUPPORTED_RUN_TYPES = new Set(['http-request', 'graphql-request']);
 
-const findLoadedCollectionForStep = (state, workspacePath, step) => {
-  if (!step.ref?.collection) {
+const findLoadedCollectionForNode = (state, workspacePath, node) => {
+  if (!node.ref?.collection) {
     return null;
   }
 
   // refs use portable forward-slash relative paths
-  const normalizedRefPath = normalizePath(`${workspacePath}/${step.ref.collection}`);
+  const normalizedRefPath = normalizePath(`${workspacePath}/${node.ref.collection}`);
   return state.collections.collections.find(
     (collection) => normalizePath(collection.pathname) === normalizedRefPath
   ) || null;
 };
 
-const buildRunContextForStep = (state, workspace, step) => {
-  const loadedCollection = findLoadedCollectionForStep(state, workspace.pathname, step);
+const buildRunContextForNode = (state, workspace, node) => {
+  const loadedCollection = findLoadedCollectionForNode(state, workspace.pathname, node);
   const { globalEnvironments, activeGlobalEnvironmentUid } = state.globalEnvironments;
   const globalEnvironmentVariables = getGlobalEnvironmentVariables({
     globalEnvironments,
@@ -549,7 +529,7 @@ const buildRunContextForStep = (state, workspace, step) => {
     return { collection: collectionCopy, environment, runtimeVariables: collectionCopy.runtimeVariables || {} };
   }
 
-  // Detached steps run against a synthetic collection context: workspace
+  // Detached nodes run against a synthetic collection context: workspace
   // global environment variables only.
   return {
     collection: {
@@ -647,6 +627,10 @@ export const loadWorkflowRunHistory = (pathname) => async (dispatch) => {
   dispatch(workflowHistoryLoaded({ pathname, runs }));
 };
 
+// Global safety cap on node executions, so a manual cycle (wiring without a
+// loop node) can never run forever.
+const MAX_NODE_EXECUTIONS = 5000;
+
 export const runWorkflow = (pathname) => async (dispatch, getState) => {
   const state = getState();
   const workspace = getActiveWorkspace(state);
@@ -659,8 +643,15 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
   dispatch(workflowRunStarted({ pathname }));
   const runStartedAt = Date.now();
 
-  // flow vars: seeded by workflow inputs, written by map steps, read by
-  // condition steps and {{var}} interpolation in request steps
+  const nodesById = {};
+  for (const node of doc.nodes) {
+    nodesById[node.id] = node;
+  }
+  const outgoing = (nodeId, port) =>
+    (doc.connections || []).find((conn) => conn.source === nodeId && conn.sourcePort === port)?.target || null;
+
+  // flow vars: seeded by workflow inputs, written by map nodes, read by
+  // condition nodes and {{var}} interpolation in request nodes
   const flowVars = {};
   for (const input of doc.inputs || []) {
     if (input.name) {
@@ -668,21 +659,17 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
     }
   }
 
-  // shared executor state across nesting levels
-  const exec = {
-    lastResponseContext: null,
-    // 'passed' | 'failed' | 'stopped'
-    runStatus: 'passed',
-    // flat per-step summaries for the run history record
-    recordedSteps: []
-  };
+  let lastResponseContext = null;
+  let runStatus = 'passed';
+  const recordedNodes = [];
+  const loopState = {}; // loopNodeId -> { items, index, startedAt }
 
-  const finishStep = (step, result) => {
-    dispatch(workflowRunStepFinished({ pathname, stepId: step.id, result }));
-    exec.recordedSteps.push({
-      id: step.id,
-      name: step.name,
-      type: step.type,
+  const finishNode = (node, result) => {
+    dispatch(workflowRunStepFinished({ pathname, stepId: node.id, result }));
+    recordedNodes.push({
+      id: node.id,
+      name: node.name,
+      type: node.type,
       status: result.status,
       httpStatus: result.httpStatus,
       durationMs: result.durationMs,
@@ -691,155 +678,143 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
     });
   };
 
-  // Executes steps sequentially; returns false when the run must not
-  // continue (failure or condition stop).
-  const executeSteps = async (steps) => {
-    for (const step of steps) {
-      dispatch(workflowRunStepStarted({ pathname, stepId: step.id }));
+  const startNode = doc.nodes.find((node) => node.type === 'start');
+  let currentId = startNode ? outgoing(startNode.id, 'main') : null;
+  let executions = 0;
 
-      if (step.type === 'delay') {
-        await sleep(step.durationMs || 0);
-        finishStep(step, { status: 'passed', durationMs: step.durationMs || 0 });
-        continue;
+  while (currentId && executions < MAX_NODE_EXECUTIONS) {
+    executions += 1;
+    const node = nodesById[currentId];
+    if (!node) {
+      break;
+    }
+
+    // Loop re-entry (via body back-edge) should not reset the loop's UI row.
+    const isLoopReentry = node.type === 'loop' && loopState[node.id];
+    if (!isLoopReentry) {
+      dispatch(workflowRunStepStarted({ pathname, stepId: node.id }));
+    }
+
+    let firedPort = 'main';
+
+    if (node.type === 'delay') {
+      await sleep(node.durationMs || 0);
+      finishNode(node, { status: 'passed', durationMs: node.durationMs || 0 });
+    } else if (node.type === 'map') {
+      const { mapped, errors } = applyMapStep(node, lastResponseContext);
+      Object.assign(flowVars, mapped);
+      if (errors.length) {
+        finishNode(node, { status: 'failed', error: errors.join('; '), mappedVars: mapped });
+        runStatus = 'failed';
+        break;
       }
-
-      if (step.type === 'map') {
-        const { mapped, errors } = applyMapStep(step, exec.lastResponseContext);
-        Object.assign(flowVars, mapped);
-
-        if (errors.length) {
-          finishStep(step, { status: 'failed', error: errors.join('; '), mappedVars: mapped });
-          exec.runStatus = 'failed';
-          return false;
-        }
-        finishStep(step, { status: 'passed', mappedVars: mapped });
-        continue;
+      finishNode(node, { status: 'passed', mappedVars: mapped });
+    } else if (node.type === 'condition') {
+      try {
+        const passed = await window.ipcRenderer.invoke('renderer:workflow-evaluate-expression', {
+          expression: node.expression || 'true',
+          res: lastResponseContext,
+          vars: flowVars
+        });
+        firedPort = passed ? 'true' : 'false';
+        finishNode(node, { status: 'passed', conditionResult: passed });
+      } catch (error) {
+        finishNode(node, { status: 'failed', error: error?.message || 'Invalid expression' });
+        runStatus = 'failed';
+        break;
       }
-
-      if (step.type === 'condition') {
-        try {
-          const passed = await window.ipcRenderer.invoke('renderer:workflow-evaluate-expression', {
-            expression: step.expression || 'true',
-            res: exec.lastResponseContext,
-            vars: flowVars
-          });
-
-          if (passed) {
-            finishStep(step, { status: 'passed', conditionResult: true });
-            continue;
-          }
-
-          if (step.onFalse === 'continue') {
-            finishStep(step, { status: 'passed', conditionResult: false });
-            continue;
-          }
-
-          finishStep(step, { status: 'stopped', conditionResult: false });
-          exec.runStatus = 'stopped';
-          return false;
-        } catch (error) {
-          finishStep(step, { status: 'failed', error: error?.message || 'Invalid expression' });
-          exec.runStatus = 'failed';
-          return false;
-        }
-      }
-
-      if (step.type === 'loop') {
-        const source = flowVars[step.source];
+    } else if (node.type === 'loop') {
+      let stateForLoop = loopState[node.id];
+      if (!stateForLoop) {
+        const source = flowVars[node.source];
         if (!Array.isArray(source)) {
-          finishStep(step, {
-            status: 'failed',
-            error: `Loop source "${step.source}" is not an array flow variable`
-          });
-          exec.runStatus = 'failed';
-          return false;
+          finishNode(node, { status: 'failed', error: `Loop source "${node.source}" is not an array flow variable` });
+          runStatus = 'failed';
+          break;
         }
-
-        const itemVar = step.itemVar || 'item';
-        const iterations = Math.min(source.length, step.maxIterations || 100);
-        const loopStartedAt = Date.now();
-
-        for (let index = 0; index < iterations; index += 1) {
-          flowVars[itemVar] = source[index];
-          flowVars[`${itemVar}Index`] = index;
-          const ok = await executeSteps(step.steps || []);
-          if (!ok) {
-            finishStep(step, {
-              status: exec.runStatus,
-              iterations: index + 1,
-              durationMs: Date.now() - loopStartedAt
-            });
-            return false;
-          }
-        }
-
-        finishStep(step, { status: 'passed', iterations, durationMs: Date.now() - loopStartedAt });
-        continue;
+        stateForLoop = { items: source, index: 0, startedAt: Date.now() };
+        loopState[node.id] = stateForLoop;
+      } else {
+        stateForLoop.index += 1;
       }
 
-      // request step
-      if (!step.snapshot?.request) {
-        finishStep(step, { status: 'failed', error: 'Step has no snapshot to run' });
-        exec.runStatus = 'failed';
-        return false;
+      const limit = Math.min(stateForLoop.items.length, node.maxIterations || 100);
+      if (stateForLoop.index < limit) {
+        const itemVar = node.itemVar || 'item';
+        flowVars[itemVar] = stateForLoop.items[stateForLoop.index];
+        flowVars[`${itemVar}Index`] = stateForLoop.index;
+        firedPort = 'loop';
+      } else {
+        finishNode(node, {
+          status: 'passed',
+          iterations: stateForLoop.index,
+          durationMs: Date.now() - stateForLoop.startedAt
+        });
+        delete loopState[node.id];
+        firedPort = 'done';
       }
-
-      const stepType = step.snapshot.type || 'http-request';
-      if (!SUPPORTED_RUN_TYPES.has(stepType)) {
-        finishStep(step, { status: 'failed', error: `${stepType} steps are not supported in workflow runs yet` });
-        exec.runStatus = 'failed';
-        return false;
+    } else if (node.type === 'request') {
+      if (!node.snapshot?.request) {
+        finishNode(node, { status: 'failed', error: 'Node has no snapshot to run' });
+        runStatus = 'failed';
+        break;
+      }
+      const requestType = node.snapshot.type || 'http-request';
+      if (!SUPPORTED_RUN_TYPES.has(requestType)) {
+        finishNode(node, { status: 'failed', error: `${requestType} nodes are not supported in workflow runs yet` });
+        runStatus = 'failed';
+        break;
       }
 
       const item = {
-        uid: `workflow-step-${step.id}`,
-        name: step.name,
-        type: stepType,
-        request: cloneDeep(step.snapshot.request),
-        settings: cloneDeep(step.snapshot.settings || {})
+        uid: `workflow-node-${node.id}`,
+        name: node.name,
+        type: requestType,
+        request: cloneDeep(node.snapshot.request),
+        settings: cloneDeep(node.snapshot.settings || {})
       };
-
-      const { collection, environment, runtimeVariables } = buildRunContextForStep(getState(), workspace, step);
+      const { collection, environment, runtimeVariables } = buildRunContextForNode(getState(), workspace, node);
       const startedAt = Date.now();
 
       try {
-        // flow vars win over collection runtime vars during interpolation
         const mergedRuntimeVariables = { ...(runtimeVariables || {}), ...flowVars };
         const response = await sendNetworkRequest(item, collection, environment, mergedRuntimeVariables);
         const httpStatus = Number(response?.status) || 0;
         const failed = httpStatus >= 400;
-        exec.lastResponseContext = buildResponseContext(response);
+        lastResponseContext = buildResponseContext(response);
 
-        finishStep(step, {
+        finishNode(node, {
           status: failed ? 'failed' : 'passed',
           httpStatus,
           statusText: response?.statusText || '',
           durationMs: response?.duration ?? (Date.now() - startedAt),
           size: response?.size
         });
-
         if (failed) {
-          exec.runStatus = 'failed';
-          return false;
+          runStatus = 'failed';
+          break;
         }
       } catch (error) {
-        finishStep(step, {
-          status: 'failed',
-          error: error?.message || 'Request failed',
-          durationMs: Date.now() - startedAt
-        });
-        exec.runStatus = 'failed';
-        return false;
+        finishNode(node, { status: 'failed', error: error?.message || 'Request failed', durationMs: Date.now() - startedAt });
+        runStatus = 'failed';
+        break;
       }
+    } else {
+      // unknown / start node mid-graph: just follow main
+      finishNode(node, { status: 'passed' });
     }
 
-    return true;
-  };
+    currentId = outgoing(currentId, firedPort);
+    // currentId === null ends the run via this branch (a valid terminus).
+  }
 
-  await executeSteps(doc.steps);
+  if (executions >= MAX_NODE_EXECUTIONS && runStatus === 'passed') {
+    runStatus = 'failed';
+    toast.error('Workflow stopped: too many steps (possible loop without a Loop node)');
+  }
 
-  dispatch(workflowRunFinished({ pathname, status: exec.runStatus, flowVars }));
-  if (exec.runStatus === 'failed') {
+  dispatch(workflowRunFinished({ pathname, status: runStatus, flowVars }));
+  if (runStatus === 'failed') {
     toast.error('Workflow run failed');
   }
 
@@ -850,8 +825,8 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
       run: {
         startedAt: runStartedAt,
         finishedAt: Date.now(),
-        status: exec.runStatus,
-        steps: exec.recordedSteps,
+        status: runStatus,
+        steps: recordedNodes,
         flowVars: JSON.parse(JSON.stringify(flowVars))
       }
     });
