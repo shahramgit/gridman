@@ -60,6 +60,10 @@ const StyledWrapper = styled.div`
     color: ${(props) => props.theme.colors.text.danger};
   }
 
+  .execute-node-button {
+    align-self: flex-start;
+  }
+
   .node-palette {
     width: 110px;
     flex-shrink: 0;

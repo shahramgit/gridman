@@ -508,10 +508,36 @@ const WORKSPACE_SEARCH_BATCH_SIZE = 25;
 const WORKSPACE_SEARCH_RESULT_LIMIT = 250;
 
 // In-memory search cache: pathname -> { mtimeMs, size, isFolderMeta, result,
-// folded: {...}, raw: {...} }. The first search after launch reads files from
-// disk; subsequent searches only stat (cheap) and match against folded
-// strings in memory, which is what makes repeated searches fast.
+// folded: {...}, raw: {...} }.
 const workspaceSearchFileCache = new Map();
+
+// Warm per-collection index: collectionPath -> { builtAt, format, building,
+// entries: Map<pathname, cacheEntry> }. Building (readdir + stat + read +
+// fold over every request file) is the expensive pass; we do it once and then
+// match in memory. Within the TTL, searches never touch the filesystem, which
+// is what makes typing feel instant on large collections (GSB has ~11.5k
+// files; statting them per keystroke was the 5-6s cost). The index is
+// invalidated on file changes via invalidateWorkspaceSearchForPath (wired from
+// the collection watcher) and falls back to a TTL rebuild.
+const workspaceSearchIndex = new Map();
+const WORKSPACE_SEARCH_INDEX_TTL_MS = 60 * 1000;
+
+const invalidateWorkspaceSearchForPath = (pathname) => {
+  if (!pathname) {
+    return;
+  }
+  const normalized = path.normalize(pathname);
+  for (const [collectionPath, index] of workspaceSearchIndex.entries()) {
+    if (normalized === collectionPath || normalized.startsWith(`${collectionPath}${path.sep}`)) {
+      // Force a rebuild on the next search; drop the changed file's cache.
+      index.builtAt = 0;
+      workspaceSearchFileCache.delete(normalized);
+    }
+  }
+};
+
+// Let the collection watcher invalidate search caches on file changes.
+require('../app/search-invalidation').setSearchInvalidator(invalidateWorkspaceSearchForPath);
 
 const WORKSPACE_SEARCH_DEFAULT_SCOPES = {
   collections: true,
@@ -788,67 +814,113 @@ const sendWorkspaceSearchBatch = (event, job, force = false) => {
   });
 };
 
-const walkWorkspaceSearchCollection = async ({ event, job, workspacePath, collectionPath, dirname, format }) => {
-  if (job.cancelled || job.totalResults >= job.limit) {
-    return;
-  }
+// Walk a collection once, (re)building cache entries for changed files, and
+// return a Map<pathname, cacheEntry>. This is the expensive pass.
+const buildCollectionSearchEntries = async (workspacePath, collectionPath, format) => {
+  const entries = new Map();
 
-  let entries;
-  try {
-    entries = await fs.promises.readdir(dirname, { withFileTypes: true });
-  } catch (_err) {
-    return;
-  }
-
-  for (const entry of entries) {
-    if (job.cancelled || job.totalResults >= job.limit) {
+  const walk = async (dirname) => {
+    let dirents;
+    try {
+      dirents = await fs.promises.readdir(dirname, { withFileTypes: true });
+    } catch (_err) {
       return;
     }
 
-    if (shouldSkipWorkspaceSearchEntry(entry.name)) {
-      continue;
-    }
-
-    const pathname = path.join(dirname, entry.name);
-    if (entry.isDirectory()) {
-      await walkWorkspaceSearchCollection({ event, job, workspacePath, collectionPath, dirname: pathname, format });
-      continue;
-    }
-
-    if (!entry.isFile() || !hasRequestExtension(pathname, format)) {
-      continue;
-    }
-
-    if (isWorkspaceSearchCollectionMetadataFile(entry.name, dirname, collectionPath)) {
-      continue;
-    }
-
-    job.seenPathnames.add(pathname);
-
-    let cacheEntry = workspaceSearchFileCache.get(pathname);
-    try {
-      const stat = await fs.promises.stat(pathname);
-      if (!cacheEntry || cacheEntry.mtimeMs !== stat.mtimeMs || cacheEntry.size !== stat.size) {
-        cacheEntry = await buildWorkspaceSearchCacheEntry({
-          workspacePath,
-          collectionPath,
-          pathname,
-          format,
-          mtimeMs: stat.mtimeMs,
-          size: stat.size,
-          isFolderMeta: entry.name === `folder.${format}`
-        });
-        workspaceSearchFileCache.set(pathname, cacheEntry);
+    for (const dirent of dirents) {
+      if (shouldSkipWorkspaceSearchEntry(dirent.name)) {
+        continue;
       }
-    } catch (_err) {
+      const pathname = path.join(dirname, dirent.name);
+      if (dirent.isDirectory()) {
+        await walk(pathname);
+        continue;
+      }
+      if (!dirent.isFile() || !hasRequestExtension(pathname, format)) {
+        continue;
+      }
+      if (isWorkspaceSearchCollectionMetadataFile(dirent.name, dirname, collectionPath)) {
+        continue;
+      }
+
+      let cacheEntry = workspaceSearchFileCache.get(pathname);
+      try {
+        const stat = await fs.promises.stat(pathname);
+        if (!cacheEntry || cacheEntry.mtimeMs !== stat.mtimeMs || cacheEntry.size !== stat.size) {
+          cacheEntry = await buildWorkspaceSearchCacheEntry({
+            workspacePath,
+            collectionPath,
+            pathname,
+            format,
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            isFolderMeta: dirent.name === `folder.${format}`
+          });
+          workspaceSearchFileCache.set(pathname, cacheEntry);
+        }
+      } catch (_err) {
+        continue;
+      }
+      entries.set(pathname, cacheEntry);
+    }
+  };
+
+  await walk(collectionPath);
+  return entries;
+};
+
+// Return the warm index for a collection, building (or rebuilding when stale)
+// as needed. Concurrent callers coalesce on the in-flight build promise.
+const getCollectionSearchIndex = async (workspacePath, collectionPath) => {
+  const existing = workspaceSearchIndex.get(collectionPath);
+  if (existing && !existing.building && (Date.now() - existing.builtAt) < WORKSPACE_SEARCH_INDEX_TTL_MS) {
+    return existing;
+  }
+  if (existing?.building) {
+    return existing.building;
+  }
+
+  const format = getCollectionFormat(collectionPath);
+  const buildPromise = (async () => {
+    const entries = await buildCollectionSearchEntries(workspacePath, collectionPath, format);
+    const built = { builtAt: Date.now(), format, entries, building: null };
+    workspaceSearchIndex.set(collectionPath, built);
+    return built;
+  })();
+
+  workspaceSearchIndex.set(collectionPath, {
+    builtAt: existing?.builtAt || 0,
+    format,
+    entries: existing?.entries || new Map(),
+    building: buildPromise
+  });
+  return buildPromise;
+};
+
+// Warm all collection indexes in the background (called when the search box
+// is focused) so the first keystroke matches against an already-built index.
+const warmWorkspaceSearch = async (workspacePath, collectionPaths = []) => {
+  for (const collectionPath of collectionPaths) {
+    if (!isWorkspaceCollectionPathAllowed(workspacePath, collectionPath) || !isDirectory(collectionPath)) {
       continue;
     }
+    try {
+      await getCollectionSearchIndex(workspacePath, collectionPath);
+    } catch (_err) {
+      // best-effort warm-up
+    }
+  }
+};
 
+const matchWorkspaceSearchCollectionIndex = (event, job, indexEntries) => {
+  for (const cacheEntry of indexEntries.values()) {
+    if (job.cancelled || job.totalResults >= job.limit) {
+      return;
+    }
     const match = matchWorkspaceSearchEntry(cacheEntry, job);
     if (!match) {
       continue;
     }
-
     job.results.push({ ...cacheEntry.result, ...match });
     job.totalResults += 1;
     sendWorkspaceSearchBatch(event, job);
@@ -881,8 +953,7 @@ const startWorkspaceCollectionSearch = async (event, {
     matchCase,
     scopes,
     foldedQueryCi: utils.foldSearchText(trimmedQuery),
-    foldedQueryCs: utils.foldSearchText(trimmedQuery, { caseSensitive: true }),
-    seenPathnames: new Set()
+    foldedQueryCs: utils.foldSearchText(trimmedQuery, { caseSensitive: true })
   };
   workspaceSearchJobs.set(searchSessionId, job);
 
@@ -901,7 +972,6 @@ const startWorkspaceCollectionSearch = async (event, {
   }
 
   try {
-    const searchedRoots = [];
     for (const collectionPath of collectionPaths) {
       if (job.cancelled || job.totalResults >= job.limit) {
         break;
@@ -929,33 +999,15 @@ const startWorkspaceCollectionSearch = async (event, {
       }
 
       if (searchesFileContent) {
-        searchedRoots.push(collectionPath);
-        const format = getCollectionFormat(collectionPath);
-        await walkWorkspaceSearchCollection({
-          event,
-          job,
-          workspacePath,
-          collectionPath,
-          dirname: collectionPath,
-          format
-        });
+        const index = await getCollectionSearchIndex(workspacePath, collectionPath);
+        if (job.cancelled) {
+          break;
+        }
+        matchWorkspaceSearchCollectionIndex(event, job, index.entries);
       }
     }
 
     sendWorkspaceSearchBatch(event, job, true);
-
-    // Drop cache entries for files that no longer exist under the searched
-    // roots so the cache cannot grow without bound. Only prune when the walk
-    // ran to completion; a result-limit or cancellation cutoff leaves
-    // unvisited files that must not be evicted.
-    if (!job.cancelled && job.totalResults < job.limit) {
-      for (const pathname of workspaceSearchFileCache.keys()) {
-        const underSearchedRoot = searchedRoots.some((root) => pathname.startsWith(`${root}${path.sep}`));
-        if (underSearchedRoot && !job.seenPathnames.has(pathname)) {
-          workspaceSearchFileCache.delete(pathname);
-        }
-      }
-    }
 
     if (!job.cancelled) {
       event.sender.send('main:workspace-collection-search-ready', {
@@ -2018,6 +2070,15 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
   ipcMain.handle('renderer:start-workspace-collection-search', async (event, options = {}) => {
     startWorkspaceCollectionSearch(event, options);
+    return true;
+  });
+
+  // Pre-build the search index in the background (called when the search box is
+  // focused) so the first keystroke matches an already-warm index.
+  ipcMain.handle('renderer:warm-workspace-search', async (event, { workspacePath, collectionPaths = [] } = {}) => {
+    if (workspacePath) {
+      warmWorkspaceSearch(workspacePath, collectionPaths).catch(() => {});
+    }
     return true;
   });
 

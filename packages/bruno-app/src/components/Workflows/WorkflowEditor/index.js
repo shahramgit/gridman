@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useDrag } from 'react-dnd';
-import { getEmptyImage } from 'react-dnd-html5-backend';
 import toast from 'react-hot-toast';
 import {
   IconArrowsSplit,
@@ -34,6 +33,7 @@ import {
   cancelWorkflowRun,
   connectWorkflowNodes,
   disconnectWorkflowConnection,
+  executeWorkflowNode,
   loadWorkflowRunHistory,
   reconnectWorkflowConnection,
   refreshWorkflow,
@@ -277,14 +277,13 @@ const PALETTE_ITEMS = [
 // A draggable palette chip (react-dnd source) that the canvas accepts as a
 // 'workflow-node-template' drop to add a node at the cursor.
 const PaletteChip = ({ item }) => {
-  const [{ isDragging }, drag, dragPreview] = useDrag({
+  // No custom drag preview: let the browser render the chip itself as the
+  // drag ghost so the user sees what they're dragging.
+  const [{ isDragging }, drag] = useDrag({
     type: 'workflow-node-template',
     item: { nodeType: item.type },
     collect: (monitor) => ({ isDragging: monitor.isDragging() })
   });
-  useEffect(() => {
-    dragPreview(getEmptyImage(), { captureDraggingState: true });
-  }, [dragPreview]);
   const Icon = item.icon;
   return (
     <div ref={drag} className="palette-chip" style={{ opacity: isDragging ? 0.4 : 1 }} title={`Drag ${item.label} onto the canvas`}>
@@ -552,6 +551,19 @@ const WorkflowEditor = ({ pathname }) => {
             <input className="step-name-input" type="text" defaultValue={selectedNode.name} onBlur={(e) => handleNodePatch(selectedNode.id)({ name: e.target.value })} />
           )}
         </div>
+        {selectedNode.type !== 'start' && (
+          <button
+            type="button"
+            className="run-button execute-node-button"
+            data-testid="workflow-execute-node"
+            disabled={isRunning}
+            onClick={() => dispatch(executeWorkflowNode(pathname, selectedNode.id)).catch((e) => toast.error(e?.message || 'Unable to run node'))}
+            title="Run from Start up to and including this node"
+          >
+            <IconPlayerPlay size={14} />
+            <span>Execute node</span>
+          </button>
+        )}
         {selectedNode.type === 'request' && (
           <div className="panel-section">
             <div className="step-ref">{selectedNode.ref.collection}/{selectedNode.ref.request}</div>

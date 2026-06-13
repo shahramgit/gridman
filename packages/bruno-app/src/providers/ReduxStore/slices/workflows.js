@@ -671,7 +671,12 @@ export const loadWorkflowRunHistory = (pathname) => async (dispatch) => {
 // loop node) can never run forever.
 const MAX_NODE_EXECUTIONS = 5000;
 
-export const runWorkflow = (pathname) => async (dispatch, getState) => {
+// Run a single node n8n-style: execute the chain from Start up to and
+// including the target node, then stop. Populates the node's input/output.
+export const executeWorkflowNode = (pathname, targetNodeId) => (dispatch, getState) =>
+  dispatch(runWorkflow(pathname, { targetNodeId }));
+
+export const runWorkflow = (pathname, options = {}) => async (dispatch, getState) => {
   const state = getState();
   const workspace = getActiveWorkspace(state);
   const openWorkflowState = state.workflows.open[pathname];
@@ -679,6 +684,8 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
     return;
   }
 
+  const targetNodeId = options.targetNodeId || null;
+  const isSingleNodeRun = Boolean(targetNodeId);
   const { doc } = openWorkflowState;
   dispatch(workflowRunStarted({ pathname }));
   const runStartedAt = Date.now();
@@ -867,6 +874,11 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
       finishNode(node, { status: 'passed' });
     }
 
+    // Single-node run: stop once the target node has executed.
+    if (isSingleNodeRun && currentId === targetNodeId) {
+      break;
+    }
+
     currentId = outgoing(currentId, firedPort);
     // currentId === null ends the run via this branch (a valid terminus).
   }
@@ -877,10 +889,16 @@ export const runWorkflow = (pathname) => async (dispatch, getState) => {
   }
 
   runCancellation.delete(pathname);
-  log(runStatus === 'failed' ? 'error' : runStatus === 'cancelled' ? 'warn' : 'info', `Run ${runStatus}`);
+  log(runStatus === 'failed' ? 'error' : runStatus === 'cancelled' ? 'warn' : 'info',
+    isSingleNodeRun ? `Node run ${runStatus}` : `Run ${runStatus}`);
   dispatch(workflowRunFinished({ pathname, status: runStatus, flowVars }));
   if (runStatus === 'failed') {
-    toast.error('Workflow run failed');
+    toast.error(isSingleNodeRun ? 'Node run failed' : 'Workflow run failed');
+  }
+
+  // Single-node runs are not recorded in run history.
+  if (isSingleNodeRun) {
+    return;
   }
 
   // persist to run history (best effort)

@@ -2,6 +2,7 @@ const _ = require('lodash');
 const fs = require('fs');
 const path = require('path');
 const chokidar = require('chokidar');
+const { invalidateSearchForPath } = require('./search-invalidation');
 const {
   hasRequestExtension,
   isWSLPath,
@@ -196,6 +197,7 @@ const unlinkEnvironmentFile = async (win, pathname, collectionUid) => {
 };
 
 const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread, watcher) => {
+  invalidateSearchForPath(pathname);
   if (isBrunoConfigFile(pathname, collectionPath)) {
     try {
       const content = fs.readFileSync(pathname, 'utf8');
@@ -405,6 +407,7 @@ const addDirectory = async (win, pathname, collectionUid, collectionPath) => {
 };
 
 const change = async (win, pathname, collectionUid, collectionPath) => {
+  invalidateSearchForPath(pathname);
   if (isBrunoConfigFile(pathname, collectionPath)) {
     try {
       const content = fs.readFileSync(pathname, 'utf8');
@@ -536,6 +539,7 @@ const change = async (win, pathname, collectionUid, collectionPath) => {
 };
 
 const unlink = (win, pathname, collectionUid, collectionPath) => {
+  invalidateSearchForPath(pathname);
   try {
     if (!fs.existsSync(collectionPath)) {
       return;

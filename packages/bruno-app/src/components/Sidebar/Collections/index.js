@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useSelector } from 'react-redux';
 import Collection from './Collection';
 import StyledWrapper from './StyledWrapper';
@@ -54,6 +54,23 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
   const { workspaces, activeWorkspaceUid } = useSelector((state) => state.workspaces);
 
   const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid);
+
+  // Pre-build the search index in the background when the search box opens, so
+  // the first keystroke matches an already-warm index instead of triggering a
+  // full filesystem scan (large workspaces have tens of thousands of files).
+  useEffect(() => {
+    if (!showSearch || !activeWorkspace?.pathname) {
+      return;
+    }
+    const collectionPaths = (activeWorkspace.collections || []).map((wc) => wc.path).filter(Boolean);
+    if (!collectionPaths.length) {
+      return;
+    }
+    window.ipcRenderer.invoke('renderer:warm-workspace-search', {
+      workspacePath: activeWorkspace.pathname,
+      collectionPaths
+    }).catch(() => {});
+  }, [showSearch, activeWorkspace?.pathname]);
 
   const loadedByPath = useMemo(() => {
     const map = new Map();
