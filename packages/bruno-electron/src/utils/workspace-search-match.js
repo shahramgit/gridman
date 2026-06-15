@@ -27,6 +27,41 @@ const extractSearchBlocks = (content, regex) => {
   return parts.join('\n');
 };
 
+// Structured per-example entries (name + folded name/content) so examples can
+// be surfaced as their own search results, in file order (index = the
+// example's position, matching the parsed request.examples order).
+const extractExampleEntries = (content, format) => {
+  if (format !== 'bru' || !content) {
+    return [];
+  }
+  const entries = [];
+  let match;
+  BRU_EXAMPLE_BLOCK_REGEX.lastIndex = 0;
+  while ((match = BRU_EXAMPLE_BLOCK_REGEX.exec(content)) !== null) {
+    const block = match[1] || '';
+    const nameMatch = block.match(/(?:^|\n)\s*name:\s*(.+?)\s*(?:\n|$)/);
+    const name = nameMatch ? nameMatch[1].trim() : '';
+    entries.push({
+      name,
+      index: entries.length,
+      foldedName: utils.foldSearchText(name),
+      foldedContent: utils.foldSearchText(block)
+    });
+  }
+  return entries;
+};
+
+// Returns matching example entries for a query (name or content), each with
+// the original index so the renderer can resolve the example after hydration.
+const matchExampleEntries = (exampleEntries, { foldedQueryCi }) => {
+  if (!foldedQueryCi) {
+    return [];
+  }
+  return (exampleEntries || []).filter(
+    (entry) => entry.foldedName.includes(foldedQueryCi) || entry.foldedContent.includes(foldedQueryCi)
+  );
+};
+
 // Build the raw + folded searchable fields for a request file. yml files do
 // not have the bru block syntax, so headers/body/examples fall back to the
 // whole content (still scoped by the checkbox).
@@ -53,7 +88,8 @@ const buildSearchFields = ({ content = '', format = 'bru', name = '', filename =
       headers: utils.foldSearchText(raw.headers),
       body: utils.foldSearchText(raw.body),
       examples: utils.foldSearchText(raw.examples)
-    }
+    },
+    exampleEntries: extractExampleEntries(content, format)
   };
 };
 
@@ -81,6 +117,8 @@ module.exports = {
   SEARCH_FIELD_SCOPES,
   BRU_EXAMPLE_BLOCK_REGEX,
   extractSearchBlocks,
+  extractExampleEntries,
+  matchExampleEntries,
   buildSearchFields,
   matchSearchFields
 };

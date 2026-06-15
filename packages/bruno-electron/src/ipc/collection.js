@@ -550,7 +550,8 @@ const WORKSPACE_SEARCH_DEFAULT_SCOPES = {
 
 const {
   buildSearchFields,
-  matchSearchFields
+  matchSearchFields,
+  matchExampleEntries
 } = require('../utils/workspace-search-match');
 
 const cleanSearchMetaValue = (value) => {
@@ -732,7 +733,33 @@ const buildWorkspaceSearchCacheEntry = async ({ workspacePath, collectionPath, p
     isFolderMeta,
     result,
     raw: fields.raw,
-    folded: fields.folded
+    folded: fields.folded,
+    exampleEntries: fields.exampleEntries || []
+  };
+};
+
+// Build an example search result nested under its parent request.
+const createWorkspaceExampleSearchResult = (entry, exampleEntry) => {
+  const req = entry.result;
+  const exampleName = exampleEntry.name || `Example ${exampleEntry.index + 1}`;
+  return {
+    uid: `${req.uid}:example:${exampleEntry.index}`,
+    type: 'example',
+    name: exampleName,
+    exampleIndex: exampleEntry.index,
+    exampleName,
+    parentRequestUid: req.uid,
+    parentRequestName: req.name,
+    collectionUid: req.collectionUid,
+    collectionPathname: req.collectionPathname,
+    collectionName: req.collectionName,
+    pathname: req.pathname,
+    // place under the request: reuse the request's own relative paths
+    collectionRelativePath: req.collectionRelativePath,
+    parentCollectionRelativePath: req.parentCollectionRelativePath,
+    requestName: req.name,
+    matchField: 'example',
+    matchText: exampleName
   };
 };
 
@@ -880,13 +907,27 @@ const matchWorkspaceSearchCollectionIndex = (event, job, indexEntries) => {
     if (job.cancelled || job.totalResults >= job.limit) {
       return;
     }
+
     const match = matchWorkspaceSearchEntry(cacheEntry, job);
-    if (!match) {
-      continue;
+    if (match) {
+      job.results.push({ ...cacheEntry.result, ...match });
+      job.totalResults += 1;
+      sendWorkspaceSearchBatch(event, job);
     }
-    job.results.push({ ...cacheEntry.result, ...match });
-    job.totalResults += 1;
-    sendWorkspaceSearchBatch(event, job);
+
+    // Surface matching examples as their own results (under the request),
+    // when the Examples scope is on, so they are clickable in the tree.
+    if (job.scopes.examples && cacheEntry.exampleEntries?.length) {
+      const matchedExamples = matchExampleEntries(cacheEntry.exampleEntries, { foldedQueryCi: job.foldedQueryCi });
+      for (const exampleEntry of matchedExamples) {
+        if (job.totalResults >= job.limit) {
+          break;
+        }
+        job.results.push(createWorkspaceExampleSearchResult(cacheEntry, exampleEntry));
+        job.totalResults += 1;
+        sendWorkspaceSearchBatch(event, job);
+      }
+    }
   }
 };
 

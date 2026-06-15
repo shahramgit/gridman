@@ -6,9 +6,10 @@ import classnames from 'classnames';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import { collectionIndexNodeActivated } from 'providers/ReduxStore/slices/collections';
 import { loadRequest, mountCollection, openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
-import { getDefaultRequestPaneTab } from 'utils/collections';
+import { getDefaultRequestPaneTab, findItemInCollectionByPathname } from 'utils/collections';
 import { normalizePath } from 'utils/common/path';
 import { foldSearchText } from '@usebruno/common';
+import ExampleIcon from 'components/Icons/ExampleIcon';
 import SearchHighlight from './SearchHighlight';
 
 const SEARCH_DEBOUNCE_MS = 200;
@@ -125,6 +126,40 @@ const buildSearchTree = (results = []) => {
       continue;
     }
 
+    if (result.type === 'example') {
+      // Nest the example under its request (creating a request node if the
+      // request itself did not match), under the request's folder path.
+      const folderParent = ensureFolderPath(collectionNode, result, splitRelativePath(result.parentCollectionRelativePath));
+      let requestNode = folderParent.childMap.get(result.parentRequestUid);
+      if (!requestNode) {
+        requestNode = ensureChildNode(folderParent, {
+          uid: result.parentRequestUid,
+          nodeKind: 'request',
+          type: 'request',
+          name: result.parentRequestName,
+          pathname: result.pathname,
+          collectionUid: result.collectionUid,
+          collectionPathname: result.collectionPathname,
+          collectionRelativePath: result.collectionRelativePath,
+          depth: folderParent.depth + 1
+        });
+      }
+      ensureChildNode(requestNode, {
+        uid: result.uid,
+        nodeKind: 'example',
+        type: 'example',
+        name: result.exampleName,
+        exampleIndex: result.exampleIndex,
+        exampleName: result.exampleName,
+        parentRequestUid: result.parentRequestUid,
+        collectionUid: result.collectionUid,
+        collectionPathname: result.collectionPathname,
+        pathname: result.pathname,
+        depth: requestNode.depth + 1
+      });
+      continue;
+    }
+
     const parent = ensureFolderPath(collectionNode, result, splitRelativePath(result.parentCollectionRelativePath));
     ensureChildNode(parent, {
       ...result,
@@ -149,7 +184,9 @@ const flattenSearchTree = (nodes = [], collapsedNodeUids = new Set()) => {
 
   const walk = (node) => {
     rows.push(node);
-    if (node.nodeKind !== 'request' && !collapsedNodeUids.has(node.uid)) {
+    // Leaf example rows never expand; everything else (collections, folders,
+    // and requests that have matched example children) expands unless collapsed.
+    if (node.nodeKind !== 'example' && !collapsedNodeUids.has(node.uid)) {
       for (const child of node.children || []) {
         walk(child);
       }
@@ -202,6 +239,7 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
   const dispatch = useDispatch();
   const store = useStore();
   const isRequest = node.nodeKind === 'request';
+  const isExample = node.nodeKind === 'example';
   const isCollapsed = collapsedNodeUids.has(node.uid);
   const showMatchContext = node.matchText && !doesVisibleRowMatch(node, searchText);
 
@@ -212,37 +250,39 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
     (collection) => normalizePath(collection.pathname) === normalizePath(node.collectionPathname)
   );
 
-  const openRequest = async () => {
+  // Open the collection (if needed), wait for it to load, mount classic ones.
+  const ensureCollectionLoaded = async () => {
     let collection = findCollection();
-
     if (!collection) {
       await dispatch(openMultipleCollections([node.collectionPathname], { workspacePath }));
-      // Opening is async (collection state arrives via separate events); wait
-      // for it so loadRequest can attach the file and the tab can resolve.
       const startedAt = Date.now();
       while (!collection && Date.now() - startedAt < 8000) {
         await new Promise((resolve) => setTimeout(resolve, 100));
         collection = findCollection();
       }
     }
+    if (!collection) {
+      return null;
+    }
+    const hasIndex = Boolean(store.getState().collections.collectionIndexes?.[collection.uid]);
+    if (!hasIndex && collection.mountStatus !== 'mounted' && collection.mountStatus !== 'mounting') {
+      dispatch(mountCollection({
+        collectionUid: collection.uid,
+        collectionPathname: collection.pathname,
+        brunoConfig: collection.brunoConfig
+      }));
+    }
+    return collection;
+  };
 
+  const openRequest = async () => {
+    const collection = await ensureCollectionLoaded();
     if (!collection) {
       toast.error('Unable to open the collection for this result');
       return;
     }
-
     const collectionUid = collection.uid;
-
-    // Classic (non-indexed) collections need mounting before their tree and
-    // loaded-request entries are available.
-    const hasIndex = Boolean(store.getState().collections.collectionIndexes?.[collectionUid]);
-    if (!hasIndex && collection.mountStatus !== 'mounted' && collection.mountStatus !== 'mounting') {
-      dispatch(mountCollection({
-        collectionUid,
-        collectionPathname: collection.pathname,
-        brunoConfig: collection.brunoConfig
-      }));
-    } else if (hasIndex) {
+    if (store.getState().collections.collectionIndexes?.[collectionUid]) {
       dispatch(collectionIndexNodeActivated({ collectionUid, node }));
     }
 
@@ -256,7 +296,7 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
         collectionUid,
         requestPaneTab: getDefaultRequestPaneTab(node),
         type: 'request',
-        itemUid: node.uid,
+        itemUid: node.parentRequestUid || node.uid,
         itemPathname: node.pathname
       }));
     }
@@ -264,12 +304,58 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
     dispatch(loadRequest({ collectionUid, pathname: node.pathname }));
   };
 
+  // Open a specific example: load the request so its examples (with uids)
+  // exist, resolve the example by index/name, then open its tab.
+  const openExample = async () => {
+    const collection = await ensureCollectionLoaded();
+    if (!collection) {
+      toast.error('Unable to open the collection for this example');
+      return;
+    }
+    const collectionUid = collection.uid;
+    await dispatch(loadRequest({ collectionUid, pathname: node.pathname }));
+
+    const resolveExample = () => {
+      const c = findCollection();
+      const item = c ? findItemInCollectionByPathname(c, node.pathname) : null;
+      const example = item?.examples?.[node.exampleIndex]
+        || item?.examples?.find((ex) => ex.name === node.exampleName);
+      return item && example ? { item, example } : null;
+    };
+    let found = resolveExample();
+    const startedAt = Date.now();
+    while (!found && Date.now() - startedAt < 8000) {
+      await new Promise((r) => setTimeout(r, 100));
+      found = resolveExample();
+    }
+    if (!found) {
+      toast.error('Unable to open the example');
+      return;
+    }
+
+    const existing = store.getState().tabs.tabs.find((tab) => tab.uid === found.example.uid);
+    if (existing) {
+      dispatch(focusTab({ uid: found.example.uid }));
+    } else {
+      dispatch(addTab({
+        uid: found.example.uid,
+        exampleUid: found.example.uid,
+        collectionUid,
+        type: 'response-example',
+        itemUid: found.item.uid
+      }));
+    }
+  };
+
   const handleClick = () => {
+    if (isExample) {
+      openExample();
+      return;
+    }
     if (isRequest) {
       openRequest();
       return;
     }
-
     onToggleNode(node.uid);
   };
 
@@ -284,7 +370,7 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
       onClick={handleClick}
     >
       <span className="flex items-center justify-center mt-0.5" style={{ width: 16, minWidth: 16 }}>
-        {!isRequest ? (
+        {!isRequest && !isExample ? (
           <IconChevronRight
             size={15}
             strokeWidth={2}
@@ -297,6 +383,10 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
       {isRequest ? (
         <span className="text-xs font-semibold text-green-700 text-left mt-1" style={{ width: 42, minWidth: 42 }}>
           {node.method || ''}
+        </span>
+      ) : isExample ? (
+        <span className="flex items-center justify-center text-muted mt-0.5" style={{ width: 18, minWidth: 18 }}>
+          <ExampleIcon size={14} />
         </span>
       ) : (
         <span className="flex items-center justify-center text-muted mt-0.5" style={{ width: 18, minWidth: 18 }}>

@@ -1,4 +1,4 @@
-const { buildSearchFields, matchSearchFields } = require('../../src/utils/workspace-search-match');
+const { buildSearchFields, matchSearchFields, extractExampleEntries, matchExampleEntries } = require('../../src/utils/workspace-search-match');
 const { utils } = require('@usebruno/common');
 
 // A realistic .bru request with a response example block. The needle
@@ -75,5 +75,45 @@ describe('workspace search matching', () => {
     const entry = fieldsFor(BRU.replace('exampleonlytoken', 'سرويس'));
     // query typed with the other yeh variant still matches
     expect(matchSearchFields(entry, job('سرویس', { ...ALL_OFF, examples: true }))).toEqual({ field: 'examples' });
+  });
+
+  describe('examples as their own results', () => {
+    const MULTI = `meta {
+  name: Get User
+  type: http
+  seq: 1
+}
+
+get {
+  url: https://api.example.com/users
+}
+
+example {
+  name: Success case
+  response: { body: ok }
+}
+
+example {
+  name: Error case
+  response: { body: boom failuretoken }
+}
+`;
+
+    it('extracts each example with name and index', () => {
+      const entries = extractExampleEntries(MULTI, 'bru');
+      expect(entries.map((e) => ({ name: e.name, index: e.index }))).toEqual([
+        { name: 'Success case', index: 0 },
+        { name: 'Error case', index: 1 }
+      ]);
+    });
+
+    it('matches examples by name and by content, returning original indices', () => {
+      const entries = extractExampleEntries(MULTI, 'bru');
+      const byName = matchExampleEntries(entries, { foldedQueryCi: utils.foldSearchText('error case') });
+      expect(byName.map((e) => e.index)).toEqual([1]);
+
+      const byContent = matchExampleEntries(entries, { foldedQueryCi: utils.foldSearchText('failuretoken') });
+      expect(byContent.map((e) => e.index)).toEqual([1]);
+    });
   });
 });
