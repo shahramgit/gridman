@@ -215,6 +215,19 @@ describe('workflows', () => {
     expect(doc.connections.find((c) => c.source === 'c').sourcePort).toBe('false');
   });
 
+  it('normalizes setvars nodes (assignments)', () => {
+    const doc = normalizeWorkflowDoc({
+      version: 2,
+      name: 'S',
+      nodes: [
+        { id: 's', type: 'setvars', assignments: [{ name: 'a', value: '1' }, { value: 'no-name' }, null] }
+      ]
+    });
+    const node = doc.nodes.find((n) => n.id === 's');
+    expect(node.type).toBe('setvars');
+    expect(node.assignments).toEqual([{ name: 'a', value: '1' }, { name: '', value: 'no-name' }]);
+  });
+
   it('migrates a v1 ordered-steps document (with a loop) into a connected graph', () => {
     const doc = normalizeWorkflowDoc({
       name: 'Legacy',

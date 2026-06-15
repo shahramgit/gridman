@@ -156,6 +156,41 @@ const MapNodeEditor = ({ node, onChange }) => {
   );
 };
 
+const SetVarsNodeEditor = ({ node, onChange }) => {
+  const assignments = node.assignments || [];
+  const update = (index, patch) => {
+    onChange({ assignments: assignments.map((a, i) => (i === index ? { ...a, ...patch } : a)) });
+  };
+  return (
+    <div className="step-editor">
+      {assignments.map((assignment, index) => (
+        <div key={index} className="editor-row">
+          <input
+            type="text"
+            placeholder="variable name"
+            defaultValue={assignment.name}
+            onBlur={(e) => update(index, { name: e.target.value })}
+          />
+          <span className="editor-arrow">=</span>
+          <input
+            type="text"
+            placeholder="value or {{otherVar}}"
+            defaultValue={assignment.value}
+            onBlur={(e) => update(index, { value: e.target.value })}
+          />
+          <ActionIcon label="Remove" onClick={() => onChange({ assignments: assignments.filter((_, i) => i !== index) })}>
+            <IconTrash size={13} stroke={1.5} />
+          </ActionIcon>
+        </div>
+      ))}
+      <button type="button" className="editor-add" onClick={() => onChange({ assignments: [...assignments, { name: '', value: '' }] })}>
+        + variable
+      </button>
+      <div className="editor-hint">Values resolve {'{{var}}'} placeholders against the current flow variables.</div>
+    </div>
+  );
+};
+
 const ConditionNodeEditor = ({ node, onChange }) => (
   <div className="step-editor">
     <div className="editor-row">
@@ -199,6 +234,7 @@ const LoopNodeEditor = ({ node, onChange }) => (
 
 const NodeParamEditor = ({ node, onChange }) => {
   if (node.type === 'map') return <MapNodeEditor node={node} onChange={onChange} />;
+  if (node.type === 'setvars') return <SetVarsNodeEditor node={node} onChange={onChange} />;
   if (node.type === 'condition') return <ConditionNodeEditor node={node} onChange={onChange} />;
   if (node.type === 'delay') return <DelayNodeEditor node={node} onChange={onChange} />;
   if (node.type === 'loop') return <LoopNodeEditor node={node} onChange={onChange} />;
@@ -264,11 +300,12 @@ const RunHistory = ({ runs }) => {
   );
 };
 
-const TYPE_ICONS = { request: IconWorld, map: IconWand, condition: IconArrowsSplit, delay: IconClock, loop: IconRepeat };
+const TYPE_ICONS = { request: IconWorld, map: IconWand, setvars: IconVariable, condition: IconArrowsSplit, delay: IconClock, loop: IconRepeat };
 const VIEW_STORAGE_KEY = 'gridman.workflow-view';
 
 const PALETTE_ITEMS = [
   { type: 'map', label: 'Map', icon: IconWand },
+  { type: 'setvars', label: 'Set Vars', icon: IconVariable },
   { type: 'condition', label: 'Condition', icon: IconArrowsSplit },
   { type: 'delay', label: 'Delay', icon: IconClock },
   { type: 'loop', label: 'Loop', icon: IconRepeat }
@@ -525,6 +562,7 @@ const WorkflowEditor = ({ pathname }) => {
   const addStepMenuItems = [
     { id: 'add-request', leftSection: IconPlus, label: 'Request', onClick: () => setPickerOpen(true) },
     { id: 'add-map', leftSection: IconWand, label: 'Map response to variables', onClick: () => handleAddNode('map') },
+    { id: 'add-setvars', leftSection: IconVariable, label: 'Set variables', onClick: () => handleAddNode('setvars') },
     { id: 'add-condition', leftSection: IconArrowsSplit, label: 'Condition', onClick: () => handleAddNode('condition') },
     { id: 'add-delay', leftSection: IconClock, label: 'Delay', onClick: () => handleAddNode('delay') },
     { id: 'add-loop', leftSection: IconRepeat, label: 'Loop (for each)', onClick: () => handleAddNode('loop') }

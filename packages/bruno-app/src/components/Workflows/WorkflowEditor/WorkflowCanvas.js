@@ -50,6 +50,8 @@ const nodeTitle = (node) => {
       return `${node.snapshot?.request?.method || ''} ${node.name}`.trim();
     case 'map':
       return node.name || 'Map response';
+    case 'setvars':
+      return node.name || 'Set variables';
     case 'condition':
       return node.name || 'Condition';
     case 'delay':

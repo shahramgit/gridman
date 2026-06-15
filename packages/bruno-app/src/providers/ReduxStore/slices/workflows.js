@@ -303,6 +303,7 @@ export const addWorkflowNode = (pathname, nodeType, position) => async (dispatch
 
   const defaults = {
     map: { name: 'Map response', mappings: [{ from: 'body', path: '$.', target: '' }] },
+    setvars: { name: 'Set variables', assignments: [{ name: '', value: '' }] },
     condition: { name: 'Condition', expression: 'res.status === 200' },
     delay: { name: 'Delay', durationMs: 1000 },
     loop: { name: 'For each', source: '', itemVar: 'item', maxIterations: 100 }
@@ -777,6 +778,25 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
         break;
       }
       finishNode(node, { status: 'passed', mappedVars: mapped });
+    } else if (node.type === 'setvars') {
+      // Each assignment's value is a {{var}} template resolved against the
+      // current flow vars (so you can set constants, rename, or combine).
+      const setVars = {};
+      for (const assignment of node.assignments || []) {
+        if (!assignment.name) {
+          continue;
+        }
+        setVars[assignment.name] = String(assignment.value || '').replace(
+          /\{\{\s*([\w.-]+)\s*\}\}/g,
+          (_match, key) => {
+            const val = flowVars[key];
+            return val === undefined || val === null ? '' : String(val);
+          }
+        );
+      }
+      Object.assign(flowVars, setVars);
+      recordData(setVars);
+      finishNode(node, { status: 'passed', mappedVars: setVars });
     } else if (node.type === 'condition') {
       try {
         const passed = await window.ipcRenderer.invoke('renderer:workflow-evaluate-expression', {
