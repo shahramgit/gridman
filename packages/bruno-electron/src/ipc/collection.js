@@ -550,8 +550,7 @@ const WORKSPACE_SEARCH_DEFAULT_SCOPES = {
 
 const {
   buildSearchFields,
-  matchSearchFields,
-  matchExampleEntries
+  matchSearchFields
 } = require('../utils/workspace-search-match');
 
 const cleanSearchMetaValue = (value) => {
@@ -727,6 +726,14 @@ const buildWorkspaceSearchCacheEntry = async ({ workspacePath, collectionPath, p
     url: result.url
   });
 
+  // Attach a lightweight example list to the request result so search rows can
+  // show the "has examples" marker and expand to the examples without parsing.
+  const exampleEntries = fields.exampleEntries || [];
+  if (!isFolderMeta && exampleEntries.length) {
+    result.exampleCount = exampleEntries.length;
+    result.examples = exampleEntries.slice(0, 100).map((entry) => ({ name: entry.name, index: entry.index }));
+  }
+
   return {
     mtimeMs,
     size,
@@ -734,32 +741,7 @@ const buildWorkspaceSearchCacheEntry = async ({ workspacePath, collectionPath, p
     result,
     raw: fields.raw,
     folded: fields.folded,
-    exampleEntries: fields.exampleEntries || []
-  };
-};
-
-// Build an example search result nested under its parent request.
-const createWorkspaceExampleSearchResult = (entry, exampleEntry) => {
-  const req = entry.result;
-  const exampleName = exampleEntry.name || `Example ${exampleEntry.index + 1}`;
-  return {
-    uid: `${req.uid}:example:${exampleEntry.index}`,
-    type: 'example',
-    name: exampleName,
-    exampleIndex: exampleEntry.index,
-    exampleName,
-    parentRequestUid: req.uid,
-    parentRequestName: req.name,
-    collectionUid: req.collectionUid,
-    collectionPathname: req.collectionPathname,
-    collectionName: req.collectionName,
-    pathname: req.pathname,
-    // place under the request: reuse the request's own relative paths
-    collectionRelativePath: req.collectionRelativePath,
-    parentCollectionRelativePath: req.parentCollectionRelativePath,
-    requestName: req.name,
-    matchField: 'example',
-    matchText: exampleName
+    exampleEntries
   };
 };
 
@@ -913,20 +895,6 @@ const matchWorkspaceSearchCollectionIndex = (event, job, indexEntries) => {
       job.results.push({ ...cacheEntry.result, ...match });
       job.totalResults += 1;
       sendWorkspaceSearchBatch(event, job);
-    }
-
-    // Surface matching examples as their own results (under the request),
-    // when the Examples scope is on, so they are clickable in the tree.
-    if (job.scopes.examples && cacheEntry.exampleEntries?.length) {
-      const matchedExamples = matchExampleEntries(cacheEntry.exampleEntries, { foldedQueryCi: job.foldedQueryCi });
-      for (const exampleEntry of matchedExamples) {
-        if (job.totalResults >= job.limit) {
-          break;
-        }
-        job.results.push(createWorkspaceExampleSearchResult(cacheEntry, exampleEntry));
-        job.totalResults += 1;
-        sendWorkspaceSearchBatch(event, job);
-      }
     }
   }
 };

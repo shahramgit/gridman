@@ -126,40 +126,6 @@ const buildSearchTree = (results = []) => {
       continue;
     }
 
-    if (result.type === 'example') {
-      // Nest the example under its request (creating a request node if the
-      // request itself did not match), under the request's folder path.
-      const folderParent = ensureFolderPath(collectionNode, result, splitRelativePath(result.parentCollectionRelativePath));
-      let requestNode = folderParent.childMap.get(result.parentRequestUid);
-      if (!requestNode) {
-        requestNode = ensureChildNode(folderParent, {
-          uid: result.parentRequestUid,
-          nodeKind: 'request',
-          type: 'request',
-          name: result.parentRequestName,
-          pathname: result.pathname,
-          collectionUid: result.collectionUid,
-          collectionPathname: result.collectionPathname,
-          collectionRelativePath: result.collectionRelativePath,
-          depth: folderParent.depth + 1
-        });
-      }
-      ensureChildNode(requestNode, {
-        uid: result.uid,
-        nodeKind: 'example',
-        type: 'example',
-        name: result.exampleName,
-        exampleIndex: result.exampleIndex,
-        exampleName: result.exampleName,
-        parentRequestUid: result.parentRequestUid,
-        collectionUid: result.collectionUid,
-        collectionPathname: result.collectionPathname,
-        pathname: result.pathname,
-        depth: requestNode.depth + 1
-      });
-      continue;
-    }
-
     const parent = ensureFolderPath(collectionNode, result, splitRelativePath(result.parentCollectionRelativePath));
     ensureChildNode(parent, {
       ...result,
@@ -184,9 +150,9 @@ const flattenSearchTree = (nodes = [], collapsedNodeUids = new Set()) => {
 
   const walk = (node) => {
     rows.push(node);
-    // Leaf example rows never expand; everything else (collections, folders,
-    // and requests that have matched example children) expands unless collapsed.
-    if (node.nodeKind !== 'example' && !collapsedNodeUids.has(node.uid)) {
+    // Requests are leaves in the flattened tree; their examples (when present)
+    // are rendered inline by the row component itself on expand.
+    if (node.nodeKind !== 'request' && !collapsedNodeUids.has(node.uid)) {
       for (const child of node.children || []) {
         walk(child);
       }
@@ -239,7 +205,7 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
   const dispatch = useDispatch();
   const store = useStore();
   const isRequest = node.nodeKind === 'request';
-  const isExample = node.nodeKind === 'example';
+  const [examplesExpanded, setExamplesExpanded] = useState(false);
   const isCollapsed = collapsedNodeUids.has(node.uid);
   const showMatchContext = node.matchText && !doesVisibleRowMatch(node, searchText);
 
@@ -306,7 +272,7 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
 
   // Open a specific example: load the request so its examples (with uids)
   // exist, resolve the example by index/name, then open its tab.
-  const openExample = async () => {
+  const openExample = async (example) => {
     const collection = await ensureCollectionLoaded();
     if (!collection) {
       toast.error('Unable to open the collection for this example');
@@ -318,9 +284,9 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
     const resolveExample = () => {
       const c = findCollection();
       const item = c ? findItemInCollectionByPathname(c, node.pathname) : null;
-      const example = item?.examples?.[node.exampleIndex]
-        || item?.examples?.find((ex) => ex.name === node.exampleName);
-      return item && example ? { item, example } : null;
+      const resolved = item?.examples?.[example.index]
+        || item?.examples?.find((ex) => ex.name === example.name);
+      return item && resolved ? { item, example: resolved } : null;
     };
     let found = resolveExample();
     const startedAt = Date.now();
@@ -348,10 +314,6 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
   };
 
   const handleClick = () => {
-    if (isExample) {
-      openExample();
-      return;
-    }
     if (isRequest) {
       openRequest();
       return;
@@ -359,52 +321,86 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
     onToggleNode(node.uid);
   };
 
+  const examples = isRequest ? (node.examples || []) : [];
+  const hasExamples = examples.length > 0 || (node.exampleCount || 0) > 0;
+
   return (
-    <button
-      type="button"
-      className={classnames('w-full text-left hover:bg-gray-100 flex items-start gap-1 pr-2 py-1', {
-        'font-semibold': node.type === 'collection'
-      })}
-      style={{ minHeight: 28, paddingLeft: 8 + (node.depth || 0) * 14 }}
-      title={node.pathname || node.collectionPathname}
-      onClick={handleClick}
-    >
-      <span className="flex items-center justify-center mt-0.5" style={{ width: 16, minWidth: 16 }}>
-        {!isRequest && !isExample ? (
-          <IconChevronRight
-            size={15}
-            strokeWidth={2}
-            className={classnames('transition-transform', { 'rotate-90': !isCollapsed })}
-            style={{ color: 'rgb(160 160 160)' }}
-          />
-        ) : null}
-      </span>
+    <>
+      <button
+        type="button"
+        className={classnames('w-full text-left hover:bg-gray-100 flex items-start gap-1 pr-2 py-1', {
+          'font-semibold': node.type === 'collection'
+        })}
+        style={{ minHeight: 28, paddingLeft: 8 + (node.depth || 0) * 14 }}
+        title={node.pathname || node.collectionPathname}
+        onClick={handleClick}
+      >
+        <span className="flex items-center justify-center mt-0.5" style={{ width: 16, minWidth: 16 }}>
+          {!isRequest ? (
+            <IconChevronRight
+              size={15}
+              strokeWidth={2}
+              className={classnames('transition-transform', { 'rotate-90': !isCollapsed })}
+              style={{ color: 'rgb(160 160 160)' }}
+            />
+          ) : hasExamples ? (
+            <IconChevronRight
+              size={15}
+              strokeWidth={2}
+              className={classnames('transition-transform', { 'rotate-90': examplesExpanded })}
+              style={{ color: 'rgb(160 160 160)' }}
+              data-testid="search-request-examples-chevron"
+              onClick={(e) => {
+                e.stopPropagation();
+                setExamplesExpanded((open) => !open);
+              }}
+            />
+          ) : null}
+        </span>
 
-      {isRequest ? (
-        <span className="text-xs font-semibold text-green-700 text-left mt-1" style={{ width: 42, minWidth: 42 }}>
-          {node.method || ''}
-        </span>
-      ) : isExample ? (
-        <span className="flex items-center justify-center text-muted mt-0.5" style={{ width: 18, minWidth: 18 }}>
-          <ExampleIcon size={14} />
-        </span>
-      ) : (
-        <span className="flex items-center justify-center text-muted mt-0.5" style={{ width: 18, minWidth: 18 }}>
-          <IconFolder size={15} strokeWidth={1.8} />
-        </span>
-      )}
-
-      <span className="min-w-0 flex-1">
-        <span className="block truncate">
-          <SearchHighlight text={node.name || node.filename || 'Untitled'} searchText={searchText} />
-        </span>
-        {showMatchContext ? (
-          <span className="block text-xs text-muted truncate font-normal">
-            {formatMatchLabel(node.matchField)}: <SearchHighlight text={node.matchText} searchText={searchText} />
+        {isRequest ? (
+          <span className="text-xs font-semibold text-green-700 text-left mt-1" style={{ width: 42, minWidth: 42 }}>
+            {node.method || ''}
           </span>
-        ) : null}
-      </span>
-    </button>
+        ) : (
+          <span className="flex items-center justify-center text-muted mt-0.5" style={{ width: 18, minWidth: 18 }}>
+            <IconFolder size={15} strokeWidth={1.8} />
+          </span>
+        )}
+
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">
+            <SearchHighlight text={node.name || node.filename || 'Untitled'} searchText={searchText} />
+          </span>
+          {showMatchContext ? (
+            <span className="block text-xs text-muted truncate font-normal">
+              {formatMatchLabel(node.matchField)}: <SearchHighlight text={node.matchText} searchText={searchText} />
+            </span>
+          ) : null}
+        </span>
+      </button>
+
+      {isRequest && hasExamples && examplesExpanded
+        ? examples.map((example) => (
+            <button
+              key={`${node.uid}:example:${example.index}`}
+              type="button"
+              className="w-full text-left hover:bg-gray-100 flex items-center gap-1 pr-2 py-1"
+              style={{ minHeight: 26, paddingLeft: 8 + (node.depth || 0) * 14 + 30 }}
+              title={`${example.name} (example)`}
+              data-testid="search-example-row"
+              onClick={() => openExample(example)}
+            >
+              <span className="flex items-center justify-center text-muted" style={{ width: 16, minWidth: 16 }}>
+                <ExampleIcon size={13} />
+              </span>
+              <span className="min-w-0 flex-1 truncate text-sm">
+                <SearchHighlight text={example.name || 'Example'} searchText={searchText} />
+              </span>
+            </button>
+          ))
+        : null}
+    </>
   );
 };
 
