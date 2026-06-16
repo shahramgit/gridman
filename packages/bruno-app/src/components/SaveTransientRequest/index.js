@@ -201,15 +201,17 @@ const SaveTransientRequest = ({ item: itemProp, collection: collectionProp, isOp
         return;
       }
 
-      if (!validateName(trimmedName)) {
-        toast.error(validateNameError(trimmedName));
+      // The display name may contain characters that aren't valid in a
+      // filesystem name (e.g. "/" in "GET /users"), matching Postman. We only
+      // sanitize for the on-disk filename and validate that derived value.
+      const sanitizedFilename = sanitizeName(trimmedName);
+      if (!validateName(sanitizedFilename)) {
+        toast.error(validateNameError(sanitizedFilename));
         return;
       }
 
-      const sanitizedFilename = sanitizeName(trimmedName);
-
       const itemToSave = latestItem.draft ? { ...latestItem, ...latestItem.draft } : { ...latestItem };
-      itemToSave.name = sanitizedFilename;
+      itemToSave.name = trimmedName;
       delete itemToSave.draft;
 
       const transformedItem = transformRequestToSaveToFilesystem(itemToSave);
