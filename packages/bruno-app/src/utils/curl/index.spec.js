@@ -64,4 +64,20 @@ describe('getRequestFromCurlCommand', () => {
       }
     ]);
   });
+
+  it('parses --form fields into a multipart form body', () => {
+    const request = getRequestFromCurlCommand(`
+      curl --location 'https://sso.example.com/oauth2/token' \
+      --header 'Authorization: Basic xxxx' \
+      --form 'grant_type="client_credentials"' \
+      --form 'scope="openid"'
+    `);
+
+    expect(String(request.method).toLowerCase()).toBe('post');
+    expect(request.body.mode).toBe('multipartForm');
+    expect(request.body.multipartForm).toEqual([
+      { name: 'grant_type', value: 'client_credentials', type: 'text', enabled: true },
+      { name: 'scope', value: 'openid', type: 'text', enabled: true }
+    ]);
+  });
 });

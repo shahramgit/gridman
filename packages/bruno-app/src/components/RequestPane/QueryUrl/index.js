@@ -21,6 +21,7 @@ import { IconDeviceFloppy, IconCode } from '@tabler/icons';
 import SingleLineEditor from 'components/SingleLineEditor';
 import SendButton from 'components/RequestPane/SendButton';
 import { isMacOS } from 'utils/common/platform';
+import { uuid } from 'utils/common';
 import { deriveTransientRequestNameFromUrl, hasRequestChanges } from 'utils/collections';
 import StyledWrapper from './StyledWrapper';
 import GenerateCodeItem from 'components/Sidebar/Collections/Collection/CollectionItem/GenerateCodeItem/index';
@@ -321,8 +322,22 @@ const QueryUrl = ({ item, collection, handleRun }) => {
             })
           );
         } else if (bodyMode === 'multipartForm' && request.body.multipartForm) {
-          // For multipartForm, similar limitation
-          // TODO: Implement proper multipartForm param setting
+          const params = request.body.multipartForm.map((param) => ({
+            uid: uuid(),
+            type: param.type === 'file' ? 'file' : 'text',
+            name: param.name || '',
+            value: param.value ?? '',
+            contentType: param.contentType || '',
+            description: param.description || '',
+            enabled: param.enabled !== false
+          }));
+          dispatch(
+            updateRequestBody({
+              itemUid: item.uid,
+              collectionUid: collection.uid,
+              content: params
+            })
+          );
         }
       }
 
