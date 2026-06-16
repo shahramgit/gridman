@@ -69,8 +69,38 @@ const ResponseExampleResponseContent = ({ editMode, item, collection, exampleUid
     }
   };
 
+  const onBodyTypeChange = (e) => {
+    if (editMode && item && collection && exampleUid) {
+      const currentBody = response.body || {};
+      dispatch(updateResponseExampleResponse({
+        itemUid: item.uid,
+        collectionUid: collection.uid,
+        exampleUid: exampleUid,
+        response: {
+          body: {
+            type: e.target.value,
+            content: currentBody.content || ''
+          }
+        }
+      }));
+    }
+  };
+
+  const bodyType = response.body?.type || 'text';
+
   return (
     <StyledWrapper className="w-full px-4">
+      {editMode && (
+        <div className="body-type-selector flex items-center mb-2">
+          <label className="mr-2 text-muted">Body</label>
+          <select value={bodyType} onChange={onBodyTypeChange} className="textbox">
+            <option value="json">JSON</option>
+            <option value="xml">XML</option>
+            <option value="html">HTML</option>
+            <option value="text">Text</option>
+          </select>
+        </div>
+      )}
       <div className="code-editor-container">
         <CodeEditor
           collection={collection}
