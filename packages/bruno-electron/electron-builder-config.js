@@ -19,6 +19,12 @@ const config = {
     }
   ],
   files: ['**/*'],
+  // Native .node binaries cannot be dlopen'd from inside an asar archive.
+  // electron-builder only auto-unpacks the host-matching @lydell/node-pty
+  // binary, so when cross-packaging (e.g. a Linux build on macOS) the target
+  // platform's pty.node stays packed and the app crashes at startup. Force all
+  // node-pty binary packages to be unpacked so the target binary is loadable.
+  asarUnpack: ['**/node_modules/@lydell/node-pty-*/**'],
   afterSign: 'notarize.js',
   mac: {
     artifactName: '${name}_${version}_${arch}_${os}.${ext}',
