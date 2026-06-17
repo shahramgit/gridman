@@ -8,7 +8,7 @@ import toast from 'react-hot-toast';
 import { IconCopy } from '@tabler/icons';
 import { findCollectionByItemUid, getGlobalEnvironmentVariables } from 'utils/collections/index';
 import { cloneDeep } from 'lodash';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { generateSnippet } from '../utils/snippet-generator';
 const CodeView = ({ language, item }) => {
   const { displayedTheme } = useTheme();
@@ -40,10 +40,18 @@ const CodeView = ({ language, item }) => {
     });
   }, [language, item, collection, generateCodePrefs.shouldInterpolate]);
 
+  // Allow editing the generated snippet (e.g. tweak a cURL command) before
+  // copying. Re-seed from the generated snippet whenever the inputs change so
+  // stale edits don't mask a freshly regenerated snippet.
+  const [editedSnippet, setEditedSnippet] = useState(snippet);
+  useEffect(() => {
+    setEditedSnippet(snippet);
+  }, [snippet]);
+
   return (
     <StyledWrapper>
       <CopyToClipboard
-        text={snippet}
+        text={editedSnippet}
         options={{ format: 'text/plain' }}
         onCopy={() => toast.success('Copied to clipboard!')}
       >
@@ -53,10 +61,10 @@ const CodeView = ({ language, item }) => {
       </CopyToClipboard>
       <div className="editor-content">
         <CodeEditor
-          readOnly
           collection={collection}
           item={item}
-          value={snippet}
+          value={editedSnippet}
+          onEdit={setEditedSnippet}
           font={get(preferences, 'font.codeFont', 'default')}
           fontSize={get(preferences, 'font.codeFontSize')}
           theme={displayedTheme}
