@@ -756,7 +756,11 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
                   data-testid="request-item-chevron"
                 />
               </ActionIcon>
-            ) : null}
+            ) : (
+              // Reserve the chevron slot so requests without examples keep the
+              // same icon/name alignment as folders and requests that have one.
+              <div style={{ width: 16, minWidth: 16 }} />
+            )}
 
             <div className="ml-1 flex w-full h-full items-center overflow-hidden">
               <CollectionItemIcon item={item} />

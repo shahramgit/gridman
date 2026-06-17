@@ -1338,7 +1338,10 @@ export const moveCollectionItemByPath = ({
         sourcePathname
       }));
     }
-  } else if (shouldRefreshTargetIndex) {
+  } else if (shouldRefreshTargetIndex && !(sourceCollectionUid === targetCollectionUid && result?.skipped)) {
+    // A skipped same-collection move is a no-op on disk (e.g. reordering within
+    // the same folder); the renderer resequences the affected siblings, so a
+    // full re-index here is wasteful and can transiently duplicate nodes.
     if (sourceCollectionUid === targetCollectionUid && result?.pathname && !result?.skipped && result?.type === 'folder') {
       [sourcePathname, result.pathname].forEach((pathname) => {
         dispatch(collectionUnlinkDirectoryEvent({

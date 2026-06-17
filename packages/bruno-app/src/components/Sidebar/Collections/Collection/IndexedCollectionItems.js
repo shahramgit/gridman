@@ -867,7 +867,10 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
           dropType: nextDropType
         }));
 
-        if (nextDropType === 'adjacent' && result?.pathname && !result?.skipped) {
+        // Reorder within the same folder returns skipped=true (the file is
+        // already in the right directory), but we still need to persist the new
+        // sibling order, so resequence whenever we have a resulting pathname.
+        if (nextDropType === 'adjacent' && result?.pathname) {
           await resequenceAfterAdjacentDrop({ movedPathname: result.pathname });
         }
       } catch (error) {
@@ -1058,7 +1061,11 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
                   data-testid="request-item-chevron"
                 />
               </ActionIcon>
-            ) : null}
+            ) : (
+              // Reserve the chevron slot so requests without examples keep the
+              // same icon/name alignment as folders and requests that have one.
+              <div style={{ width: 16, minWidth: 16 }} />
+            )}
             <div className="ml-1 flex w-full h-full items-center overflow-hidden">
               {node.type === 'folder' ? (
                 <IconFolder size={16} strokeWidth={1.7} className="mr-2" />
