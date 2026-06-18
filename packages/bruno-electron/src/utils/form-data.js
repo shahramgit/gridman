@@ -78,14 +78,22 @@ const createFormData = (data, collectionPath) => {
     }
 
     if (type === 'file') {
-      const filePaths = value || [];
+      // value may be an array of paths, a single path string, or empty (e.g.
+      // imported requests where the file reference was never filled in).
+      const filePaths = (Array.isArray(value) ? value : (value ? [value] : []))
+        .map((filePath) => String(filePath ?? '').trim())
+        .filter(Boolean);
+
       filePaths.forEach((filePath) => {
-        let trimmedFilePath = filePath.trim();
-        if (!path.isAbsolute(trimmedFilePath)) {
-          trimmedFilePath = path.join(collectionPath, trimmedFilePath);
+        let resolvedFilePath = filePath;
+        if (!path.isAbsolute(resolvedFilePath)) {
+          resolvedFilePath = path.join(collectionPath, resolvedFilePath);
         }
-        options.filename = path.basename(trimmedFilePath);
-        form.append(name, fs.createReadStream(trimmedFilePath), options);
+        if (!fs.existsSync(resolvedFilePath)) {
+          throw new Error(`File not found for multipart form field "${name}": ${filePath}`);
+        }
+        options.filename = path.basename(resolvedFilePath);
+        form.append(name, fs.createReadStream(resolvedFilePath), options);
       });
     }
   });

@@ -1,4 +1,7 @@
-const { formatMultipartData } = require('../../src/utils/form-data');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { formatMultipartData, createFormData } = require('../../src/utils/form-data');
 
 describe('utils: formatMultipartData', () => {
   test('should format text field', () => {
@@ -42,5 +45,37 @@ describe('utils: formatMultipartData', () => {
     const data = [{ name: 'field', type: 'text', value: 'value' }];
     expect(formatMultipartData(data, '--boundary')).toContain('----boundary');
     expect(formatMultipartData(data, 'boundary--')).toContain('----boundary');
+  });
+});
+
+describe('utils: createFormData', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gridman-formdata-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('throws a clear error when a referenced file does not exist', () => {
+    const data = [{ name: 'email', type: 'file', value: ['missing/file.pdf'] }];
+    expect(() => createFormData(data, tmpDir)).toThrow(
+      'File not found for multipart form field "email": missing/file.pdf'
+    );
+  });
+
+  test('handles a single file path string (not just arrays)', () => {
+    const filePath = path.join(tmpDir, 'doc.txt');
+    fs.writeFileSync(filePath, 'hello');
+    const data = [{ name: 'attachment', type: 'file', value: filePath }];
+
+    expect(() => createFormData(data, tmpDir)).not.toThrow();
+  });
+
+  test('ignores empty file references instead of crashing', () => {
+    const data = [{ name: 'picture', type: 'file', value: '' }];
+    expect(() => createFormData(data, tmpDir)).not.toThrow();
   });
 });
