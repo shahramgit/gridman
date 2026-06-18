@@ -3631,6 +3631,7 @@ export const collectionsSlice = createSlice({
       item.preRequestScriptErrorContext = null;
       item.postResponseScriptErrorContext = null;
       item.testScriptErrorContext = null;
+      item.preRequestScriptErrorCategory = null;
     },
     runRequestEvent: (state, action) => {
       const { itemUid, collectionUid, type, requestUid } = action.payload;
@@ -3645,6 +3646,7 @@ export const collectionsSlice = createSlice({
           if (type === 'pre-request-script-execution') {
             item.preRequestScriptErrorMessage = action.payload.errorMessage;
             item.preRequestScriptErrorContext = action.payload.errorContext || null;
+            item.preRequestScriptErrorCategory = action.payload.errorCategory || null;
           }
 
           if (type === 'post-response-script-execution') {
@@ -3815,6 +3817,7 @@ export const collectionsSlice = createSlice({
           const item = collection.runnerResult.items.findLast((i) => i.uid === request.uid);
           item.preRequestScriptErrorMessage = action.payload.errorMessage;
           item.preRequestScriptErrorContext = action.payload.errorContext || null;
+          item.preRequestScriptErrorCategory = action.payload.errorCategory || null;
         }
       }
     },

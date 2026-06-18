@@ -457,13 +457,19 @@ const registerNetworkIpc = (mainWindow) => {
     collectionPath, // optional path to the collection root
     scriptMetadata // optional metadata for line mapping
   }) => {
-    const errorContext = error ? formatErrorWithContextV2(error, scriptType, scriptMetadata, collectionPath) : null;
+    // Request-body/prep errors aren't script errors; don't surface an internal
+    // source-code card for them — a plain message with the right title is clearer.
+    const errorCategory = error?.errorCategory || null;
+    const errorContext = (error && !errorCategory)
+      ? formatErrorWithContextV2(error, scriptType, scriptMetadata, collectionPath)
+      : null;
 
     mainWindow.webContents.send(channel, {
       type: `${scriptType}-script-execution`,
       ...basePayload,
       errorMessage: error ? (error.message || `An error occurred in ${scriptType.replace('-', ' ')} script`) : null,
-      errorContext
+      errorContext,
+      errorCategory
     });
   };
 
@@ -610,7 +616,16 @@ const registerNetworkIpc = (mainWindow) => {
       if (typeof request.data !== 'string' && !isFormData(request.data)) {
         request._originalMultipartData = request.data;
         request.collectionPath = collectionPath;
-        let form = createFormData(request.data, collectionPath);
+        let form;
+        try {
+          form = createFormData(request.data, collectionPath);
+        } catch (error) {
+          // Building the multipart body is request preparation, not the user's
+          // pre-request script. Tag it so it is reported as a body error rather
+          // than mislabeled "Pre-Request Script Error".
+          error.errorCategory = 'request-body';
+          throw error;
+        }
         request.data = form;
         if (contentType !== 'multipart/form-data') {
           // Patch: Axios leverages getHeaders method to get the headers so FormData should be monkey patched

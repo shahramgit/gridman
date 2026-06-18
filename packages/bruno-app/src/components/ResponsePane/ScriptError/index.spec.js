@@ -63,6 +63,16 @@ describe('ScriptError', () => {
     expect(screen.getByText('something broke')).toBeInTheDocument();
   });
 
+  it('should title request-body errors as "Request Body Error", not a script error', () => {
+    const item = {
+      preRequestScriptErrorMessage: 'File not found for multipart form field "email": x@y.com',
+      preRequestScriptErrorCategory: 'request-body'
+    };
+    renderWithProviders(<ScriptError item={item} collection={mockCollection} onClose={jest.fn()} />);
+    expect(screen.getByText('Request Body Error')).toBeInTheDocument();
+    expect(screen.queryByText('Pre-Request Script Error')).not.toBeInTheDocument();
+  });
+
   it('should show CodeSnippet when errorContext is available', () => {
     const item = {
       preRequestScriptErrorMessage: 'undefinedVar is not defined',

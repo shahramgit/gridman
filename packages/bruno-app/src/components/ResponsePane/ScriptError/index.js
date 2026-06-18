@@ -204,6 +204,12 @@ const ScriptError = ({ item, collection, onClose }) => {
 
   if (!preRequestError && !postResponseError && !testScriptError) return null;
 
+  // Body/prep failures are surfaced through the pre-request channel but aren't
+  // script errors, so give them an accurate title.
+  const preRequestTitle = item?.preRequestScriptErrorCategory === 'request-body'
+    ? 'Request Body Error'
+    : 'Pre-Request Script Error';
+
   const preRequestContext = item?.preRequestScriptErrorContext;
   const postResponseContext = item?.postResponseScriptErrorContext;
   const testContext = item?.testScriptErrorContext;
@@ -213,7 +219,7 @@ const ScriptError = ({ item, collection, onClose }) => {
   // If no error context available for any error, fall back to ErrorBanner
   if (!hasAnyContext) {
     const errors = [];
-    if (preRequestError) errors.push({ title: 'Pre-Request Script Error', message: preRequestError });
+    if (preRequestError) errors.push({ title: preRequestTitle, message: preRequestError });
     if (postResponseError) errors.push({ title: 'Post-Response Script Error', message: postResponseError });
     if (testScriptError) errors.push({ title: 'Test Script Error', message: testScriptError });
     return <ErrorBanner errors={errors} onClose={onClose} className="mb-2" />;
@@ -223,7 +229,7 @@ const ScriptError = ({ item, collection, onClose }) => {
     <div className="mb-2 flex flex-col gap-2">
       {preRequestError && (
         <ScriptErrorCard
-          title="Pre-Request Script Error"
+          title={preRequestTitle}
           message={preRequestError}
           errorContext={preRequestContext}
           item={item}
