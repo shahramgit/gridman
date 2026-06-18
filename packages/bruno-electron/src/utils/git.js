@@ -1397,6 +1397,72 @@ const checkoutGitBranch = async (win, { gitRootPath, branchName, processUid, sho
   });
 };
 
+const mergeGitBranch = async (win, { gitRootPath, processUid, branchName, noFastForward = false }) => {
+  const sourceBranch = String(branchName || '').trim();
+  if (!sourceBranch) {
+    throw new Error('A branch to merge from is required.');
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true }));
+  await ensureWindowsGitLongPaths(gitRootPath);
+
+  const currentBranch = await getCurrentGitBranch(gitRootPath).catch(() => '');
+  if (currentBranch && currentBranch === sourceBranch) {
+    throw new Error(`"${sourceBranch}" is the current branch. Choose a different branch to merge from.`);
+  }
+
+  const mergeArgs = ['merge'];
+  if (process.platform === 'win32') {
+    mergeArgs.unshift('-c', 'core.longpaths=true');
+  }
+  if (noFastForward) {
+    mergeArgs.push('--no-ff');
+  }
+  mergeArgs.push(sourceBranch);
+
+  try {
+    const result = await git.raw(mergeArgs);
+    notifyWorkspaceConfigUpdated(win, gitRootPath);
+    return {
+      merged: true,
+      mergeInProgress: false,
+      sourceBranch,
+      currentBranch,
+      message: (typeof result === 'string' && result.trim())
+        ? result.trim()
+        : `Merged ${sourceBranch} into ${currentBranch || 'current branch'}.`
+    };
+  } catch (err) {
+    const message = getGitErrorMessage(err, `Failed to merge ${sourceBranch}.`);
+
+    if (isWindowsLongPathError(message)) {
+      await ensureWindowsGitLongPaths(gitRootPath);
+      throw new Error(getWindowsLongPathsHelpMessage(message));
+    }
+
+    const mergeInProgress = fs.existsSync(path.join(gitRootPath, '.git', 'MERGE_HEAD'));
+    if (
+      mergeInProgress
+      || message.includes('CONFLICT')
+      || message.includes('Automatic merge failed')
+      || message.includes('unresolved conflict')
+    ) {
+      // Surface the same conflict state pull uses so the existing
+      // resolve/abort/continue flow takes over.
+      return {
+        merged: false,
+        mergeInProgress: true,
+        sourceBranch,
+        currentBranch,
+        message
+      };
+    }
+
+    throw createGitError(err, `Failed to merge ${sourceBranch}.`);
+  }
+};
+
 const publishGitBranch = async (win, { gitRootPath, processUid, remote = 'origin', branchName }) => {
   const git = getSimpleGitInstanceForPath(gitRootPath);
   git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true }));
@@ -3661,6 +3727,7 @@ module.exports = {
   getDefaultGitBranch,
   getCurrentGitBranch,
   checkoutGitBranch,
+  mergeGitBranch,
   getCollectionGitLogs,
   getCollectionGitTagsWithDetails,
   canPush,

@@ -247,6 +247,7 @@ const WorkspaceGit = ({ workspace }) => {
   const [authTestResult, setAuthTestResult] = useState(null);
   const [createBranchName, setCreateBranchName] = useState('');
   const [createBranchBase, setCreateBranchBase] = useState('');
+  const [mergeFromBranch, setMergeFromBranch] = useState('');
   const [publishAfterCreate, setPublishAfterCreate] = useState(false);
   const [setupDiagnostics, setSetupDiagnostics] = useState(null);
   const [setupOperation, setSetupOperation] = useState(null);
@@ -1080,6 +1081,12 @@ const WorkspaceGit = ({ workspace }) => {
     return runGitOperation('Checkout remote branch', 'renderer:checkout-workspace-git-remote-branch', { branchName });
   };
 
+  const mergeBranch = async (branchName) => {
+    if (!branchName || branchName === currentBranch) return null;
+    await runGitOperation('Merge branch', 'renderer:merge-workspace-git-branch', { branchName });
+    setMergeFromBranch('');
+  };
+
   const handleRepositoryBranchChange = (value) => {
     if (!value || value === currentBranch) return null;
 
@@ -1617,6 +1624,34 @@ const WorkspaceGit = ({ workspace }) => {
                       />
                       <span>Publish to {remote} after create</span>
                     </label>
+                  </div>
+
+                  <div className="mt-3">
+                    <div className="text-sm text-muted mb-1">Merge into {currentBranch || 'current branch'}</div>
+                    <div className="branch-controls">
+                      <select
+                        className="textbox"
+                        value={mergeFromBranch}
+                        onChange={(event) => setMergeFromBranch(event.target.value)}
+                        disabled={operation === 'Merge branch'}
+                      >
+                        <option value="" disabled>Select branch to merge from...</option>
+                        {localBranches
+                          .filter((branch) => branch !== currentBranch)
+                          .map((branch) => (
+                            <option key={branch} value={branch}>{branch}</option>
+                          ))}
+                      </select>
+                      <Button
+                        size="sm"
+                        color="primary"
+                        disabled={!mergeFromBranch || mergeFromBranch === currentBranch}
+                        loading={operation === 'Merge branch'}
+                        onClick={() => mergeBranch(mergeFromBranch)}
+                      >
+                        Merge
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="flex flex-wrap gap-2 mt-3">
