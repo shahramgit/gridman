@@ -28,8 +28,18 @@ const { parseFileMeta, hydrateRequestWithUuid } = require('../utils/collection')
 const { parseLargeRequestWithRedaction } = require('../utils/parse');
 const { transformBrunoConfigAfterRead } = require('../utils/transformBrunoConfig');
 const dotEnvWatcher = require('./dotenv-watcher');
+const { isPathUnderActiveGitOperation, gitOperationEvents } = require('./git-operation-state');
 
 const MAX_FILE_SIZE = 2.5 * 1024 * 1024;
+
+const normalizeWatcherPath = (value) =>
+  path.resolve(String(value || '')).replace(/\\/g, '/').replace(/\/+$/, '');
+
+const isUnderPath = (childPath, parentPath) => {
+  const child = normalizeWatcherPath(childPath);
+  const parent = normalizeWatcherPath(parentPath);
+  return child === parent || child.startsWith(`${parent}/`);
+};
 
 const environmentSecretsStore = new EnvironmentSecretsStore();
 
@@ -197,6 +207,11 @@ const unlinkEnvironmentFile = async (win, pathname, collectionUid) => {
 };
 
 const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread, watcher) => {
+  // A git checkout/pull/merge rewrites many files at once; skip the per-file
+  // storm and let the single post-operation reindex resync the collection.
+  if (isPathUnderActiveGitOperation(pathname)) {
+    return;
+  }
   invalidateSearchForPath(pathname);
   if (isBrunoConfigFile(pathname, collectionPath)) {
     try {
@@ -369,6 +384,9 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
 };
 
 const addDirectory = async (win, pathname, collectionUid, collectionPath) => {
+  if (isPathUnderActiveGitOperation(pathname)) {
+    return;
+  }
   const envDirectory = path.join(collectionPath, 'environments');
 
   if (path.normalize(pathname) === path.normalize(envDirectory)) {
@@ -407,6 +425,9 @@ const addDirectory = async (win, pathname, collectionUid, collectionPath) => {
 };
 
 const change = async (win, pathname, collectionUid, collectionPath) => {
+  if (isPathUnderActiveGitOperation(pathname)) {
+    return;
+  }
   invalidateSearchForPath(pathname);
   if (isBrunoConfigFile(pathname, collectionPath)) {
     try {
@@ -539,6 +560,9 @@ const change = async (win, pathname, collectionUid, collectionPath) => {
 };
 
 const unlink = (win, pathname, collectionUid, collectionPath) => {
+  if (isPathUnderActiveGitOperation(pathname)) {
+    return;
+  }
   invalidateSearchForPath(pathname);
   try {
     if (!fs.existsSync(collectionPath)) {
@@ -579,6 +603,9 @@ const unlink = (win, pathname, collectionUid, collectionPath) => {
 };
 
 const unlinkDir = async (win, pathname, collectionUid, collectionPath) => {
+  if (isPathUnderActiveGitOperation(pathname)) {
+    return;
+  }
   try {
     if (!fs.existsSync(collectionPath)) {
       return;
@@ -634,6 +661,59 @@ class CollectionWatcher {
     this.watchers = {};
     this.loadingStates = {};
     this.tempDirectoryMap = {};
+    // watchPath -> { collectionUid, win } so a finished git operation can
+    // reindex exactly the collections that live under the affected git root.
+    this.watcherMeta = {};
+
+    gitOperationEvents.on('git-operation-end', ({ gitRootPath }) => {
+      this.reindexCollectionsUnderGitRoot(gitRootPath);
+    });
+  }
+
+  // After a git operation rewrites the working tree, the watcher was paused, so
+  // rebuild the in-memory index of each affected collection in one pass instead
+  // of replaying thousands of per-file events.
+  reindexCollectionsUnderGitRoot(gitRootPath) {
+    // Lazy require avoids a load-order cycle between the watcher and indexer.
+    const { startCollectionIndex } = require('./collection-indexer');
+
+    for (const [watchPath, meta] of Object.entries(this.watcherMeta)) {
+      if (!meta?.win || meta.win.isDestroyed?.()) {
+        continue;
+      }
+      if (!isUnderPath(watchPath, gitRootPath)) {
+        continue;
+      }
+
+      // Fall back to the config captured when the watcher was created (yml
+      // collections store their config in opencollection.yml, not bruno.json).
+      let brunoConfig = meta.brunoConfig;
+      try {
+        const brunoConfigPath = path.join(watchPath, 'bruno.json');
+        if (fs.existsSync(brunoConfigPath)) {
+          brunoConfig = JSON.parse(fs.readFileSync(brunoConfigPath, 'utf8'));
+          meta.brunoConfig = brunoConfig;
+          setBrunoConfig(meta.collectionUid, brunoConfig);
+          meta.win.webContents.send('main:bruno-config-update', {
+            collectionUid: meta.collectionUid,
+            brunoConfig
+          });
+        }
+      } catch (error) {
+        console.error('Error refreshing bruno.json after git operation:', error);
+      }
+
+      try {
+        startCollectionIndex(meta.win, {
+          collectionUid: meta.collectionUid,
+          collectionPathname: watchPath,
+          brunoConfig,
+          loadSessionId: uuid()
+        });
+      } catch (error) {
+        console.error('Error reindexing collection after git operation:', error);
+      }
+    }
   }
 
   // Initialize loading state tracking for a collection
@@ -708,6 +788,8 @@ class CollectionWatcher {
     if (this.watchers[watchPath]) {
       this.watchers[watchPath].close();
     }
+
+    this.watcherMeta[watchPath] = { collectionUid, win, brunoConfig };
 
     this.initializeLoadingState(collectionUid);
 
@@ -804,6 +886,8 @@ class CollectionWatcher {
       this.watchers[watchPath].close();
       this.watchers[watchPath] = null;
     }
+
+    delete this.watcherMeta[watchPath];
 
     dotEnvWatcher.removeCollectionWatcher(watchPath);
 
@@ -962,6 +1046,7 @@ class CollectionWatcher {
       } catch (err) {}
     }
     this.watchers = {};
+    this.watcherMeta = {};
   }
 }
 

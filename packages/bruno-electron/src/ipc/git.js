@@ -18,6 +18,7 @@ const {
   syncGitChanges,
   performGuidedWorkspaceGitAction,
   checkoutGitBranch,
+  mergeGitBranch,
   checkoutRemoteGitBranch,
   publishGitBranch,
   setGitBranchUpstream,
@@ -39,8 +40,25 @@ const {
   testGitSshConnection
 } = require('../utils/git');
 const { createDirectory, removeDirectory } = require('../utils/filesystem');
+const { beginGitOperation, endGitOperation } = require('../app/git-operation-state');
 
 const activeWorkspaceGitOperations = new Set();
+
+// Operations that rewrite the working tree. While these run, the collection
+// watcher pauses so a checkout/pull/merge does not trigger a per-file event
+// storm; it reindexes once when the operation finishes.
+const WORKING_TREE_MUTATING_OPERATIONS = new Set([
+  'pull',
+  'sync',
+  'checkout branch',
+  'create branch',
+  'checkout remote branch',
+  'merge branch',
+  'guided Git action',
+  'abort merge',
+  'continue merge',
+  'resolve conflict'
+]);
 
 const withWorkspaceGitOperationLock = async (gitRootPath, operationName, operation) => {
   const lockKey = path.resolve(gitRootPath);
@@ -49,11 +67,19 @@ const withWorkspaceGitOperationLock = async (gitRootPath, operationName, operati
     throw new Error(`Another Git operation is already running for this workspace. Wait for it to finish before running ${operationName}.`);
   }
 
+  const mutatesWorkingTree = WORKING_TREE_MUTATING_OPERATIONS.has(operationName);
+
   activeWorkspaceGitOperations.add(lockKey);
+  if (mutatesWorkingTree) {
+    beginGitOperation(gitRootPath);
+  }
   try {
     return await operation();
   } finally {
     activeWorkspaceGitOperations.delete(lockKey);
+    if (mutatesWorkingTree) {
+      endGitOperation(gitRootPath);
+    }
   }
 };
 
@@ -198,6 +224,10 @@ const registerGitIpc = (mainWindow) => {
       remoteName: remote,
       branchName
     }));
+  });
+
+  ipcMain.handle('renderer:merge-workspace-git-branch', async (event, { gitRootPath, processUid, branchName, noFastForward = false }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'merge branch', () => mergeGitBranch(mainWindow, { gitRootPath, processUid, branchName, noFastForward }));
   });
 
   ipcMain.handle('renderer:publish-workspace-git-branch', async (event, { gitRootPath, processUid, remote = 'origin', branchName }) => {
