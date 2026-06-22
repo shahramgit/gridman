@@ -5,6 +5,8 @@ import {
   ReactFlowProvider,
   Background,
   Controls,
+  ControlButton,
+  MiniMap,
   Handle,
   NodeToolbar,
   Position,
@@ -15,6 +17,7 @@ import {
 import {
   IconArrowsSplit,
   IconClock,
+  IconLayoutGridAdd,
   IconPlayerPause,
   IconPlayerPlay,
   IconRepeat,
@@ -165,7 +168,13 @@ const GridmanNode = ({ data, selected }) => {
 const nodeTypes = { gridman: GridmanNode };
 
 const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSelectNode }) => {
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, fitView } = useReactFlow();
+
+  const onTidy = useCallback(async () => {
+    await handlers.onTidy();
+    // Re-fit once the relaid-out nodes have rendered.
+    setTimeout(() => fitView({ duration: 300, padding: 0.2 }), 50);
+  }, [handlers, fitView]);
 
   const layoutNodes = useMemo(() => doc.nodes.map((node) => ({
     id: node.id,
@@ -279,7 +288,12 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={18} size={1} />
-        <Controls showInteractive={false} />
+        <Controls showInteractive={false}>
+          <ControlButton onClick={onTidy} title="Tidy up (auto-layout)">
+            <IconLayoutGridAdd size={14} stroke={1.6} />
+          </ControlButton>
+        </Controls>
+        <MiniMap pannable zoomable nodeStrokeWidth={2} />
       </ReactFlow>
     </div>
   );

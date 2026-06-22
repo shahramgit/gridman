@@ -34,6 +34,7 @@ import {
   connectWorkflowNodes,
   disconnectWorkflowConnection,
   executeWorkflowNode,
+  layoutWorkflowNodes,
   loadWorkflowRunHistory,
   reconnectWorkflowConnection,
   refreshWorkflow,
@@ -465,7 +466,8 @@ const WorkflowEditor = ({ pathname }) => {
     onRevealNode: (id) => dispatch(revealWorkflowNode(pathname, id)).catch((e) => toast.error(e?.message || 'Unable to locate request')),
     onToggleDisabled: (id, disabled) => dispatch(updateWorkflowNode(pathname, id, { disabled })).catch((e) => toast.error(e?.message || 'Unable to update node')),
     onDropRequest: (item, position) => dispatch(addWorkflowRequestNodeFromDragItem(pathname, item, position)).catch((e) => toast.error(e?.message || 'Unable to add request')),
-    onDropNode: (nodeType, position) => dispatch(addWorkflowNode(pathname, nodeType, position)).catch((e) => toast.error(e?.message || 'Unable to add node'))
+    onDropNode: (nodeType, position) => dispatch(addWorkflowNode(pathname, nodeType, position)).catch((e) => toast.error(e?.message || 'Unable to add node')),
+    onTidy: () => dispatch(layoutWorkflowNodes(pathname)).catch((e) => toast.error(e?.message || 'Unable to tidy layout'))
   }), [dispatch, pathname]);
 
   if (!openWorkflowState) {

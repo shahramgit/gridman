@@ -368,6 +368,62 @@ export const updateWorkflowNodePosition = (pathname, nodeId, position) => async 
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
+// Auto-layout: place nodes left-to-right by their distance from Start, stacking
+// siblings vertically. One save persists every position.
+export const layoutWorkflowNodes = (pathname) => async (dispatch, getState) => {
+  const openWorkflowState = getState().workflows.open[pathname];
+  if (!openWorkflowState) {
+    return;
+  }
+
+  const doc = cloneDeep(openWorkflowState.doc);
+  const nodes = doc.nodes || [];
+  const connections = doc.connections || [];
+  const start = nodes.find((n) => n.type === 'start') || nodes[0];
+  if (!start) {
+    return;
+  }
+
+  const childrenOf = (id) => connections.filter((c) => c.source === id).map((c) => c.target);
+
+  // BFS from Start assigns each node a column (depth).
+  const depth = { [start.id]: 0 };
+  const queue = [start.id];
+  while (queue.length) {
+    const id = queue.shift();
+    for (const child of childrenOf(id)) {
+      if (depth[child] === undefined) {
+        depth[child] = depth[id] + 1;
+        queue.push(child);
+      }
+    }
+  }
+
+  // Nodes unreachable from Start get parked in a trailing column.
+  let maxDepth = 0;
+  for (const value of Object.values(depth)) {
+    maxDepth = Math.max(maxDepth, value);
+  }
+  for (const node of nodes) {
+    if (depth[node.id] === undefined) {
+      depth[node.id] = maxDepth + 1;
+    }
+  }
+
+  const COL_WIDTH = 260;
+  const ROW_HEIGHT = 120;
+  const rowByColumn = {};
+  // Keep document order stable within a column for predictable stacking.
+  for (const node of nodes) {
+    const col = depth[node.id];
+    const row = rowByColumn[col] || 0;
+    rowByColumn[col] = row + 1;
+    node.position = { x: 40 + col * COL_WIDTH, y: 60 + row * ROW_HEIGHT };
+  }
+
+  await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
 export const removeWorkflowNode = (pathname, nodeId) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
   if (!openWorkflowState) {
