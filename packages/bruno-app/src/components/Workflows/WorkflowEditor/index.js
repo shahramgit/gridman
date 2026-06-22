@@ -36,6 +36,7 @@ import {
   executeWorkflowNode,
   layoutWorkflowNodes,
   loadWorkflowRunHistory,
+  quickAddNode,
   reconnectWorkflowConnection,
   refreshWorkflow,
   removeWorkflowNode,
@@ -421,6 +422,10 @@ const WorkflowEditor = ({ pathname }) => {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [syncPromptOpen, setSyncPromptOpen] = useState(false);
   const [inputsOpen, setInputsOpen] = useState(false);
+  // n8n-style quick add: context for the "+" menu opened from a node output or
+  // a connection. Holds where to wire and where to place the new node.
+  const [quickAdd, setQuickAdd] = useState(null);
+  const [quickAddPickerCtx, setQuickAddPickerCtx] = useState(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
@@ -467,7 +472,9 @@ const WorkflowEditor = ({ pathname }) => {
     onToggleDisabled: (id, disabled) => dispatch(updateWorkflowNode(pathname, id, { disabled })).catch((e) => toast.error(e?.message || 'Unable to update node')),
     onDropRequest: (item, position) => dispatch(addWorkflowRequestNodeFromDragItem(pathname, item, position)).catch((e) => toast.error(e?.message || 'Unable to add request')),
     onDropNode: (nodeType, position) => dispatch(addWorkflowNode(pathname, nodeType, position)).catch((e) => toast.error(e?.message || 'Unable to add node')),
-    onTidy: () => dispatch(layoutWorkflowNodes(pathname)).catch((e) => toast.error(e?.message || 'Unable to tidy layout'))
+    onTidy: () => dispatch(layoutWorkflowNodes(pathname)).catch((e) => toast.error(e?.message || 'Unable to tidy layout')),
+    onQuickAddOutput: ({ source, sourcePort, position, screen }) => setQuickAdd({ wireFrom: { source, sourcePort }, position, screen }),
+    onInsertOnEdge: ({ connectionId, position, screen }) => setQuickAdd({ insertConnectionId: connectionId, position, screen })
   }), [dispatch, pathname]);
 
   if (!openWorkflowState) {
@@ -523,9 +530,41 @@ const WorkflowEditor = ({ pathname }) => {
 
   const handlePickRequest = (picked) => {
     setPickerOpen(false);
+    if (quickAddPickerCtx) {
+      const ctx = quickAddPickerCtx;
+      setQuickAddPickerCtx(null);
+      dispatch(quickAddNode(pathname, {
+        nodeType: 'request',
+        picked,
+        position: ctx.position,
+        wireFrom: ctx.wireFrom,
+        insertConnectionId: ctx.insertConnectionId
+      })).catch((e) => toast.error(e?.message || 'Unable to add request'));
+      return;
+    }
     dispatch(addWorkflowRequestNode(pathname, picked, newNodePosition()))
       .then((newId) => wireNew(newId))
       .catch((e) => toast.error(e?.message || 'Unable to add request'));
+  };
+
+  // Pick a node type from the quick-add "+" menu, then add + wire it.
+  const handleQuickAddType = (nodeType) => {
+    const ctx = quickAdd;
+    setQuickAdd(null);
+    if (!ctx) {
+      return;
+    }
+    if (nodeType === 'request') {
+      setQuickAddPickerCtx(ctx);
+      setPickerOpen(true);
+      return;
+    }
+    dispatch(quickAddNode(pathname, {
+      nodeType,
+      position: ctx.position,
+      wireFrom: ctx.wireFrom,
+      insertConnectionId: ctx.insertConnectionId
+    })).catch((e) => toast.error(e?.message || 'Unable to add node'));
   };
 
   const handleAddNode = (nodeType) => {
@@ -829,6 +868,30 @@ const WorkflowEditor = ({ pathname }) => {
         </div>
       ) : (
         renderListView()
+      )}
+
+      {quickAdd && (
+        <>
+          <div className="quick-add-overlay" onClick={() => setQuickAdd(null)} />
+          <div
+            className="quick-add-menu"
+            data-testid="workflow-quick-add-menu"
+            style={{ left: quickAdd.screen?.x ?? 0, top: quickAdd.screen?.y ?? 0 }}
+          >
+            <div className="quick-add-title">Add node</div>
+            <button type="button" className="quick-add-item" onClick={() => handleQuickAddType('request')}>
+              <IconWorld size={15} stroke={1.6} /><span>Request</span>
+            </button>
+            {PALETTE_ITEMS.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button key={item.type} type="button" className="quick-add-item" onClick={() => handleQuickAddType(item.type)}>
+                  <Icon size={15} stroke={1.6} /><span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </>
       )}
 
       {logsOpen && <LogPane run={run} />}

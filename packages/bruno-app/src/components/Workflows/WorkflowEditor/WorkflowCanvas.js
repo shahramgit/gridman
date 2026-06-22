@@ -4,12 +4,15 @@ import {
   ReactFlow,
   ReactFlowProvider,
   Background,
+  BaseEdge,
   Controls,
   ControlButton,
+  EdgeLabelRenderer,
   MiniMap,
   Handle,
   NodeToolbar,
   Position,
+  getBezierPath,
   useNodesState,
   useEdgesState,
   useReactFlow
@@ -20,6 +23,7 @@ import {
   IconLayoutGridAdd,
   IconPlayerPause,
   IconPlayerPlay,
+  IconPlus,
   IconRepeat,
   IconTarget,
   IconTrash,
@@ -154,6 +158,26 @@ const GridmanNode = ({ data, selected }) => {
         >
         </Handle>
       ))}
+      {outputs.map((port, i) => (
+        <button
+          key={`add-${port}`}
+          type="button"
+          className="wf-quick-add"
+          title={`Add a node after ${outputs.length > 1 ? `${port} ` : ''}this`}
+          style={outputs.length > 1 ? { top: `${30 + i * 22}px` } : undefined}
+          onClick={(event) => {
+            event.stopPropagation();
+            data.onQuickAddOutput({
+              source: node.id,
+              sourcePort: port,
+              position: { x: (node.position?.x || 0) + 240, y: (node.position?.y || 0) + i * 90 },
+              screen: { x: event.clientX, y: event.clientY }
+            });
+          }}
+        >
+          <IconPlus size={11} stroke={2.4} />
+        </button>
+      ))}
       {outputs.length > 1 && (
         <div className="wf-port-labels">
           {outputs.map((port, i) => (
@@ -166,6 +190,48 @@ const GridmanNode = ({ data, selected }) => {
 };
 
 const nodeTypes = { gridman: GridmanNode };
+
+// Connection with a "+" at its midpoint to insert a node between two nodes.
+const QuickAddEdge = ({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data, ...rest }) => {
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition
+  });
+
+  return (
+    <>
+      <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={rest.style} />
+      <EdgeLabelRenderer>
+        <button
+          type="button"
+          className="wf-edge-add nodrag nopan"
+          title="Insert a node here"
+          style={{
+            position: 'absolute',
+            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+            pointerEvents: 'all'
+          }}
+          onClick={(event) => {
+            event.stopPropagation();
+            data?.onInsert?.({
+              connectionId: data.connectionId,
+              position: { x: labelX - 90, y: labelY },
+              screen: { x: event.clientX, y: event.clientY }
+            });
+          }}
+        >
+          <IconPlus size={11} stroke={2.4} />
+        </button>
+      </EdgeLabelRenderer>
+    </>
+  );
+};
+
+const edgeTypes = { quickadd: QuickAddEdge };
 
 const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSelectNode }) => {
   const { screenToFlowPosition, fitView } = useReactFlow();
@@ -187,7 +253,8 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
       result: stepResults?.[node.id],
       onDelete: handlers.onDeleteNode,
       onReveal: handlers.onRevealNode,
-      onToggleDisabled: handlers.onToggleDisabled
+      onToggleDisabled: handlers.onToggleDisabled,
+      onQuickAddOutput: handlers.onQuickAddOutput
     }
   })), [doc.nodes, drift, stepResults, handlers, selectedNodeId]);
 
@@ -197,9 +264,11 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
     target: conn.target,
     sourceHandle: conn.sourcePort,
     targetHandle: 'in',
+    type: 'quickadd',
     reconnectable: true,
-    animated: Boolean(stepResults && stepResults[conn.source])
-  })), [doc.connections, stepResults]);
+    animated: Boolean(stepResults && stepResults[conn.source]),
+    data: { connectionId: conn.id, onInsert: handlers.onInsertOnEdge }
+  })), [doc.connections, stepResults, handlers]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(layoutNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(layoutEdges);
@@ -276,6 +345,7 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}

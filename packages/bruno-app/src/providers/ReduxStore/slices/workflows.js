@@ -352,6 +352,32 @@ export const updateWorkflowNode = (pathname, nodeId, patch) => async (dispatch, 
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
+// n8n-style quick add: create a node and wire it up in one step. Either append
+// it to a node's output (wireFrom) or splice it into an existing connection
+// (insertConnectionId), keeping the downstream node connected.
+export const quickAddNode = (pathname, { nodeType, picked, position, wireFrom, insertConnectionId }) => async (dispatch, getState) => {
+  const connBefore = insertConnectionId
+    ? (getState().workflows.open[pathname]?.doc?.connections || []).find((c) => c.id === insertConnectionId)
+    : null;
+
+  const newId = nodeType === 'request'
+    ? await dispatch(addWorkflowRequestNode(pathname, picked, position))
+    : await dispatch(addWorkflowNode(pathname, nodeType, position));
+  if (!newId) {
+    return null;
+  }
+
+  if (connBefore) {
+    await dispatch(disconnectWorkflowConnection(pathname, insertConnectionId));
+    await dispatch(connectWorkflowNodes(pathname, { source: connBefore.source, sourcePort: connBefore.sourcePort, target: newId }));
+    await dispatch(connectWorkflowNodes(pathname, { source: newId, sourcePort: 'main', target: connBefore.target }));
+  } else if (wireFrom?.source) {
+    await dispatch(connectWorkflowNodes(pathname, { source: wireFrom.source, sourcePort: wireFrom.sourcePort || 'main', target: newId }));
+  }
+
+  return newId;
+};
+
 // Persist a node's canvas position (called on drag stop).
 export const updateWorkflowNodePosition = (pathname, nodeId, position) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];

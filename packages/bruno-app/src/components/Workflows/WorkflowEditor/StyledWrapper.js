@@ -561,6 +561,78 @@ const StyledWrapper = styled.div`
       box-shadow: 0 0 0 2px ${(props) => props.theme.colors.text.yellow};
     }
 
+    /* n8n-style quick-add buttons (node output + edge midpoint) */
+    .wf-quick-add,
+    .wf-edge-add {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 1px solid ${(props) => props.theme.colors.text.yellow};
+      background: ${(props) => props.theme.sidebar.bg};
+      color: ${(props) => props.theme.colors.text.yellow};
+      cursor: pointer;
+      padding: 0;
+      opacity: 0;
+      transition: opacity 0.12s ease;
+    }
+    .wf-quick-add {
+      position: absolute;
+      right: -24px;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+    .wf-node:hover .wf-quick-add {
+      opacity: 0.85;
+    }
+    .wf-quick-add:hover,
+    .wf-edge-add:hover {
+      opacity: 1;
+    }
+    .react-flow__edge:hover .wf-edge-add {
+      opacity: 0.9;
+    }
+
+    .quick-add-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+    }
+    .quick-add-menu {
+      position: fixed;
+      z-index: 41;
+      min-width: 150px;
+      padding: 4px;
+      border-radius: 6px;
+      border: 1px solid ${(props) => props.theme.sidebar.dropdownIcon?.color || '#8884'};
+      background: ${(props) => props.theme.sidebar.bg};
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+    }
+    .quick-add-title {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      opacity: 0.6;
+      padding: 4px 8px;
+    }
+    .quick-add-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 6px 8px;
+      border-radius: 4px;
+      background: transparent;
+      cursor: pointer;
+      font-size: 0.82rem;
+      text-align: left;
+    }
+    .quick-add-item:hover {
+      background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
+    }
+
     .wf-node-disabled {
       opacity: 0.45;
       border-style: dashed !important;
