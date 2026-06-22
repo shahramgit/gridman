@@ -181,6 +181,61 @@ const StyledWrapper = styled.div`
       white-space: pre-wrap;
       word-break: break-word;
     }
+
+    .io-empty {
+      font-size: 11px;
+      opacity: 0.6;
+      padding: 4px 0;
+    }
+
+    .io-field-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      max-height: 200px;
+      overflow: auto;
+      margin-top: 4px;
+    }
+
+    .io-field {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 3px 7px;
+      border-radius: 4px;
+      border: 1px solid ${(props) => props.theme.input.border};
+      background: ${(props) => props.theme.sidebar.bg};
+      cursor: grab;
+      font-size: 11px;
+    }
+    .io-field:hover {
+      border-color: ${(props) => props.theme.colors.text.yellow};
+    }
+    .io-field-label {
+      font-family: monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .io-field-sample {
+      opacity: 0.55;
+      font-family: monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 45%;
+    }
+
+    .io-raw summary {
+      opacity: 0.45;
+      font-size: 10px;
+    }
+  }
+
+  .wf-drop-over {
+    outline: 2px dashed ${(props) => props.theme.colors.text.yellow};
+    outline-offset: 1px;
   }
 
   .drift-banner {

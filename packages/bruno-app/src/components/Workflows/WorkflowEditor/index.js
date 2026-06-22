@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { useDrag } from 'react-dnd';
+import { useDrag, useDrop } from 'react-dnd';
 import toast from 'react-hot-toast';
 import {
   IconArrowsSplit,
@@ -117,6 +117,112 @@ const StepResult = ({ result }) => {
   );
 };
 
+const WORKFLOW_FIELD_DND = 'workflow-field';
+const MAX_INPUT_FIELDS = 250;
+
+// Flatten a node's input snapshot ({ response, vars }) into leaf fields the user
+// can drag onto parameter inputs. Each field carries every reference form so the
+// drop target can pick the right one (JSONPath for Map, expression for
+// Condition, {{template}} for Set Vars, bare var name for Loop).
+const flattenInputFields = (input) => {
+  const fields = [];
+  if (!input) {
+    return fields;
+  }
+
+  const sampleOf = (value) => {
+    if (value === null || value === undefined) return String(value);
+    if (typeof value === 'object') return Array.isArray(value) ? `[${value.length}]` : '{…}';
+    return String(value).slice(0, 40);
+  };
+
+  const res = input.response;
+  if (res) {
+    if (res.status !== undefined) {
+      fields.push({ label: 'status', expr: 'res.status', kind: 'status', sample: sampleOf(res.status) });
+    }
+    const headers = res.headers || {};
+    for (const key of Object.keys(headers)) {
+      fields.push({ label: `header: ${key}`, expr: `res.headers['${key}']`, headerName: key, kind: 'header', sample: sampleOf(headers[key]) });
+    }
+    const walk = (value, jsonPath, exprPath) => {
+      if (fields.length > MAX_INPUT_FIELDS) return;
+      if (value === null || typeof value !== 'object') {
+        fields.push({ label: jsonPath, expr: exprPath, jsonPath, kind: 'body', sample: sampleOf(value) });
+        return;
+      }
+      if (Array.isArray(value)) {
+        if (!value.length) {
+          fields.push({ label: jsonPath, expr: exprPath, jsonPath, kind: 'body', sample: '[]' });
+        }
+        value.slice(0, 3).forEach((item, i) => walk(item, `${jsonPath}[${i}]`, `${exprPath}[${i}]`));
+        return;
+      }
+      for (const key of Object.keys(value)) {
+        walk(value[key], `${jsonPath}.${key}`, `${exprPath}.${key}`);
+      }
+    };
+    if (res.body !== undefined) {
+      walk(res.body, '$', 'res.body');
+    }
+  }
+
+  const vars = input.vars || {};
+  for (const key of Object.keys(vars)) {
+    fields.push({ label: `vars.${key}`, expr: `vars.${key}`, template: `{{${key}}}`, varName: key, kind: 'var', sample: sampleOf(vars[key]) });
+  }
+  return fields;
+};
+
+const InputFieldChip = ({ field }) => {
+  const [{ isDragging }, drag] = useDrag({
+    type: WORKFLOW_FIELD_DND,
+    item: field,
+    collect: (monitor) => ({ isDragging: monitor.isDragging() })
+  });
+  return (
+    <div ref={drag} className={`io-field io-field-${field.kind}`} style={{ opacity: isDragging ? 0.4 : 1 }} title={`Drag onto a field — ${field.expr}`}>
+      <span className="io-field-label">{field.label}</span>
+      <span className="io-field-sample">{field.sample}</span>
+    </div>
+  );
+};
+
+const InputFieldTree = ({ input }) => {
+  const fields = flattenInputFields(input);
+  if (!fields.length) {
+    return <div className="io-empty">Run the flow to see the previous node's data here, then drag fields onto the parameters above.</div>;
+  }
+  return (
+    <div className="io-field-list" data-testid="workflow-input-fields">
+      {fields.map((field, index) => <InputFieldChip key={`${field.kind}-${field.label}-${index}`} field={field} />)}
+    </div>
+  );
+};
+
+// Text input that also accepts a dragged input field. `getRef` maps the dropped
+// field to the reference string appropriate for this parameter. Keyed by value
+// so a drop re-seeds the uncommitted (uncontrolled) input.
+const DroppableInput = ({ value, placeholder, onCommit, getRef, type = 'text', style, className = '' }) => {
+  const [{ isOver, canDrop }, drop] = useDrop({
+    accept: WORKFLOW_FIELD_DND,
+    drop: (field) => onCommit(getRef(field)),
+    collect: (monitor) => ({ isOver: monitor.isOver(), canDrop: monitor.canDrop() })
+  });
+  return (
+    <input
+      ref={drop}
+      key={value}
+      type={type}
+      style={style}
+      className={`${className} ${isOver && canDrop ? 'wf-drop-over' : ''}`.trim()}
+      placeholder={placeholder}
+      defaultValue={value}
+      onBlur={(e) => onCommit(e.target.value)}
+    />
+  );
+};
+
 const MapNodeEditor = ({ node, onChange }) => {
   const mappings = node.mappings || [];
   const updateMapping = (index, patch) => {
@@ -132,11 +238,11 @@ const MapNodeEditor = ({ node, onChange }) => {
             <option value="status">Status</option>
           </select>
           {mapping.from !== 'status' && (
-            <input
-              type="text"
+            <DroppableInput
               placeholder={mapping.from === 'header' ? 'header name' : '$.data.token'}
-              defaultValue={mapping.path}
-              onBlur={(e) => updateMapping(index, { path: e.target.value })}
+              value={mapping.path}
+              onCommit={(val) => updateMapping(index, { path: val })}
+              getRef={(field) => (mapping.from === 'header' ? (field.headerName || field.label) : (field.jsonPath || field.expr))}
             />
           )}
           <span className="editor-arrow">to</span>
@@ -174,11 +280,11 @@ const SetVarsNodeEditor = ({ node, onChange }) => {
             onBlur={(e) => update(index, { name: e.target.value })}
           />
           <span className="editor-arrow">=</span>
-          <input
-            type="text"
+          <DroppableInput
             placeholder="value or {{otherVar}}"
-            defaultValue={assignment.value}
-            onBlur={(e) => update(index, { value: e.target.value })}
+            value={assignment.value}
+            onCommit={(val) => update(index, { value: val })}
+            getRef={(field) => field.template || field.expr}
           />
           <ActionIcon label="Remove" onClick={() => onChange({ assignments: assignments.filter((_, i) => i !== index) })}>
             <IconTrash size={13} stroke={1.5} />
@@ -196,12 +302,12 @@ const SetVarsNodeEditor = ({ node, onChange }) => {
 const ConditionNodeEditor = ({ node, onChange }) => (
   <div className="step-editor">
     <div className="editor-row">
-      <input
-        type="text"
+      <DroppableInput
         className="expression-input"
         placeholder="res.status === 200 && vars.token"
-        defaultValue={node.expression}
-        onBlur={(e) => onChange({ expression: e.target.value })}
+        value={node.expression}
+        onCommit={(val) => onChange({ expression: val })}
+        getRef={(field) => field.expr}
       />
     </div>
     <div className="editor-hint">Wire the <strong>true</strong> and <strong>false</strong> outputs on the canvas. Expression sees res and vars.</div>
@@ -223,7 +329,12 @@ const LoopNodeEditor = ({ node, onChange }) => (
       <span className="editor-arrow">for each</span>
       <input type="text" placeholder="item" style={{ width: 80 }} defaultValue={node.itemVar} onBlur={(e) => onChange({ itemVar: e.target.value || 'item' })} />
       <span className="editor-arrow">in vars.</span>
-      <input type="text" placeholder="arrayVariable" defaultValue={node.source} onBlur={(e) => onChange({ source: e.target.value })} />
+      <DroppableInput
+        placeholder="arrayVariable"
+        value={node.source}
+        onCommit={(val) => onChange({ source: val })}
+        getRef={(field) => field.varName || field.expr}
+      />
       <span className="editor-arrow">max</span>
       <input type="number" min="1" style={{ width: 80 }} defaultValue={node.maxIterations} onBlur={(e) => onChange({ maxIterations: Number(e.target.value) || 100 })} />
     </div>
@@ -673,9 +784,6 @@ const WorkflowEditor = ({ pathname }) => {
 
         {(() => {
           const data = run?.nodeData?.[selectedNode.id];
-          if (!data) {
-            return null;
-          }
           const preview = (value) => {
             try {
               return JSON.stringify(value, null, 2).slice(0, 4000);
@@ -683,16 +791,25 @@ const WorkflowEditor = ({ pathname }) => {
               return String(value);
             }
           };
+          const editable = ['map', 'setvars', 'condition', 'loop'].includes(selectedNode.type);
           return (
             <div className="node-io" data-testid="workflow-node-io">
               <details open>
-                <summary>Input</summary>
-                <pre className="io-pre">{preview(data.input)}</pre>
+                <summary>Input{editable ? ' — drag a field onto a parameter' : ''}</summary>
+                <InputFieldTree input={data?.input} />
+                {data?.input && (
+                  <details className="io-raw">
+                    <summary>raw JSON</summary>
+                    <pre className="io-pre">{preview(data.input)}</pre>
+                  </details>
+                )}
               </details>
-              <details open>
-                <summary>Output</summary>
-                <pre className="io-pre">{preview(data.output)}</pre>
-              </details>
+              {data?.output !== undefined && (
+                <details open>
+                  <summary>Output</summary>
+                  <pre className="io-pre">{preview(data.output)}</pre>
+                </details>
+              )}
             </div>
           );
         })()}
