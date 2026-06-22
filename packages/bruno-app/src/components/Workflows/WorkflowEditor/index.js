@@ -463,6 +463,7 @@ const WorkflowEditor = ({ pathname }) => {
       dispatch(removeWorkflowNode(pathname, id)).catch((e) => toast.error(e?.message || 'Unable to delete node'));
     },
     onRevealNode: (id) => dispatch(revealWorkflowNode(pathname, id)).catch((e) => toast.error(e?.message || 'Unable to locate request')),
+    onToggleDisabled: (id, disabled) => dispatch(updateWorkflowNode(pathname, id, { disabled })).catch((e) => toast.error(e?.message || 'Unable to update node')),
     onDropRequest: (item, position) => dispatch(addWorkflowRequestNodeFromDragItem(pathname, item, position)).catch((e) => toast.error(e?.message || 'Unable to add request')),
     onDropNode: (nodeType, position) => dispatch(addWorkflowNode(pathname, nodeType, position)).catch((e) => toast.error(e?.message || 'Unable to add node'))
   }), [dispatch, pathname]);

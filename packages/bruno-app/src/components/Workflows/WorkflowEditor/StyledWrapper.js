@@ -561,6 +561,14 @@ const StyledWrapper = styled.div`
       box-shadow: 0 0 0 2px ${(props) => props.theme.colors.text.yellow};
     }
 
+    .wf-node-disabled {
+      opacity: 0.45;
+      border-style: dashed !important;
+    }
+    .wf-node-disabled .wf-node-title {
+      text-decoration: line-through;
+    }
+
     .wf-node-start {
       width: 120px;
       text-align: center;

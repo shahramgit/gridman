@@ -15,6 +15,7 @@ import {
 import {
   IconArrowsSplit,
   IconClock,
+  IconPlayerPause,
   IconPlayerPlay,
   IconRepeat,
   IconTarget,
@@ -97,11 +98,23 @@ const GridmanNode = ({ data, selected }) => {
         : ['main'];
 
   return (
-    <div className={`wf-node wf-node-${node.type} ${selected ? 'wf-node-selected' : ''}`} style={{ borderColor }}>
+    <div
+      className={`wf-node wf-node-${node.type} ${selected ? 'wf-node-selected' : ''} ${node.disabled ? 'wf-node-disabled' : ''}`}
+      style={{ borderColor }}
+    >
       <NodeToolbar isVisible={selected} position={Position.Top} className="wf-node-toolbar">
         {node.type === 'request' && (
           <button type="button" title="Show request in sidebar" onClick={() => data.onReveal(node.id)}>
             <IconTarget size={14} stroke={1.6} />
+          </button>
+        )}
+        {node.type !== 'start' && (
+          <button
+            type="button"
+            title={node.disabled ? 'Enable node' : 'Disable node (skip during run)'}
+            onClick={() => data.onToggleDisabled(node.id, !node.disabled)}
+          >
+            {node.disabled ? <IconPlayerPlay size={14} stroke={1.6} /> : <IconPlayerPause size={14} stroke={1.6} />}
           </button>
         )}
         {node.type !== 'start' && (
@@ -164,7 +177,8 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
       drift: drift?.[node.id]?.status,
       result: stepResults?.[node.id],
       onDelete: handlers.onDeleteNode,
-      onReveal: handlers.onRevealNode
+      onReveal: handlers.onRevealNode,
+      onToggleDisabled: handlers.onToggleDisabled
     }
   })), [doc.nodes, drift, stepResults, handlers, selectedNodeId]);
 

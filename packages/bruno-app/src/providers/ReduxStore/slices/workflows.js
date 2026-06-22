@@ -751,6 +751,19 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
       break;
     }
 
+    // Muted node: skip execution and pass the current input straight through to
+    // the node wired on its primary output.
+    if (node.disabled) {
+      log('info', `${node.name}: skipped (disabled)`);
+      const passthroughPort = node.type === 'condition'
+        ? 'true'
+        : node.type === 'loop'
+          ? 'done'
+          : 'main';
+      currentId = outgoing(node.id, passthroughPort);
+      continue;
+    }
+
     // Snapshot what this node sees as input (the previous response + current
     // flow vars) so the node panel can show Input on the left.
     const inputSnapshot = { response: lastResponseContext, vars: { ...flowVars } };

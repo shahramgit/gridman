@@ -228,6 +228,19 @@ describe('workflows', () => {
     expect(node.assignments).toEqual([{ name: 'a', value: '1' }, { name: '', value: 'no-name' }]);
   });
 
+  it('preserves the disabled flag only when set', () => {
+    const doc = normalizeWorkflowDoc({
+      version: 2,
+      name: 'D',
+      nodes: [
+        { id: 'a', type: 'delay', durationMs: 10, disabled: true },
+        { id: 'b', type: 'delay', durationMs: 10, disabled: false }
+      ]
+    });
+    expect(doc.nodes.find((n) => n.id === 'a').disabled).toBe(true);
+    expect(doc.nodes.find((n) => n.id === 'b')).not.toHaveProperty('disabled');
+  });
+
   it('migrates a v1 ordered-steps document (with a loop) into a connected graph', () => {
     const doc = normalizeWorkflowDoc({
       name: 'Legacy',
