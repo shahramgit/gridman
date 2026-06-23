@@ -258,19 +258,26 @@ build_release_assets() {
   rm -rf "$out_dir"
   prepare_electron_web
 
+  # electron-builder names artifacts from package.json's version. Override it
+  # with the release version so artifact filenames (and the packaged app
+  # version) always match the version being released, even if package.json is a
+  # step behind. This is what keeps the staged-asset matching from silently
+  # finding nothing.
+  local build_version="${version#v}"
+
   (
     cd "$electron_dir"
     export CSC_IDENTITY_AUTO_DISCOVERY=false
-    run_cmd npx electron-builder --mac --x64 --arm64 --config electron-builder-config.js
+    run_cmd npx electron-builder --mac --x64 --arm64 -c.extraMetadata.version="$build_version" --config electron-builder-config.js
     copy_assets_from "$out_dir"
 
-    run_cmd npx electron-builder --win --x64 --arm64 --config electron-builder-config.js
+    run_cmd npx electron-builder --win --x64 --arm64 -c.extraMetadata.version="$build_version" --config electron-builder-config.js
     copy_assets_from "$out_dir"
 
-    run_cmd npx electron-builder --linux AppImage --arm64 --config electron-builder-config.js
+    run_cmd npx electron-builder --linux AppImage --arm64 -c.extraMetadata.version="$build_version" --config electron-builder-config.js
     copy_assets_from "$out_dir"
 
-    run_cmd npx electron-builder --linux AppImage --x64 --config electron-builder-config.js
+    run_cmd npx electron-builder --linux AppImage --x64 -c.extraMetadata.version="$build_version" --config electron-builder-config.js
     copy_assets_from "$out_dir"
   )
 }
