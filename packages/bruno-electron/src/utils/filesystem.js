@@ -20,6 +20,26 @@ const DEFAULT_GITIGNORE = [
   'Thumbs.db'
 ].join('\n');
 
+// Windows refuses fs operations on paths longer than MAX_PATH (260) unless they
+// use the extended-length "\\?\" prefix. Deeply nested collections with long
+// (e.g. non-ASCII) folder names exceed this and fail with ENOENT. Prefix the
+// resolved path for the fs call only; never expose the prefixed form to the
+// renderer/UI.
+const winLongPath = (p) => {
+  if (process.platform !== 'win32' || !p) {
+    return p;
+  }
+  const resolved = path.resolve(p);
+  if (resolved.startsWith('\\\\?\\')) {
+    return resolved;
+  }
+  if (resolved.startsWith('\\\\')) {
+    // UNC path: \\server\share -> \\?\UNC\server\share
+    return `\\\\?\\UNC\\${resolved.slice(2)}`;
+  }
+  return `\\\\?\\${resolved}`;
+};
+
 const exists = async (p) => {
   try {
     await fsPromises.access(p);
@@ -375,17 +395,17 @@ const copyPath = async (source, destination) => {
   }
 
   const copy = async (source, destination) => {
-    const stat = await fsPromises.lstat(source);
+    const stat = await fsPromises.lstat(winLongPath(source));
     if (stat.isDirectory()) {
-      await fsPromises.mkdir(destination, { recursive: true });
-      const entries = await fsPromises.readdir(source);
+      await fsPromises.mkdir(winLongPath(destination), { recursive: true });
+      const entries = await fsPromises.readdir(winLongPath(source));
       for (const entry of entries) {
         const srcPath = path.join(source, entry);
         const destPath = path.join(destination, entry);
         await copy(srcPath, destPath);
       }
     } else {
-      await fsPromises.copyFile(source, destination);
+      await fsPromises.copyFile(winLongPath(source), winLongPath(destination));
     }
   };
 
@@ -394,27 +414,28 @@ const copyPath = async (source, destination) => {
 
 // Recursively removes a source <file/directory>.
 const removePath = async (source) => {
-  const stat = await fsPromises.lstat(source);
+  const stat = await fsPromises.lstat(winLongPath(source));
   if (stat.isDirectory()) {
-    const entries = await fsPromises.readdir(source);
+    const entries = await fsPromises.readdir(winLongPath(source));
     for (const entry of entries) {
       const entryPath = path.join(source, entry);
       await removePath(entryPath);
     }
-    await fsPromises.rmdir(source);
+    await fsPromises.rmdir(winLongPath(source));
   } else {
-    await fsPromises.unlink(source);
+    await fsPromises.unlink(winLongPath(source));
   }
 };
 
-// Recursively gets paths.
+// Recursively gets paths. Returns plain (non-prefixed) paths for callers/UI;
+// only the fs calls use the Windows long-path prefix.
 const getPaths = async (source) => {
   let paths = [];
   const _getPaths = async (source) => {
-    const stat = await fsPromises.lstat(source);
+    const stat = await fsPromises.lstat(winLongPath(source));
     paths.push(source);
     if (stat.isDirectory()) {
-      const entries = await fsPromises.readdir(source);
+      const entries = await fsPromises.readdir(winLongPath(source));
       for (const entry of entries) {
         const entryPath = path.join(source, entry);
         await _getPaths(entryPath);
@@ -571,6 +592,7 @@ module.exports = {
   copyPath,
   removePath,
   getPaths,
+  winLongPath,
   isLargeFile,
   generateUniqueName,
   getCollectionFormat,

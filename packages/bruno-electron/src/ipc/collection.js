@@ -49,6 +49,7 @@ const {
   copyPath,
   removePath,
   getPaths,
+  winLongPath,
   normalizeAndResolvePath,
   generateUniqueName,
   isDotEnvFile,
@@ -259,8 +260,12 @@ const createFolderByPath = async ({ parentPathname, collectionPathname, folderNa
 // handle on the directory (same issue worked around in renderer:rename-item).
 // Fall back to copy + remove in that case.
 const movePathWithWindowsFallback = async (sourcePathname, targetPathname) => {
+  // Use extended-length paths on Windows so long/non-ASCII nested paths
+  // (which exceed MAX_PATH) don't fail with ENOENT.
+  const source = winLongPath(sourcePathname);
+  const target = winLongPath(targetPathname);
   try {
-    await fsExtra.move(sourcePathname, targetPathname, { overwrite: false });
+    await fsExtra.move(source, target, { overwrite: false });
   } catch (error) {
     const isTransientWindowsError = process.platform === 'win32'
       && ['EPERM', 'EBUSY', 'EACCES'].includes(error?.code);
@@ -268,8 +273,8 @@ const movePathWithWindowsFallback = async (sourcePathname, targetPathname) => {
       throw error;
     }
 
-    await fsExtra.copy(sourcePathname, targetPathname, { overwrite: false, errorOnExist: true });
-    await fsExtra.remove(sourcePathname);
+    await fsExtra.copy(source, target, { overwrite: false, errorOnExist: true });
+    await fsExtra.remove(source);
   }
 };
 
@@ -332,10 +337,10 @@ const convertFolderBetweenFormats = async ({ sourcePathname, targetPathname, sou
 };
 
 const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollectionPathname, targetCollectionPathname }) => {
-  if (!fs.existsSync(sourcePathname)) {
+  if (!fs.existsSync(winLongPath(sourcePathname))) {
     throw new Error(`path: ${sourcePathname} does not exist`);
   }
-  if (fs.existsSync(targetPathname)) {
+  if (fs.existsSync(winLongPath(targetPathname))) {
     throw new Error(`path: ${targetPathname} already exists`);
   }
 
