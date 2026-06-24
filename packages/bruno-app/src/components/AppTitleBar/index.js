@@ -13,6 +13,7 @@ import {
   IconPinned,
   IconPlus,
   IconDownload,
+  IconUpload,
   IconRefresh,
   IconSettings,
   IconMinus,
@@ -27,7 +28,7 @@ import { useDispatch, useSelector } from 'react-redux';
 
 import { savePreferences, showManageWorkspacePage, toggleSidebarCollapse } from 'providers/ReduxStore/slices/app';
 import { closeConsole, openConsole } from 'providers/ReduxStore/slices/logs';
-import { createWorkspaceWithUniqueName, openWorkspaceDialog, switchWorkspace } from 'providers/ReduxStore/slices/workspaces/actions';
+import { createWorkspaceWithUniqueName, openWorkspaceDialog, switchWorkspace, exportWorkspaceAction } from 'providers/ReduxStore/slices/workspaces/actions';
 import { sortWorkspaces, toggleWorkspacePin } from 'utils/workspaces';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import get from 'lodash/get';
@@ -468,6 +469,20 @@ const AppTitleBar = () => {
     setImportWorkspaceModalOpen(true);
   };
 
+  const handleExportWorkspace = () => {
+    if (!activeWorkspaceUid) {
+      toast.error('No active workspace to export');
+      return;
+    }
+    dispatch(exportWorkspaceAction(activeWorkspaceUid))
+      .then((result) => {
+        if (!result?.canceled) {
+          toast.success('Workspace exported');
+        }
+      })
+      .catch((error) => toast.error(error?.message || 'Failed to export workspace'));
+  };
+
   const handleCloneGitWorkspace = () => {
     setCloneGitWorkspaceModalOpen(true);
   };
@@ -546,6 +561,12 @@ const AppTitleBar = () => {
         leftSection: IconDownload,
         label: 'Import workspace',
         onClick: handleImportWorkspace
+      },
+      {
+        id: 'export-workspace',
+        leftSection: IconUpload,
+        label: 'Export workspace',
+        onClick: handleExportWorkspace
       },
       {
         id: 'manage-workspaces',
