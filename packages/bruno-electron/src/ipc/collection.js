@@ -2624,8 +2624,17 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           await writeFile(folderRootPath, content);
         } else if (REQUEST_TYPES.includes(item?.type)) {
           if (fs.existsSync(item.pathname)) {
-            const itemToSave = transformRequestToSaveToFilesystem(item);
-            const content = await stringifyRequestViaWorker(itemToSave, { format });
+            // Resequence only changes order: read the existing request and
+            // update its seq, instead of rebuilding it from the bare
+            // {pathname,type,seq} payload (which has no request data and would
+            // throw / wipe the file).
+            const existingContent = fs.readFileSync(item.pathname, 'utf8');
+            const parsed = await parseRequest(existingContent, { format });
+            if (Number(parsed?.seq) === Number(item.seq)) {
+              continue;
+            }
+            parsed.seq = item.seq;
+            const content = await stringifyRequest(parsed, { format });
             await writeFile(item.pathname, content);
           }
         }
