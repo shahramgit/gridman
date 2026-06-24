@@ -812,11 +812,33 @@ export const runCollectionFolder
     });
   };
 
+// Next sequence for a newly created item so it lands at the END of its parent.
+// Uses max(siblingSeq)+1 rather than count+1, because after imports/deletions
+// the sequences have gaps or exceed the count and count+1 would land in the
+// middle. Prefers the warm index (the source of truth for large/lazy indexed
+// collections) and falls back to the classic in-memory items.
+const nextSiblingSeq = ({ state, collectionUid, parentPathname, fallbackItems }) => {
+  const index = state.collections.collectionIndexes?.[collectionUid];
+  if (index?.nodesByUid) {
+    const parentNode = parentPathname
+      ? Object.values(index.nodesByUid).find((node) => normalizePath(node.pathname) === normalizePath(parentPathname))
+      : null;
+    const childUids = index.childrenByParentUid?.[parentNode ? parentNode.uid : 'root'] || [];
+    if (childUids.length) {
+      const max = childUids.reduce((acc, uid) => Math.max(acc, Number(index.nodesByUid[uid]?.seq) || 0), 0);
+      return max + 1;
+    }
+  }
+  const items = (fallbackItems || []).filter((i) => isItemAFolder(i) || isItemARequest(i));
+  const max = items.reduce((acc, i) => Math.max(acc, Number(i.seq) || 0), 0);
+  return Math.max(max + 1, items.length + 1);
+};
+
 export const newFolder = (folderName, directoryName, collectionUid, itemUid) => (dispatch, getState) => {
   const state = getState();
   const collection = findCollectionByUid(state.collections.collections, collectionUid);
   const parentItem = itemUid ? findItemInCollection(collection, itemUid) : collection;
-  const items = filter(parentItem.items, (i) => isItemAFolder(i) || isItemARequest(i));
+  const seq = nextSiblingSeq({ state, collectionUid, parentPathname: parentItem?.pathname, fallbackItems: parentItem?.items });
 
   return new Promise((resolve, reject) => {
     if (!collection) {
@@ -835,7 +857,7 @@ export const newFolder = (folderName, directoryName, collectionUid, itemUid) => 
         const folderData = {
           meta: {
             name: folderName,
-            seq: items?.length + 1
+            seq: seq
           },
           request: {
             auth: {
@@ -868,7 +890,7 @@ export const newFolder = (folderName, directoryName, collectionUid, itemUid) => 
           const folderData = {
             meta: {
               name: folderName,
-              seq: items?.length + 1
+              seq: seq
             },
             request: {
               auth: {
@@ -1638,7 +1660,7 @@ export const newHttpRequest = (params) => (dispatch, getState) => {
         (i) => isItemARequest(i) && i.pathname && i.pathname.startsWith(tempDirectory)
       );
       const items = filter(collection.items, (i) => isItemAFolder(i) || isItemARequest(i));
-      item.seq = items.length + 1;
+      item.seq = nextSiblingSeq({ state, collectionUid, parentPathname: collection?.pathname, fallbackItems: items });
 
       createTransientRequestFile({
         collection,
@@ -1656,7 +1678,7 @@ export const newHttpRequest = (params) => (dispatch, getState) => {
         (i) => i.type !== 'folder' && trim(i.filename) === trim(resolvedFilename)
       );
       const items = filter(collection.items, (i) => isItemAFolder(i) || isItemARequest(i));
-      item.seq = items.length + 1;
+      item.seq = nextSiblingSeq({ state, collectionUid, parentPathname: collection?.pathname, fallbackItems: items });
 
       if (!reqWithSameNameExists) {
         const fullName = path.join(collection.pathname, resolvedFilename);
@@ -1688,7 +1710,7 @@ export const newHttpRequest = (params) => (dispatch, getState) => {
           (i) => i.type !== 'folder' && trim(i.filename) === trim(resolvedFilename)
         );
         const items = filter(currentItem.items, (i) => isItemAFolder(i) || isItemARequest(i));
-        item.seq = items.length + 1;
+        item.seq = nextSiblingSeq({ state, collectionUid, parentPathname: currentItem?.pathname, fallbackItems: items });
         if (!reqWithSameNameExists) {
           const fullName = path.join(currentItem.pathname, resolvedFilename);
           const { ipcRenderer } = window;
@@ -1779,7 +1801,7 @@ export const newGrpcRequest = (params) => (dispatch, getState) => {
       );
 
       const items = filter(collection.items, (i) => isItemAFolder(i) || isItemARequest(i));
-      item.seq = items.length + 1;
+      item.seq = nextSiblingSeq({ state, collectionUid, parentPathname: collection?.pathname, fallbackItems: items });
 
       createTransientRequestFile({
         collection,
@@ -1808,7 +1830,7 @@ export const newGrpcRequest = (params) => (dispatch, getState) => {
       }
 
       const items = filter(parentItem.items, (i) => isItemAFolder(i) || isItemARequest(i));
-      item.seq = items.length + 1;
+      item.seq = nextSiblingSeq({ state, collectionUid, parentPathname: parentItem?.pathname, fallbackItems: items });
       const fullName = path.join(parentItem.pathname, resolvedFilename);
       const { ipcRenderer } = window;
       ipcRenderer
@@ -1895,7 +1917,7 @@ export const newWsRequest = (params) => (dispatch, getState) => {
       );
 
       const items = filter(collection.items, (i) => isItemAFolder(i) || isItemARequest(i));
-      item.seq = items.length + 1;
+      item.seq = nextSiblingSeq({ state, collectionUid, parentPathname: collection?.pathname, fallbackItems: items });
 
       createTransientRequestFile({
         collection,
@@ -1924,7 +1946,7 @@ export const newWsRequest = (params) => (dispatch, getState) => {
       }
 
       const items = filter(parentItem.items, (i) => isItemAFolder(i) || isItemARequest(i));
-      item.seq = items.length + 1;
+      item.seq = nextSiblingSeq({ state, collectionUid, parentPathname: parentItem?.pathname, fallbackItems: items });
       const fullName = path.join(parentItem.pathname, resolvedFilename);
       const { ipcRenderer } = window;
       ipcRenderer
