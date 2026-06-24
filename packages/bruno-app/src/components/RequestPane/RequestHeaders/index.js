@@ -111,6 +111,7 @@ const RequestHeaders = ({ item, collection, addHeaderText }) => {
           autocomplete={MimeTypes}
           collection={collection}
           item={item}
+          allowCopy
           placeholder={!value ? 'Value' : ''}
         />
       )

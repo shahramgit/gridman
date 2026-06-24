@@ -99,6 +99,7 @@ const QueryParams = ({ item, collection }) => {
           collection={collection}
           item={item}
           variablesAutocomplete={true}
+          allowCopy
           placeholder={!value ? 'Value' : ''}
         />
       )
@@ -145,6 +146,7 @@ const QueryParams = ({ item, collection }) => {
           onRun={handleRun}
           collection={collection}
           item={item}
+          allowCopy
         />
       )
     },

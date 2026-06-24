@@ -7,7 +7,7 @@ import { MaskedEditor } from 'utils/common/masked-editor';
 import StyledWrapper from './StyledWrapper';
 import { setupLinkAware } from 'utils/codemirror/linkAware';
 import { setupSelectionDataTools } from 'utils/codemirror/selectionDataTools';
-import { IconEye, IconEyeOff } from '@tabler/icons';
+import { IconCheck, IconCopy, IconEye, IconEyeOff } from '@tabler/icons';
 
 const CodeMirror = require('codemirror');
 
@@ -23,7 +23,8 @@ class MultiLineEditor extends Component {
     this.readOnly = props.readOnly || false;
 
     this.state = {
-      maskInput: props.isSecret || false // Always mask the input by default (if it's a secret)
+      maskInput: props.isSecret || false, // Always mask the input by default (if it's a secret)
+      copied: false
     };
   }
 
@@ -182,7 +183,35 @@ class MultiLineEditor extends Component {
     this.ignoreChangeEvent = false;
   }
 
+  copyValue = () => {
+    const value = this.editor ? this.editor.getValue() : (this.props.value || '');
+    if (!value) {
+      return;
+    }
+    navigator.clipboard?.writeText(String(value)).then(() => {
+      this.setState({ copied: true });
+      clearTimeout(this._copyTimer);
+      this._copyTimer = setTimeout(() => this.setState({ copied: false }), 1200);
+    }).catch(() => {});
+  };
+
+  // Opt-in copy button so the whole value can be copied without selecting it.
+  copyButton = () => {
+    if (!this.props.allowCopy) {
+      return null;
+    }
+    if (!((this.props.value ?? '').toString().length)) {
+      return null;
+    }
+    return (
+      <button type="button" className="multi-line-editor-copy mx-1 opacity-50 hover:opacity-100" title="Copy value" tabIndex={-1} onClick={this.copyValue}>
+        {this.state.copied ? <IconCheck size={15} strokeWidth={2} /> : <IconCopy size={15} strokeWidth={1.8} />}
+      </button>
+    );
+  };
+
   componentWillUnmount() {
+    clearTimeout(this._copyTimer);
     if (this.brunoAutoCompleteCleanup) {
       this.brunoAutoCompleteCleanup();
     }
@@ -240,6 +269,7 @@ class MultiLineEditor extends Component {
       <div className={`flex flex-row justify-between w-full overflow-x-auto ${this.props.className}`}>
         <StyledWrapper ref={this.editorRef} className={wrapperClass} />
         {this.secretEye(this.props.isSecret)}
+        {this.copyButton()}
       </div>
     );
   }

@@ -86,6 +86,7 @@ const FormUrlEncodedParams = ({ item, collection }) => {
           onRun={handleRun}
           collection={collection}
           item={item}
+          allowCopy
           placeholder={!value ? 'Value' : ''}
         />
       )

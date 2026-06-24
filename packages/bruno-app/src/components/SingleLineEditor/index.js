@@ -5,7 +5,7 @@ import { defineCodeMirrorBrunoVariablesMode } from 'utils/common/codemirror';
 import { MaskedEditor } from 'utils/common/masked-editor';
 import { setupAutoComplete } from 'utils/codemirror/autocomplete';
 import StyledWrapper from './StyledWrapper';
-import { IconEye, IconEyeOff } from '@tabler/icons';
+import { IconCheck, IconCopy, IconEye, IconEyeOff } from '@tabler/icons';
 import { setupLinkAware } from 'utils/codemirror/linkAware';
 import { setupSelectionDataTools } from 'utils/codemirror/selectionDataTools';
 
@@ -23,7 +23,8 @@ class SingleLineEditor extends Component {
     this.readOnly = props.readOnly || false;
 
     this.state = {
-      maskInput: props.isSecret || false // Always mask the input by default (if it's a secret)
+      maskInput: props.isSecret || false, // Always mask the input by default (if it's a secret)
+      copied: false
     };
   }
 
@@ -209,6 +210,7 @@ class SingleLineEditor extends Component {
   }
 
   componentWillUnmount() {
+    clearTimeout(this._copyTimer);
     if (this.editor) {
       if (this.editor?._destroyLinkAware) {
         this.editor._destroyLinkAware();
@@ -317,6 +319,41 @@ class SingleLineEditor extends Component {
     ) : null;
   };
 
+  copyValue = () => {
+    const value = this.editor ? this.editor.getValue() : (this.props.value || '');
+    if (!value) {
+      return;
+    }
+    navigator.clipboard?.writeText(String(value)).then(() => {
+      this.setState({ copied: true });
+      clearTimeout(this._copyTimer);
+      this._copyTimer = setTimeout(() => this.setState({ copied: false }), 1200);
+    }).catch(() => {});
+  };
+
+  // Opt-in copy button for value cells (headers / params / urlencoded / auth)
+  // so the whole value can be copied without selecting it manually.
+  copyButton = () => {
+    if (!this.props.allowCopy) {
+      return null;
+    }
+    const hasValue = Boolean((this.props.value ?? '').toString().length);
+    if (!hasValue) {
+      return null;
+    }
+    return (
+      <button
+        type="button"
+        className="single-line-editor-copy mx-1 opacity-50 hover:opacity-100"
+        title="Copy value"
+        tabIndex={-1}
+        onClick={this.copyValue}
+      >
+        {this.state.copied ? <IconCheck size={15} strokeWidth={2} /> : <IconCopy size={15} strokeWidth={1.8} />}
+      </button>
+    );
+  };
+
   render() {
     return (
       <div className={`flex flex-row items-center w-full overflow-x-auto ${this.props.className}`}>
@@ -328,6 +365,7 @@ class SingleLineEditor extends Component {
         />
         <div className="flex items-center">
           {this.secretEye(this.props.isSecret)}
+          {this.copyButton()}
         </div>
       </div>
     );
