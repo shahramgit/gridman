@@ -14,6 +14,7 @@ import {
   IconInfoCircle,
   IconPlayerPlay,
   IconSettings,
+  IconSortAZ,
   IconTerminal2,
   IconTrash
 } from '@tabler/icons';
@@ -659,6 +660,37 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     openModal(true);
   };
 
+  // Sort this folder's children alphabetically (folders first, then requests),
+  // persisting the new sequence. Computed purely from index nodes.
+  const handleSortFolderChildren = async () => {
+    const freshIndex = store.getState().collections.collectionIndexes?.[collectionUid];
+    const childUids = freshIndex?.childrenByParentUid?.[node.uid] || [];
+    const children = childUids.map((uid) => freshIndex.nodesByUid[uid]).filter(Boolean);
+    if (!children.length) {
+      return;
+    }
+
+    const byName = (a, b) => (a.name || '').localeCompare(b.name || '');
+    const ordered = [
+      ...children.filter((n) => n.type === 'folder').sort(byName),
+      ...children.filter((n) => n.type !== 'folder').sort(byName)
+    ];
+
+    const itemsToResequence = ordered.map((candidate, position) => ({
+      pathname: candidate.pathname,
+      type: candidate.type === 'folder' ? 'folder' : normalizeRequestType(candidate.type),
+      seq: position + 1
+    }));
+
+    try {
+      dispatch(collectionIndexNodesResequenced({ collectionUid, itemsToResequence }));
+      await dispatch(updateItemsSequences({ itemsToResequence, collectionUid }));
+      toast.success('Folder sorted A→Z');
+    } catch (error) {
+      toast.error(error?.message || 'Unable to sort folder');
+    }
+  };
+
   const buildMenuItems = () => {
     const items = [];
 
@@ -681,6 +713,12 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
           leftSection: IconPlayerPlay,
           label: 'Run',
           onClick: handleFolderRun
+        },
+        {
+          id: 'sort',
+          leftSection: IconSortAZ,
+          label: 'Sort A→Z',
+          onClick: handleSortFolderChildren
         }
       );
     }
