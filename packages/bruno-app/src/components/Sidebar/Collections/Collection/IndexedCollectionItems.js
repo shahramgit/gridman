@@ -4,6 +4,7 @@ import classnames from 'classnames';
 import {
   IconChevronRight,
   IconClipboard,
+  IconClock,
   IconCode,
   IconCopy,
   IconDots,
@@ -15,6 +16,7 @@ import {
   IconPlayerPlay,
   IconSettings,
   IconSortAZ,
+  IconSortZA,
   IconTerminal2,
   IconTrash
 } from '@tabler/icons';
@@ -660,9 +662,16 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     openModal(true);
   };
 
-  // Sort this folder's children alphabetically (folders first, then requests),
-  // persisting the new sequence. Computed purely from index nodes.
-  const handleSortFolderChildren = async () => {
+  // Sort this folder's children (folders first, then requests) by the chosen
+  // mode and persist the new sequence. Computed from index nodes; 'created'
+  // additionally fetches filesystem birthtimes since the format has no created
+  // field.
+  const SORT_LABELS = {
+    'name-asc': 'Folder sorted A→Z',
+    'name-desc': 'Folder sorted Z→A',
+    'created-asc': 'Folder sorted by created'
+  };
+  const handleSortFolderChildren = async (mode = 'name-asc') => {
     const freshIndex = store.getState().collections.collectionIndexes?.[collectionUid];
     const childUids = freshIndex?.childrenByParentUid?.[node.uid] || [];
     const children = childUids.map((uid) => freshIndex.nodesByUid[uid]).filter(Boolean);
@@ -671,9 +680,28 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     }
 
     const byName = (a, b) => (a.name || '').localeCompare(b.name || '');
+    let comparator;
+    if (mode === 'name-desc') {
+      comparator = (a, b) => byName(b, a);
+    } else if (mode === 'created-asc') {
+      let createdTimes = {};
+      try {
+        createdTimes = await window.ipcRenderer.invoke(
+          'renderer:get-items-created-times',
+          children.map((n) => n.pathname)
+        ) || {};
+      } catch (error) {
+        toast.error(error?.message || 'Unable to read creation times');
+        return;
+      }
+      comparator = (a, b) => (createdTimes[a.pathname] || 0) - (createdTimes[b.pathname] || 0) || byName(a, b);
+    } else {
+      comparator = byName;
+    }
+
     const ordered = [
-      ...children.filter((n) => n.type === 'folder').sort(byName),
-      ...children.filter((n) => n.type !== 'folder').sort(byName)
+      ...children.filter((n) => n.type === 'folder').sort(comparator),
+      ...children.filter((n) => n.type !== 'folder').sort(comparator)
     ];
 
     const itemsToResequence = ordered.map((candidate, position) => ({
@@ -685,7 +713,7 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
     try {
       dispatch(collectionIndexNodesResequenced({ collectionUid, itemsToResequence }));
       await dispatch(updateItemsSequences({ itemsToResequence, collectionUid }));
-      toast.success('Folder sorted A→Z');
+      toast.success(SORT_LABELS[mode] || 'Folder sorted');
     } catch (error) {
       toast.error(error?.message || 'Unable to sort folder');
     }
@@ -717,8 +745,12 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
         {
           id: 'sort',
           leftSection: IconSortAZ,
-          label: 'Sort A→Z',
-          onClick: handleSortFolderChildren
+          label: 'Sort',
+          submenu: [
+            { id: 'sort-az', leftSection: IconSortAZ, label: 'Name (A→Z)', onClick: () => handleSortFolderChildren('name-asc') },
+            { id: 'sort-za', leftSection: IconSortZA, label: 'Name (Z→A)', onClick: () => handleSortFolderChildren('name-desc') },
+            { id: 'sort-created', leftSection: IconClock, label: 'Created (oldest first)', onClick: () => handleSortFolderChildren('created-asc') }
+          ]
         }
       );
     }

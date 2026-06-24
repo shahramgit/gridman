@@ -2576,6 +2576,23 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     }
   });
 
+  // Returns filesystem creation time per pathname so the sidebar can offer a
+  // "sort by created" option (the .bru format itself has no created field).
+  // Falls back to ctime/mtime where birthtime isn't tracked (some Linux FS).
+  ipcMain.handle('renderer:get-items-created-times', async (event, pathnames = []) => {
+    const result = {};
+    for (const pathname of pathnames) {
+      try {
+        const stat = fs.statSync(winLongPath(pathname));
+        const birth = stat.birthtimeMs && stat.birthtimeMs > 0 ? stat.birthtimeMs : 0;
+        result[pathname] = birth || stat.ctimeMs || stat.mtimeMs || 0;
+      } catch (_) {
+        result[pathname] = 0;
+      }
+    }
+    return result;
+  });
+
   ipcMain.handle('renderer:resequence-items', async (event, itemsToResequence, collectionPathname) => {
     try {
       const format = getCollectionFormat(collectionPathname);
