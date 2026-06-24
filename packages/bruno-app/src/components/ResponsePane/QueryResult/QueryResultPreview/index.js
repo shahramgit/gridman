@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import toast from 'react-hot-toast';
 import CodeEditor from 'components/CodeEditor/index';
 import { get } from 'lodash';
 import { useDispatch, useSelector } from 'react-redux';
@@ -66,6 +67,8 @@ const QueryResultPreview = ({
         initialScroll={responseScroll}
         onScroll={setResponseScroll}
         indentGuides
+        copyValueOnDoubleClick
+        onValueCopied={() => toast.success('Value copied')}
         readOnly
       />
     );

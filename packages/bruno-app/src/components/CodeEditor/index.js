@@ -270,6 +270,28 @@ class CodeEditor extends React.Component {
         this.cleanupIndentGuides = setupIndentGuides(editor);
       }
 
+      // Double-click a value (e.g. a token in a JSON response) to copy it
+      // without manually selecting — CodeMirror selects the token, we copy it.
+      if (this.props.copyValueOnDoubleClick) {
+        this._onDoubleClickCopy = () => {
+          setTimeout(() => {
+            if (!this.editor) {
+              return;
+            }
+            const selection = this.editor.getSelection();
+            const value = selection
+              ? selection.trim().replace(/^["'`]+|["'`]+$/g, '').replace(/[,;]+$/, '')
+              : '';
+            if (value) {
+              navigator.clipboard?.writeText(value)
+                .then(() => this.props.onValueCopied?.(value))
+                .catch(() => {});
+            }
+          }, 0);
+        };
+        editor.on('dblclick', this._onDoubleClickCopy);
+      }
+
       // Setup lint error tooltip on line number hover
       this.cleanupLintErrorTooltip = setupLintErrorTooltip(editor);
 
@@ -404,6 +426,9 @@ class CodeEditor extends React.Component {
       this.editor?._destroyEmbeddedMediaPreview?.();
       this.editor?._destroySelectionDataTools?.();
       this.cleanupIndentGuides?.();
+      if (this._onDoubleClickCopy) {
+        this.editor.off('dblclick', this._onDoubleClickCopy);
+      }
       this.editor.off('change', this._onEdit);
 
       // Tear down the debounced fold-persistence listener. Cancel any pending
