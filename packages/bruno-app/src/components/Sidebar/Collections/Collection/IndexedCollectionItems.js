@@ -166,7 +166,56 @@ const useVisibleRows = ({ index, expandedNodeUids, searchText }) => {
     const trimmedSearchText = searchText?.trim();
 
     if (trimmedSearchText) {
-      return sortNodes(Object.values(nodesByUid).filter((node) => nodeMatchesSearch(node, trimmedSearchText)));
+      // Build a filtered tree rather than a flat list so a matched folder shows
+      // its children (and the path to a matched request stays visible).
+      const matched = new Set(
+        Object.values(nodesByUid).filter((node) => nodeMatchesSearch(node, trimmedSearchText)).map((node) => node.uid)
+      );
+      if (!matched.size) {
+        return [];
+      }
+
+      const included = new Set();
+      const includeAncestors = (uid) => {
+        let node = nodesByUid[uid];
+        while (node && !included.has(node.uid)) {
+          included.add(node.uid);
+          node = node.parentUid ? nodesByUid[node.parentUid] : null;
+        }
+      };
+      const includeSubtree = (uid) => {
+        const stack = [uid];
+        while (stack.length) {
+          const current = stack.pop();
+          included.add(current);
+          for (const childUid of childrenByParentUid[current] || []) {
+            stack.push(childUid);
+          }
+        }
+      };
+      for (const uid of matched) {
+        includeAncestors(uid);
+        if (nodesByUid[uid]?.type === 'folder') {
+          includeSubtree(uid);
+        }
+      }
+
+      const searchRows = [];
+      const walkFiltered = (parentUid) => {
+        const children = sortNodes(
+          (childrenByParentUid[parentUid || 'root'] || [])
+            .map((uid) => nodesByUid[uid])
+            .filter((node) => node && included.has(node.uid))
+        );
+        for (const child of children) {
+          searchRows.push(child);
+          if (child.type === 'folder') {
+            walkFiltered(child.uid);
+          }
+        }
+      };
+      walkFiltered(null);
+      return searchRows;
     }
 
     const rows = [];
@@ -193,7 +242,8 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
   const menuDropdownRef = useRef(null);
   const isRequest = node.type !== 'folder';
   const isFolder = !isRequest;
-  const isExpanded = expandedNodeUids.has(node.uid);
+  // During search the filtered tree is always shown fully expanded.
+  const isExpanded = (searchText && searchText.trim()) ? true : expandedNodeUids.has(node.uid);
   const [renameItemModalOpen, setRenameItemModalOpen] = useState(false);
   const [createExampleModalOpen, setCreateExampleModalOpen] = useState(false);
   const [examplesExpanded, setExamplesExpanded] = useState(false);
@@ -1169,6 +1219,11 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
         seen.add(parentUid);
         next.add(parentUid);
         parentUid = index.nodesByUid[parentUid]?.parentUid;
+      }
+      // If the revealed node is itself a folder, expand it too so its contents
+      // are shown (e.g. revealing a folder matched by name in search).
+      if (node.type === 'folder') {
+        next.add(node.uid);
       }
       return next;
     });

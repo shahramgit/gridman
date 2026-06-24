@@ -5,6 +5,7 @@ import { IconChevronRight, IconFolder, IconLoader2, IconSearch } from '@tabler/i
 import classnames from 'classnames';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import { collectionIndexNodeActivated } from 'providers/ReduxStore/slices/collections';
+import { revealRequestInSidebar } from 'providers/ReduxStore/slices/app';
 import { loadRequest, mountCollection, openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
 import { getDefaultRequestPaneTab, findItemInCollectionByPathname } from 'utils/collections';
 import { normalizePath } from 'utils/common/path';
@@ -313,12 +314,33 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
     }
   };
 
+  // A folder/collection matched by name only has no result-children. Instead of
+  // a chevron that expands to nothing, reveal it in the sidebar so its real
+  // contents can be browsed.
+  const hasChildren = !isRequest && (node.children?.length || 0) > 0;
+
+  const revealInSidebar = async () => {
+    const collection = await ensureCollectionLoaded();
+    if (!collection) {
+      toast.error('Unable to open the collection for this result');
+      return;
+    }
+    dispatch(revealRequestInSidebar({
+      collectionUid: collection.uid,
+      pathname: node.pathname || node.collectionPathname
+    }));
+  };
+
   const handleClick = () => {
     if (isRequest) {
       openRequest();
       return;
     }
-    onToggleNode(node.uid);
+    if (hasChildren) {
+      onToggleNode(node.uid);
+      return;
+    }
+    revealInSidebar();
   };
 
   const examples = isRequest ? (node.examples || []) : [];
@@ -336,14 +358,14 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
         onClick={handleClick}
       >
         <span className="flex items-center justify-center mt-0.5" style={{ width: 16, minWidth: 16 }}>
-          {!isRequest ? (
+          {hasChildren ? (
             <IconChevronRight
               size={15}
               strokeWidth={2}
               className={classnames('transition-transform', { 'rotate-90': !isCollapsed })}
               style={{ color: 'rgb(160 160 160)' }}
             />
-          ) : hasExamples ? (
+          ) : (!isRequest) ? null : hasExamples ? (
             <IconChevronRight
               size={15}
               strokeWidth={2}
