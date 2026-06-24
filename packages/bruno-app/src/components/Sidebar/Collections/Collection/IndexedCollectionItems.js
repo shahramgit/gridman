@@ -1128,6 +1128,23 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
   const pendingRevealNodeUidRef = useRef(null);
   const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
 
+  // Virtualize against the sidebar's own scroll container instead of giving the
+  // list a fixed height. This removes the nested inner scrollbar so an expanded
+  // collection reads top-to-bottom with a single scroll, like Postman.
+  const containerRef = useRef(null);
+  const [scrollParent, setScrollParent] = useState(null);
+  useEffect(() => {
+    let el = containerRef.current?.parentElement;
+    while (el) {
+      const overflowY = window.getComputedStyle(el).overflowY;
+      if (overflowY === 'auto' || overflowY === 'scroll') {
+        setScrollParent(el);
+        return;
+      }
+      el = el.parentElement;
+    }
+  }, []);
+
   // Reveal-in-sidebar: expand the ancestor chain of the revealed request,
   // then scroll the virtualized list to its row once rows recompute.
   // Re-attempts as the index builds (deps include node count) so revealing
@@ -1198,10 +1215,15 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
     return null;
   }
 
+  // Fallback height only used until the scroll parent is found (or if none is).
   const listHeight = Math.min(Math.max(visibleRows.length * ROW_HEIGHT, ROW_HEIGHT), MAX_LIST_HEIGHT);
 
+  const virtuosoProps = scrollParent
+    ? { customScrollParent: scrollParent }
+    : { style: { height: listHeight } };
+
   return (
-    <div>
+    <div ref={containerRef}>
       {index.status === 'indexing' ? (
         <div className="text-xs text-muted ml-8 py-1">
           Indexing {index.totalScanned || 0} items...
@@ -1209,7 +1231,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
       ) : null}
       <Virtuoso
         ref={virtuosoRef}
-        style={{ height: listHeight }}
+        {...virtuosoProps}
         data={visibleRows}
         computeItemKey={(_index, node) => node.pathname || node.uid}
         itemContent={(_index, node) => (
