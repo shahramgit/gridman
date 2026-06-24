@@ -65,6 +65,7 @@ const QueryResultPreview = ({
         mode={codeMirrorMode}
         initialScroll={responseScroll}
         onScroll={setResponseScroll}
+        indentGuides
         readOnly
       />
     );

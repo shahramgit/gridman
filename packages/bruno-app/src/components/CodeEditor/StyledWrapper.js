@@ -205,6 +205,19 @@ const StyledWrapper = styled.div`
     border-radius: 3px;
     padding: 0 2px;
   }
+
+  /* Postman-style vertical indentation guides (added per line by indentGuides). */
+  .CodeMirror-line.cm-has-indent-guides {
+    position: relative;
+  }
+  .cm-indent-guide {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1px solid rgba(127, 127, 127, 0.22);
+    pointer-events: none;
+  }
 `;
 
 export default StyledWrapper;
