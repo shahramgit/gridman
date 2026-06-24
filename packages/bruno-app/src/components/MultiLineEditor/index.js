@@ -44,7 +44,9 @@ class MultiLineEditor extends Component {
     const runShortcut = () => {};
 
     this.editor = CodeMirror(this.editorRef.current, {
-      lineWrapping: false,
+      // When enabled, long values wrap and the field grows (Postman-style)
+      // instead of requiring a manual horizontal scroll.
+      lineWrapping: this.props.enableLineWrapping || false,
       lineNumbers: false,
       theme: this.props.theme === 'dark' ? 'monokai' : 'default',
       placeholder: this.props.placeholder,
@@ -179,6 +181,9 @@ class MultiLineEditor extends Component {
     }
     if (this.props.readOnly !== prevProps.readOnly && this.editor) {
       this.editor.setOption('readOnly', this.props.readOnly || false);
+    }
+    if (this.props.enableLineWrapping !== prevProps.enableLineWrapping && this.editor) {
+      this.editor.setOption('lineWrapping', this.props.enableLineWrapping || false);
     }
     this.ignoreChangeEvent = false;
   }

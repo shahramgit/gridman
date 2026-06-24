@@ -47,7 +47,9 @@ class SingleLineEditor extends Component {
 
     this.editor = CodeMirror(this.editorRef.current, {
       placeholder: this.props.placeholder ?? '',
-      lineWrapping: false,
+      // When enabled, long values wrap and the field grows to show everything
+      // (Postman-style) instead of requiring a manual horizontal scroll.
+      lineWrapping: this.props.enableLineWrapping || false,
       lineNumbers: false,
       theme: this.props.theme === 'dark' ? 'monokai' : 'default',
       mode: 'brunovariables',
@@ -205,6 +207,9 @@ class SingleLineEditor extends Component {
     }
     if (this.props.placeholder !== prevProps.placeholder && this.editor) {
       this.editor.setOption('placeholder', this.props.placeholder);
+    }
+    if (this.props.enableLineWrapping !== prevProps.enableLineWrapping && this.editor) {
+      this.editor.setOption('lineWrapping', this.props.enableLineWrapping || false);
     }
     this.ignoreChangeEvent = false;
   }

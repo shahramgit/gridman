@@ -100,6 +100,7 @@ const QueryParams = ({ item, collection }) => {
           item={item}
           variablesAutocomplete={true}
           allowCopy
+          enableLineWrapping
           placeholder={!value ? 'Value' : ''}
         />
       )
@@ -147,6 +148,7 @@ const QueryParams = ({ item, collection }) => {
           collection={collection}
           item={item}
           allowCopy
+          enableLineWrapping
         />
       )
     },

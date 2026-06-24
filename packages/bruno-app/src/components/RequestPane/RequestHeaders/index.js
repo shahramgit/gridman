@@ -112,6 +112,7 @@ const RequestHeaders = ({ item, collection, addHeaderText }) => {
           collection={collection}
           item={item}
           allowCopy
+          enableLineWrapping
           placeholder={!value ? 'Value' : ''}
         />
       )

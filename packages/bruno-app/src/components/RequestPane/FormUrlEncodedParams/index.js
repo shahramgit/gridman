@@ -87,6 +87,7 @@ const FormUrlEncodedParams = ({ item, collection }) => {
           collection={collection}
           item={item}
           allowCopy
+          enableLineWrapping
           placeholder={!value ? 'Value' : ''}
         />
       )
