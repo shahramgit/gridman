@@ -379,14 +379,18 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
         setBrowseChildren([]);
         return;
       }
+      // Keep polling until children actually appear: a freshly opened or still
+      // indexing collection can momentarily report an empty root, so stop only
+      // once we have entries (or we time out on a genuinely empty container).
       let children = null;
       const startedAt = Date.now();
-      while (children === null && Date.now() - startedAt < 8000) {
-        children = readChildren(collection.uid);
-        if (children !== null) {
+      while (Date.now() - startedAt < 15000) {
+        const next = readChildren(collection.uid);
+        if (next && next.length) {
+          children = next;
           break;
         }
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        await new Promise((resolve) => setTimeout(resolve, 200));
       }
       setBrowseChildren(children ? sortTreeNodes(children) : []);
     } finally {
