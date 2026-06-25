@@ -8,6 +8,7 @@ import StyledWrapper from './StyledWrapper';
 import { IconCheck, IconCopy, IconEye, IconEyeOff } from '@tabler/icons';
 import { setupLinkAware } from 'utils/codemirror/linkAware';
 import { setupSelectionDataTools } from 'utils/codemirror/selectionDataTools';
+import ExpandableValueOverlay from 'components/ExpandableValueOverlay';
 
 const CodeMirror = require('codemirror');
 
@@ -136,10 +137,10 @@ class SingleLineEditor extends Component {
     }
   };
 
-  // Expand-on-focus: wrap+grow into a box while focused, collapse on blur.
+  // Expand-on-focus: open a floating overlay (Postman-style) for long values so
+  // the full value is visible/editable without growing the table cell.
   _onFocus = () => {
-    if (this.props.enableLineWrapping && this.editor) {
-      this.editor.setOption('lineWrapping', true);
+    if (this.props.enableLineWrapping && (this.props.value || '').toString().length > 40) {
       this.setState({ expanded: true });
     }
   };
@@ -147,10 +148,6 @@ class SingleLineEditor extends Component {
   _onBlur = () => {
     if (this.editor) {
       this.editor.setCursor(this.editor.getCursor());
-      if (this.props.enableLineWrapping) {
-        this.editor.setOption('lineWrapping', false);
-        this.setState({ expanded: false });
-      }
     }
   };
 
@@ -374,10 +371,10 @@ class SingleLineEditor extends Component {
 
   render() {
     return (
-      <div className={`flex flex-row w-full ${this.state.expanded ? 'cm-value-expanded items-start' : 'items-center overflow-x-auto'} ${this.props.className}`}>
+      <div className={`flex flex-row items-center w-full overflow-x-auto ${this.props.className}`}>
         <StyledWrapper
           ref={this.editorRef}
-          className={`single-line-editor grow ${this.props.readOnly ? 'read-only' : ''} ${this.state.expanded ? 'cm-expanded' : ''}`}
+          className={`single-line-editor grow ${this.props.readOnly ? 'read-only' : ''}`}
           $isCompact={this.props.isCompact}
           {...(this.props['data-testid'] ? { 'data-testid': this.props['data-testid'] } : {})}
         />
@@ -385,6 +382,15 @@ class SingleLineEditor extends Component {
           {this.secretEye(this.props.isSecret)}
           {this.copyButton()}
         </div>
+        {this.state.expanded && (
+          <ExpandableValueOverlay
+            anchorRef={this.editorRef}
+            value={this.props.value}
+            placeholder={this.props.placeholder}
+            onChange={this.props.onChange}
+            onClose={() => this.setState({ expanded: false })}
+          />
+        )}
       </div>
     );
   }

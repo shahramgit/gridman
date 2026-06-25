@@ -7,6 +7,7 @@ import { MaskedEditor } from 'utils/common/masked-editor';
 import StyledWrapper from './StyledWrapper';
 import { setupLinkAware } from 'utils/codemirror/linkAware';
 import { setupSelectionDataTools } from 'utils/codemirror/selectionDataTools';
+import ExpandableValueOverlay from 'components/ExpandableValueOverlay';
 import { IconCheck, IconCopy, IconEye, IconEyeOff } from '@tabler/icons';
 
 const CodeMirror = require('codemirror');
@@ -105,10 +106,9 @@ class MultiLineEditor extends Component {
     this._enableMaskedEditor(this.props.isSecret);
   }
 
-  // Expand-on-focus: wrap+grow into a box while focused, collapse on blur.
+  // Expand-on-focus: open a floating overlay (Postman-style) for long values.
   _onFocus = () => {
-    if (this.props.enableLineWrapping && this.editor) {
-      this.editor.setOption('lineWrapping', true);
+    if (this.props.enableLineWrapping && (this.props.value || '').toString().length > 40) {
       this.setState({ expanded: true });
     }
   };
@@ -116,10 +116,6 @@ class MultiLineEditor extends Component {
   _onBlur = () => {
     if (this.editor) {
       this.editor.setCursor(this.editor.getCursor());
-      if (this.props.enableLineWrapping) {
-        this.editor.setOption('lineWrapping', false);
-        this.setState({ expanded: false });
-      }
     }
   };
 
@@ -281,12 +277,21 @@ class MultiLineEditor extends Component {
   };
 
   render() {
-    const wrapperClass = `multi-line-editor grow ${this.props.readOnly ? 'read-only' : ''} ${this.state.expanded ? 'cm-expanded' : ''}`;
+    const wrapperClass = `multi-line-editor grow ${this.props.readOnly ? 'read-only' : ''}`;
     return (
-      <div className={`flex flex-row justify-between w-full ${this.state.expanded ? 'cm-value-expanded items-start' : 'overflow-x-auto'} ${this.props.className}`}>
+      <div className={`flex flex-row justify-between w-full overflow-x-auto ${this.props.className}`}>
         <StyledWrapper ref={this.editorRef} className={wrapperClass} />
         {this.secretEye(this.props.isSecret)}
         {this.copyButton()}
+        {this.state.expanded && (
+          <ExpandableValueOverlay
+            anchorRef={this.editorRef}
+            value={this.props.value}
+            placeholder={this.props.placeholder}
+            onChange={this.props.onChange}
+            onClose={() => this.setState({ expanded: false })}
+          />
+        )}
       </div>
     );
   }
