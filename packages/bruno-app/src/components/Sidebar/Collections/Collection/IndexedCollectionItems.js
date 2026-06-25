@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import classnames from 'classnames';
 import {
@@ -1251,10 +1251,18 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
   // Virtualize against the sidebar's own scroll container instead of giving the
   // list a fixed height. This removes the nested inner scrollbar so an expanded
   // collection reads top-to-bottom with a single scroll, like Postman.
+  //
+  // A callback ref (not a mount effect) handles the first open: the container
+  // div only renders after indexing finishes, so detection must run when the
+  // node actually attaches, not on initial mount when it may not exist yet.
   const containerRef = useRef(null);
   const [scrollParent, setScrollParent] = useState(null);
-  useEffect(() => {
-    let el = containerRef.current?.parentElement;
+  const attachContainer = useCallback((node) => {
+    containerRef.current = node;
+    if (!node || scrollParent) {
+      return;
+    }
+    let el = node.parentElement;
     while (el) {
       const overflowY = window.getComputedStyle(el).overflowY;
       if (overflowY === 'auto' || overflowY === 'scroll') {
@@ -1263,7 +1271,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
       }
       el = el.parentElement;
     }
-  }, []);
+  }, [scrollParent]);
 
   // Reveal-in-sidebar: expand the ancestor chain of the revealed request,
   // then scroll the virtualized list to its row once rows recompute.
@@ -1348,7 +1356,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
     : { style: { height: listHeight } };
 
   return (
-    <div ref={containerRef}>
+    <div ref={attachContainer}>
       {index.status === 'indexing' ? (
         <div className="text-xs text-muted ml-8 py-1">
           Indexing {index.totalScanned || 0} items...
