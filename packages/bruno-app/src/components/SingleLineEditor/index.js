@@ -24,7 +24,8 @@ class SingleLineEditor extends Component {
 
     this.state = {
       maskInput: props.isSecret || false, // Always mask the input by default (if it's a secret)
-      copied: false
+      copied: false,
+      expanded: false
     };
   }
 
@@ -47,9 +48,10 @@ class SingleLineEditor extends Component {
 
     this.editor = CodeMirror(this.editorRef.current, {
       placeholder: this.props.placeholder ?? '',
-      // When enabled, long values wrap and the field grows to show everything
-      // (Postman-style) instead of requiring a manual horizontal scroll.
-      lineWrapping: this.props.enableLineWrapping || false,
+      // Rows stay single-line; when enableLineWrapping is set we wrap+grow only
+      // while focused (Postman-style), so a long value expands into a box on
+      // click and collapses back when you leave it.
+      lineWrapping: false,
       lineNumbers: false,
       theme: this.props.theme === 'dark' ? 'monokai' : 'default',
       mode: 'brunovariables',
@@ -98,6 +100,7 @@ class SingleLineEditor extends Component {
     this.editor.setValue(String(this.props.value ?? ''));
     this.editor.on('change', this._onEdit);
     this.editor.on('paste', this._onPaste);
+    this.editor.on('focus', this._onFocus);
     this.editor.on('blur', this._onBlur);
     this.addOverlay(variables);
     this._enableMaskedEditor(this.props.isSecret);
@@ -133,9 +136,21 @@ class SingleLineEditor extends Component {
     }
   };
 
+  // Expand-on-focus: wrap+grow into a box while focused, collapse on blur.
+  _onFocus = () => {
+    if (this.props.enableLineWrapping && this.editor) {
+      this.editor.setOption('lineWrapping', true);
+      this.setState({ expanded: true });
+    }
+  };
+
   _onBlur = () => {
     if (this.editor) {
       this.editor.setCursor(this.editor.getCursor());
+      if (this.props.enableLineWrapping) {
+        this.editor.setOption('lineWrapping', false);
+        this.setState({ expanded: false });
+      }
     }
   };
 
@@ -208,9 +223,6 @@ class SingleLineEditor extends Component {
     if (this.props.placeholder !== prevProps.placeholder && this.editor) {
       this.editor.setOption('placeholder', this.props.placeholder);
     }
-    if (this.props.enableLineWrapping !== prevProps.enableLineWrapping && this.editor) {
-      this.editor.setOption('lineWrapping', this.props.enableLineWrapping || false);
-    }
     this.ignoreChangeEvent = false;
   }
 
@@ -225,6 +237,7 @@ class SingleLineEditor extends Component {
       }
       this.editor.off('change', this._onEdit);
       this.editor.off('paste', this._onPaste);
+      this.editor.off('focus', this._onFocus);
       this.editor.off('blur', this._onBlur);
       this._clearNewlineMarkers();
       this.editor.getWrapperElement().remove();
@@ -361,10 +374,10 @@ class SingleLineEditor extends Component {
 
   render() {
     return (
-      <div className={`flex flex-row items-center w-full overflow-x-auto ${this.props.className}`}>
+      <div className={`flex flex-row w-full ${this.state.expanded ? 'cm-value-expanded items-start' : 'items-center overflow-x-auto'} ${this.props.className}`}>
         <StyledWrapper
           ref={this.editorRef}
-          className={`single-line-editor grow ${this.props.readOnly ? 'read-only' : ''}`}
+          className={`single-line-editor grow ${this.props.readOnly ? 'read-only' : ''} ${this.state.expanded ? 'cm-expanded' : ''}`}
           $isCompact={this.props.isCompact}
           {...(this.props['data-testid'] ? { 'data-testid': this.props['data-testid'] } : {})}
         />

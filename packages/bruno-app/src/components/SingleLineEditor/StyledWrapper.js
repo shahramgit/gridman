@@ -12,6 +12,35 @@ const StyledWrapper = styled.div`
     }
   }
 
+  /* Expand-on-focus: long value grows into a bordered, scrollable box
+     (Postman-style) only while focused. */
+  &.cm-expanded {
+    height: auto;
+    overflow: visible;
+
+    .CodeMirror {
+      height: auto;
+      max-height: 220px;
+      overflow: auto;
+      border: 1px solid ${(props) => props.theme.input?.border || '#8884'};
+      border-radius: 4px;
+      background: ${(props) => props.theme.input?.bg || props.theme.bg};
+      padding: 3px 6px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+    }
+    .CodeMirror-scroll {
+      overflow: auto !important;
+      padding-bottom: 0 !important;
+    }
+    .CodeMirror-vscrollbar {
+      display: block;
+    }
+    .CodeMirror-line {
+      white-space: pre-wrap !important;
+      word-break: break-all;
+    }
+  }
+
   .CodeMirror {
     background: transparent;
     height: ${(props) => (props.$isCompact ? '1.375rem' : '2.125rem')};

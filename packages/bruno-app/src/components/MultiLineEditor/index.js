@@ -24,7 +24,8 @@ class MultiLineEditor extends Component {
 
     this.state = {
       maskInput: props.isSecret || false, // Always mask the input by default (if it's a secret)
-      copied: false
+      copied: false,
+      expanded: false
     };
   }
 
@@ -44,9 +45,9 @@ class MultiLineEditor extends Component {
     const runShortcut = () => {};
 
     this.editor = CodeMirror(this.editorRef.current, {
-      // When enabled, long values wrap and the field grows (Postman-style)
-      // instead of requiring a manual horizontal scroll.
-      lineWrapping: this.props.enableLineWrapping || false,
+      // Rows stay single-line; when enableLineWrapping is set we wrap+grow into
+      // a box only while focused (Postman-style).
+      lineWrapping: false,
       lineNumbers: false,
       theme: this.props.theme === 'dark' ? 'monokai' : 'default',
       placeholder: this.props.placeholder,
@@ -95,6 +96,7 @@ class MultiLineEditor extends Component {
 
     this.editor.setValue(String(this.props.value) || '');
     this.editor.on('change', this._onEdit);
+    this.editor.on('focus', this._onFocus);
     this.editor.on('blur', this._onBlur);
     this.addOverlay(variables);
 
@@ -103,9 +105,21 @@ class MultiLineEditor extends Component {
     this._enableMaskedEditor(this.props.isSecret);
   }
 
+  // Expand-on-focus: wrap+grow into a box while focused, collapse on blur.
+  _onFocus = () => {
+    if (this.props.enableLineWrapping && this.editor) {
+      this.editor.setOption('lineWrapping', true);
+      this.setState({ expanded: true });
+    }
+  };
+
   _onBlur = () => {
     if (this.editor) {
       this.editor.setCursor(this.editor.getCursor());
+      if (this.props.enableLineWrapping) {
+        this.editor.setOption('lineWrapping', false);
+        this.setState({ expanded: false });
+      }
     }
   };
 
@@ -182,9 +196,6 @@ class MultiLineEditor extends Component {
     if (this.props.readOnly !== prevProps.readOnly && this.editor) {
       this.editor.setOption('readOnly', this.props.readOnly || false);
     }
-    if (this.props.enableLineWrapping !== prevProps.enableLineWrapping && this.editor) {
-      this.editor.setOption('lineWrapping', this.props.enableLineWrapping || false);
-    }
     this.ignoreChangeEvent = false;
   }
 
@@ -232,6 +243,7 @@ class MultiLineEditor extends Component {
     }
     if (this.editor) {
       this.editor.off('change', this._onEdit);
+      this.editor.off('focus', this._onFocus);
       this.editor.off('blur', this._onBlur);
       this.editor.getWrapperElement().remove();
     }
@@ -269,9 +281,9 @@ class MultiLineEditor extends Component {
   };
 
   render() {
-    const wrapperClass = `multi-line-editor grow ${this.props.readOnly ? 'read-only' : ''}`;
+    const wrapperClass = `multi-line-editor grow ${this.props.readOnly ? 'read-only' : ''} ${this.state.expanded ? 'cm-expanded' : ''}`;
     return (
-      <div className={`flex flex-row justify-between w-full overflow-x-auto ${this.props.className}`}>
+      <div className={`flex flex-row justify-between w-full ${this.state.expanded ? 'cm-value-expanded items-start' : 'overflow-x-auto'} ${this.props.className}`}>
         <StyledWrapper ref={this.editorRef} className={wrapperClass} />
         {this.secretEye(this.props.isSecret)}
         {this.copyButton()}
