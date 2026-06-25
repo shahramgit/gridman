@@ -5,7 +5,6 @@ import { IconChevronRight, IconFolder, IconLoader2, IconSearch } from '@tabler/i
 import classnames from 'classnames';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import { collectionIndexNodeActivated } from 'providers/ReduxStore/slices/collections';
-import { revealRequestInSidebar } from 'providers/ReduxStore/slices/app';
 import { loadRequest, mountCollection, openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
 import { getDefaultRequestPaneTab, findItemInCollectionByPathname } from 'utils/collections';
 import { normalizePath } from 'utils/common/path';
@@ -207,6 +206,11 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
   const store = useStore();
   const isRequest = node.nodeKind === 'request';
   const [examplesExpanded, setExamplesExpanded] = useState(false);
+  // A folder/collection matched only by name has no search children; let it be
+  // expanded to browse its actual contents (lazily loaded from the index).
+  const [browseExpanded, setBrowseExpanded] = useState(false);
+  const [browseChildren, setBrowseChildren] = useState(null);
+  const [browseLoading, setBrowseLoading] = useState(false);
   const isCollapsed = collapsedNodeUids.has(node.uid);
   const showMatchContext = node.matchText && !doesVisibleRowMatch(node, searchText);
 
@@ -314,21 +318,88 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
     }
   };
 
-  // A folder/collection matched by name only has no result-children. Instead of
-  // a chevron that expands to nothing, reveal it in the sidebar so its real
-  // contents can be browsed.
-  const hasChildren = !isRequest && (node.children?.length || 0) > 0;
+  // Search children come from matched results. A folder/collection matched only
+  // by name has none, so it is "browsable": expanding it lazily loads its real
+  // contents from the collection index.
+  const hasSearchChildren = !isRequest && (node.children?.length || 0) > 0;
+  const isBrowsable = !isRequest && !hasSearchChildren;
+  const isExpandable = hasSearchChildren || isBrowsable;
+  const isOpen = hasSearchChildren ? !isCollapsed : browseExpanded;
 
-  const revealInSidebar = async () => {
-    const collection = await ensureCollectionLoaded();
-    if (!collection) {
-      toast.error('Unable to open the collection for this result');
-      return;
+  // Map either a warm-index node or a classic tree item to the row shape this
+  // component renders.
+  const toBrowseChild = (source, uidKey) => ({
+    uid: `browse:${node.uid}:${uidKey}`,
+    nodeKind: source.type === 'folder' ? 'folder' : 'request',
+    type: source.type === 'folder' ? 'folder' : source.type,
+    name: source.name || source.filename || 'Untitled',
+    filename: source.filename,
+    pathname: source.pathname,
+    method: source.method || source.request?.method,
+    url: source.url || source.request?.url,
+    collectionPathname: node.collectionPathname,
+    collectionUid: node.collectionUid,
+    parentRequestUid: source.uid,
+    exampleCount: source.exampleCount || source.examples?.length || 0,
+    depth: (node.depth || 0) + 1,
+    children: []
+  });
+
+  // Read children from the warm index (large collections) or, when there is no
+  // index, the classic in-memory tree (small collections).
+  const readChildren = (collectionUid) => {
+    const state = store.getState().collections;
+    const index = state.collectionIndexes?.[collectionUid];
+    if (index?.nodesByUid) {
+      let parentKey = 'root';
+      if (node.type !== 'collection') {
+        const indexNode = Object.values(index.nodesByUid)
+          .find((candidate) => normalizePath(candidate.pathname) === normalizePath(node.pathname));
+        parentKey = indexNode?.uid;
+      }
+      const childUids = index.childrenByParentUid?.[parentKey] || [];
+      return childUids.map((uid) => index.nodesByUid[uid]).filter(Boolean).map((n) => toBrowseChild(n, n.uid));
     }
-    dispatch(revealRequestInSidebar({
-      collectionUid: collection.uid,
-      pathname: node.pathname || node.collectionPathname
-    }));
+    const collection = state.collections.find((c) => c.uid === collectionUid);
+    const parent = node.type === 'collection'
+      ? collection
+      : (collection && findItemInCollectionByPathname(collection, node.pathname));
+    if (parent?.items) {
+      return parent.items.map((item) => toBrowseChild(item, item.uid));
+    }
+    return null;
+  };
+
+  const loadBrowseChildren = async () => {
+    setBrowseLoading(true);
+    try {
+      const collection = await ensureCollectionLoaded();
+      if (!collection) {
+        toast.error('Unable to open the collection for this result');
+        setBrowseChildren([]);
+        return;
+      }
+      let children = null;
+      const startedAt = Date.now();
+      while (children === null && Date.now() - startedAt < 8000) {
+        children = readChildren(collection.uid);
+        if (children !== null) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      setBrowseChildren(children ? sortTreeNodes(children) : []);
+    } finally {
+      setBrowseLoading(false);
+    }
+  };
+
+  const toggleBrowse = () => {
+    const next = !browseExpanded;
+    setBrowseExpanded(next);
+    if (next && browseChildren === null && !browseLoading) {
+      loadBrowseChildren();
+    }
   };
 
   const handleClick = () => {
@@ -336,11 +407,11 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
       openRequest();
       return;
     }
-    if (hasChildren) {
+    if (hasSearchChildren) {
       onToggleNode(node.uid);
       return;
     }
-    revealInSidebar();
+    toggleBrowse();
   };
 
   const examples = isRequest ? (node.examples || []) : [];
@@ -358,11 +429,11 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
         onClick={handleClick}
       >
         <span className="flex items-center justify-center mt-0.5" style={{ width: 16, minWidth: 16 }}>
-          {hasChildren ? (
+          {isExpandable ? (
             <IconChevronRight
               size={15}
               strokeWidth={2}
-              className={classnames('transition-transform', { 'rotate-90': !isCollapsed })}
+              className={classnames('transition-transform', { 'rotate-90': isOpen })}
               style={{ color: 'rgb(160 160 160)' }}
             />
           ) : (!isRequest) ? null : hasExamples ? (
@@ -422,6 +493,29 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
             </button>
           ))
         : null}
+
+      {isBrowsable && browseExpanded && (
+        browseLoading && browseChildren === null ? (
+          <div className="text-xs text-muted py-1" style={{ paddingLeft: 8 + ((node.depth || 0) + 1) * 14 + 18 }}>
+            Loading…
+          </div>
+        ) : browseChildren && browseChildren.length ? (
+          browseChildren.map((child) => (
+            <WorkspaceSearchTreeRow
+              key={child.uid}
+              node={child}
+              searchText={searchText}
+              workspacePath={workspacePath}
+              collapsedNodeUids={collapsedNodeUids}
+              onToggleNode={onToggleNode}
+            />
+          ))
+        ) : browseChildren ? (
+          <div className="text-xs text-muted py-1" style={{ paddingLeft: 8 + ((node.depth || 0) + 1) * 14 + 18 }}>
+            (empty)
+          </div>
+        ) : null
+      )}
     </>
   );
 };
