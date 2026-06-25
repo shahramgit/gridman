@@ -253,8 +253,15 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
       return;
     }
     const collectionUid = collection.uid;
-    if (store.getState().collections.collectionIndexes?.[collectionUid]) {
-      dispatch(collectionIndexNodeActivated({ collectionUid, node }));
+    // Browse rows carry a synthetic uid; resolve the real index node by pathname
+    // so activation inserts the correct tree item and the tab's itemUid matches
+    // it (otherwise the request opens but its panes never hydrate).
+    const index = store.getState().collections.collectionIndexes?.[collectionUid];
+    const realNode = (index?.nodesByUid
+      && Object.values(index.nodesByUid).find((n) => normalizePath(n.pathname) === normalizePath(node.pathname)))
+    || node;
+    if (index?.nodesByUid) {
+      dispatch(collectionIndexNodeActivated({ collectionUid, node: realNode }));
     }
 
     const tabUid = `indexed-request:${collectionUid}:${node.pathname}`;
@@ -267,7 +274,7 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
         collectionUid,
         requestPaneTab: getDefaultRequestPaneTab(node),
         type: 'request',
-        itemUid: node.parentRequestUid || node.uid,
+        itemUid: realNode.uid || node.parentRequestUid || node.uid,
         itemPathname: node.pathname
       }));
     }
