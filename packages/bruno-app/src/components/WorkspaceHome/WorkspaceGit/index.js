@@ -427,9 +427,11 @@ const WorkspaceGit = ({ workspace }) => {
     };
   }, [ahead, behind, gitData?.isGitRepository, hasCommits, hasConflicts, hasLocalChanges, hasUpstream, remoteHasBranches, remoteUrl]);
 
-  const refresh = useCallback(async ({ fetchRemote = false } = {}) => {
+  const refresh = useCallback(async ({ fetchRemote = false, silent = false } = {}) => {
     if (!workspace?.pathname) return;
-    setLoading(true);
+    if (!silent) {
+      setLoading(true);
+    }
     if (fetchRemote) {
       setOutput('');
     }
@@ -449,18 +451,45 @@ const WorkspaceGit = ({ workspace }) => {
         setOutput('Status refreshed from remote.');
       }
     } catch (error) {
-      if (fetchRemote) {
-        setOutput(error?.message || String(error));
+      if (!silent) {
+        if (fetchRemote) {
+          setOutput(error?.message || String(error));
+        }
+        toast.error(error?.message || 'Failed to load workspace Git status');
       }
-      toast.error(error?.message || 'Failed to load workspace Git status');
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }, [remote, workspace?.pathname]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Keep the panel in sync with changes made outside it (terminal git commands,
+  // file moves/renames): silently re-check status on window focus, when the tab
+  // becomes visible, and on a short interval while the panel is open.
+  useEffect(() => {
+    if (!workspace?.pathname) {
+      return undefined;
+    }
+    const silentRefresh = () => refresh({ silent: true });
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        silentRefresh();
+      }
+    };
+    window.addEventListener('focus', silentRefresh);
+    document.addEventListener('visibilitychange', onVisibility);
+    const intervalId = setInterval(silentRefresh, 15000);
+    return () => {
+      window.removeEventListener('focus', silentRefresh);
+      document.removeEventListener('visibilitychange', onVisibility);
+      clearInterval(intervalId);
+    };
+  }, [workspace?.pathname, refresh]);
 
   const refreshSetupDiagnostics = useCallback(async ({ silent = false } = {}) => {
     if (!gitRootPath) return;
