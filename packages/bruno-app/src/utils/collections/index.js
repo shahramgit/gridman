@@ -1527,12 +1527,32 @@ export const calculateDraggedItemNewPathname = ({ draggedItem, targetItem, dropT
   const isTargetTheCollection = targetItemPathname === collectionPathname;
   const isTargetItemAFolder = isItemAFolder(targetItem);
 
+  let newPathname = null;
   if (dropType === 'inside' && (isTargetItemAFolder || isTargetTheCollection)) {
-    return path.join(targetItemPathname, draggedItemFilename);
+    newPathname = path.join(targetItemPathname, draggedItemFilename);
   } else if (dropType === 'adjacent') {
-    return path.join(targetItemDirname, draggedItemFilename);
+    // Adjacent to the collection root would resolve to the workspace
+    // collections/ directory, moving the item OUT of the collection and leaving
+    // a stray top-level dir. Drop it inside the collection root instead.
+    newPathname = isTargetTheCollection
+      ? path.join(targetItemPathname, draggedItemFilename)
+      : path.join(targetItemDirname, draggedItemFilename);
   }
-  return null;
+
+  if (!newPathname) {
+    return null;
+  }
+
+  // Hard guard: never allow a move target outside the collection (separator
+  // agnostic so it holds on Windows paths too).
+  const normalize = (value) => String(value).replace(/\\/g, '/').replace(/\/+$/, '');
+  const normalizedCollection = normalize(collectionPathname);
+  const normalizedTarget = normalize(newPathname);
+  if (normalizedTarget !== normalizedCollection && !normalizedTarget.startsWith(`${normalizedCollection}/`)) {
+    return null;
+  }
+
+  return newPathname;
 };
 
 // item sequence utils - END
