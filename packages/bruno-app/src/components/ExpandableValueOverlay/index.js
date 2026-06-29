@@ -20,7 +20,9 @@ const Overlay = styled.div`
     font-size: ${(props) => props.theme.font?.size?.base || '0.8125rem'};
     line-height: 1.4;
     color: ${(props) => props.theme.text};
-    background: ${(props) => props.theme.input?.bg || props.theme.bg};
+    /* Must be opaque: this floats over the rows below. input.bg is often
+       'transparent', which made the popover unreadable (esp. dark themes). */
+    background: ${(props) => props.theme.dropdown?.bg || props.theme.modal?.body?.bg || props.theme.bg || '#ffffff'};
     border: 1px solid ${(props) => props.theme.input?.focusBorder || props.theme.input?.border || '#8884'};
     border-radius: 4px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
