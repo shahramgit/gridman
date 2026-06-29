@@ -55,11 +55,24 @@ const RequestHeaders = ({ item, collection, addHeaderText }) => {
     }));
   }, [dispatch, collection.uid, item.uid]);
 
+  // Header names are case-insensitive; flag any name used by more than one row.
+  const duplicateHeaderNames = React.useMemo(() => {
+    const counts = {};
+    (headers || []).forEach((h) => {
+      const name = (h.name || '').trim().toLowerCase();
+      if (name) counts[name] = (counts[name] || 0) + 1;
+    });
+    return new Set(Object.keys(counts).filter((n) => counts[n] > 1));
+  }, [headers]);
+
   const getRowError = useCallback((row, index, key) => {
     if (key === 'name') {
       if (!row.name || row.name.trim() === '') return null;
       if (!headerNameRegex.test(row.name)) {
         return 'Header name cannot contain spaces or newlines';
+      }
+      if (duplicateHeaderNames.has(row.name.trim().toLowerCase())) {
+        return 'Duplicate header name';
       }
     }
     if (key === 'value') {
@@ -69,7 +82,7 @@ const RequestHeaders = ({ item, collection, addHeaderText }) => {
       }
     }
     return null;
-  }, []);
+  }, [duplicateHeaderNames]);
 
   const toggleBulkEditMode = () => {
     setIsBulkEditMode(!isBulkEditMode);

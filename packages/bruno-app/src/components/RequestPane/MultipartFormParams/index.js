@@ -42,6 +42,23 @@ const MultipartFormParams = ({ item, collection }) => {
   const onSave = () => dispatch(saveRequest(item.uid, collection.uid));
   const handleRun = () => dispatch(sendRequest(item, collection.uid));
 
+  // Flag form field names used by more than one row (case-sensitive).
+  const duplicateNames = useMemo(() => {
+    const counts = {};
+    (params || []).forEach((p) => {
+      const name = (p.name || '').trim();
+      if (name) counts[name] = (counts[name] || 0) + 1;
+    });
+    return new Set(Object.keys(counts).filter((n) => counts[n] > 1));
+  }, [params]);
+
+  const getRowError = useCallback((row, index, key) => {
+    if (key === 'name' && row.name && duplicateNames.has(row.name.trim())) {
+      return 'Duplicate field name';
+    }
+    return null;
+  }, [duplicateNames]);
+
   const handleParamsChange = useCallback((updatedParams) => {
     dispatch(setMultipartFormParams({
       collectionUid: collection.uid,
@@ -304,6 +321,7 @@ const MultipartFormParams = ({ item, collection }) => {
         rows={params || []}
         onChange={handleParamsChange}
         defaultRow={defaultRow}
+        getRowError={getRowError}
         reorderable={true}
         onReorder={handleParamDrag}
         columnWidths={multipartFormWidths}

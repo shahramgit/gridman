@@ -37,6 +37,11 @@ const Wrapper = styled.div`
       &.value {
         word-break: break-all;
       }
+
+      &.key.duplicate {
+        color: #d97706;
+        font-weight: 600;
+      }
     }
 
     tbody {

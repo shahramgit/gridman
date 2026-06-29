@@ -44,6 +44,23 @@ const QueryParams = ({ item, collection }) => {
   const onSave = () => dispatch(saveRequest(item.uid, collection.uid));
   const handleRun = () => dispatch(sendRequest(item, collection.uid));
 
+  // Flag query param names used by more than one row (case-sensitive).
+  const duplicateQueryNames = React.useMemo(() => {
+    const counts = {};
+    queryParams.forEach((p) => {
+      const name = (p.name || '').trim();
+      if (name) counts[name] = (counts[name] || 0) + 1;
+    });
+    return new Set(Object.keys(counts).filter((n) => counts[n] > 1));
+  }, [queryParams]);
+
+  const getQueryRowError = useCallback((row, index, key) => {
+    if (key === 'name' && row.name && duplicateQueryNames.has(row.name.trim())) {
+      return 'Duplicate query parameter name';
+    }
+    return null;
+  }, [duplicateQueryNames]);
+
   const handleQueryParamsChange = useCallback((updatedParams) => {
     const paramsWithType = updatedParams.map((p) => ({ ...p, type: 'query' }));
     dispatch(setQueryParams({
@@ -203,6 +220,7 @@ const QueryParams = ({ item, collection }) => {
           rows={queryParams || []}
           onChange={handleQueryParamsChange}
           defaultRow={defaultQueryRow}
+          getRowError={getQueryRowError}
           reorderable={true}
           onReorder={handleQueryParamDrag}
           columnWidths={queryParamsWidths}
