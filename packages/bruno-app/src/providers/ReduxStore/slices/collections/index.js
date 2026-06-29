@@ -2300,7 +2300,26 @@ export const collectionsSlice = createSlice({
           if (!item.draft) {
             item.draft = cloneDeep(item);
           }
-          item.draft.request.body.mode = action.payload.mode;
+          const body = item.draft.request.body;
+          const prevMode = body.mode;
+          const nextMode = action.payload.mode;
+
+          // Raw text-based modes share a single editor field per mode. When the
+          // user switches between them (e.g. TEXT -> JSON), carry the existing
+          // content over so it isn't stranded/hidden in the previous field,
+          // matching Postman's "raw + language" behaviour.
+          const RAW_MODES = ['json', 'text', 'xml', 'sparql'];
+          if (
+            prevMode !== nextMode
+            && RAW_MODES.includes(prevMode)
+            && RAW_MODES.includes(nextMode)
+            && body[prevMode]
+            && !body[nextMode]
+          ) {
+            body[nextMode] = body[prevMode];
+          }
+
+          body.mode = nextMode;
         }
       }
     },
