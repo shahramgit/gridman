@@ -3602,6 +3602,131 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     }
   });
 
+  // Reads a full collection from disk into a hydrated collection object.
+  // The renderer's redux store only lazily loads request bodies (warm index),
+  // so single-file YAML/Postman exports built from redux produced an almost
+  // empty (~1kb) file. This reads every request/folder/environment off disk so
+  // the converters have the complete collection.
+  ipcMain.handle('renderer:read-collection-for-export', async (event, collectionPathname) => {
+    if (!collectionPathname || !fs.existsSync(collectionPathname)) {
+      throw new Error('Collection path does not exist');
+    }
+
+    const ignoredDirs = new Set(['node_modules', '.git', 'environments']);
+    const rootFileNames = new Set([
+      'collection.bru',
+      'opencollection.yml',
+      'folder.bru',
+      'folder.yml'
+    ]);
+
+    const readFolder = (dirPath) => {
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      const items = [];
+
+      for (const entry of entries) {
+        const fullPath = path.join(dirPath, entry.name);
+
+        if (entry.isDirectory()) {
+          if (ignoredDirs.has(entry.name)) continue;
+
+          const folderItem = {
+            uid: generateUidBasedOnHash(fullPath),
+            name: entry.name,
+            type: 'folder',
+            filename: entry.name,
+            pathname: fullPath,
+            items: readFolder(fullPath)
+          };
+
+          for (const fmt of ['bru', 'yml']) {
+            const folderFile = path.join(fullPath, `folder.${fmt}`);
+            if (fs.existsSync(folderFile)) {
+              try {
+                folderItem.root = parseFolder(fs.readFileSync(folderFile, 'utf8'), { format: fmt });
+                if (folderItem.root?.meta?.seq != null) folderItem.seq = folderItem.root.meta.seq;
+              } catch (err) {
+                console.warn('[export] failed to parse folder root', folderFile, err?.message);
+              }
+              break;
+            }
+          }
+
+          items.push(folderItem);
+          continue;
+        }
+
+        if (rootFileNames.has(entry.name.toLowerCase())) continue;
+        if (!hasRequestExtension(entry.name)) continue;
+
+        try {
+          const content = fs.readFileSync(fullPath, 'utf8');
+          const format = hasBruExtension(fullPath) ? 'bru' : 'yml';
+          const data = parseRequest(content, { format });
+          hydrateRequestWithUuid(data, fullPath);
+          data.uid = data.uid || generateUidBasedOnHash(fullPath);
+          data.filename = entry.name;
+          data.pathname = fullPath;
+          if (data?.seq == null && data?.meta?.seq != null) data.seq = data.meta.seq;
+          items.push(data);
+        } catch (err) {
+          console.warn('[export] failed to parse request', fullPath, err?.message);
+        }
+      }
+
+      return items;
+    };
+
+    let brunoConfig = null;
+    const brunoJsonPath = path.join(collectionPathname, 'bruno.json');
+    if (fs.existsSync(brunoJsonPath)) {
+      brunoConfig = safeParseJSON(fs.readFileSync(brunoJsonPath, 'utf8'));
+    }
+
+    let root = {};
+    for (const [fileName, format] of [['collection.bru', 'bru'], ['opencollection.yml', 'yml']]) {
+      const rootPath = path.join(collectionPathname, fileName);
+      if (fs.existsSync(rootPath)) {
+        try {
+          root = parseCollection(fs.readFileSync(rootPath, 'utf8'), { format });
+        } catch (err) {
+          console.warn('[export] failed to parse collection root', rootPath, err?.message);
+        }
+        break;
+      }
+    }
+
+    const environments = [];
+    const envDir = path.join(collectionPathname, 'environments');
+    if (fs.existsSync(envDir)) {
+      for (const fileName of fs.readdirSync(envDir)) {
+        if (!hasRequestExtension(fileName)) continue;
+        try {
+          const format = hasBruExtension(fileName) ? 'bru' : 'yml';
+          environments.push(parseEnvironment(fs.readFileSync(path.join(envDir, fileName), 'utf8'), { format }));
+        } catch (err) {
+          console.warn('[export] failed to parse environment', fileName, err?.message);
+        }
+      }
+    }
+
+    const name
+      = brunoConfig?.name || root?.meta?.name || path.basename(collectionPathname);
+
+    return safeParseJSON(
+      safeStringifyJSON({
+        uid: generateUidBasedOnHash(collectionPathname),
+        name,
+        pathname: collectionPathname,
+        type: 'collection',
+        brunoConfig,
+        root,
+        environments,
+        items: readFolder(collectionPathname)
+      })
+    );
+  });
+
   ipcMain.handle('renderer:is-bruno-collection-zip', async (event, zipFilePath) => {
     try {
       const zip = new AdmZip(zipFilePath);

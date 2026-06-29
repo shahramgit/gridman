@@ -57,14 +57,31 @@ const ShareCollection = ({ onClose, collectionUid }) => {
     }
   };
 
-  const handleExportYaml = () => {
-    const collectionCopy = cloneDeep(collection);
-    exportOpenCollection(transformCollectionToSaveToExportAsFile(collectionCopy));
+  // The redux collection only lazily hydrates request bodies (warm index), so
+  // single-file exports must read the full collection from disk first —
+  // otherwise the output is an almost-empty (~1kb) file.
+  const getFullCollection = async () => {
+    try {
+      const { ipcRenderer } = window;
+      const full = await ipcRenderer.invoke('renderer:read-collection-for-export', collection.pathname);
+      if (full && Array.isArray(full.items) && full.items.length) {
+        return full;
+      }
+    } catch (error) {
+      console.error('Failed to read collection from disk for export:', error);
+    }
+    // Fallback to whatever is in redux.
+    return cloneDeep(collection);
   };
 
-  const handleExportPostman = () => {
-    const collectionCopy = cloneDeep(collection);
-    exportPostmanCollection(collectionCopy);
+  const handleExportYaml = async () => {
+    const fullCollection = await getFullCollection();
+    exportOpenCollection(transformCollectionToSaveToExportAsFile(fullCollection));
+  };
+
+  const handleExportPostman = async () => {
+    const fullCollection = await getFullCollection();
+    exportPostmanCollection(fullCollection);
   };
 
   const handleProceed = async () => {
@@ -77,10 +94,10 @@ const ShareCollection = ({ onClose, collectionUid }) => {
           await handleExportZip();
           break;
         case EXPORT_FORMATS.YAML:
-          handleExportYaml();
+          await handleExportYaml();
           break;
         case EXPORT_FORMATS.POSTMAN:
-          handleExportPostman();
+          await handleExportPostman();
           break;
       }
       onClose();
