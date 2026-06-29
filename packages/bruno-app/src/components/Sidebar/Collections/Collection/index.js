@@ -31,7 +31,8 @@ import {
   moveCollectionItemByPath,
   pasteItem,
   showInFolder,
-  saveCollectionSecurityConfig
+  saveCollectionSecurityConfig,
+  renameCollection
 } from 'providers/ReduxStore/slices/collections/actions';
 import { useDispatch, useSelector } from 'react-redux';
 import { addTab, makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
@@ -47,7 +48,6 @@ import { doesCollectionHaveItemsMatchingSearchText } from 'utils/collections/sea
 import { isItemAFolder, isItemARequest, areItemsLoading, flattenItems, findParentItemInCollection } from 'utils/collections';
 import { isTabForItemActive } from 'src/selectors/tab';
 
-import RenameCollection from './RenameCollection';
 import StyledWrapper from './StyledWrapper';
 import CloneCollection from './CloneCollection';
 import { scrollToTheActiveTab } from 'utils/tabs';
@@ -74,7 +74,8 @@ const Collection = ({ collection, searchText }) => {
   const { dropdownContainerRef } = useSidebarAccordion();
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [showNewRequestModal, setShowNewRequestModal] = useState(false);
-  const [showRenameCollectionModal, setShowRenameCollectionModal] = useState(false);
+  const [isInlineRenaming, setIsInlineRenaming] = useState(false);
+  const [inlineRenameValue, setInlineRenameValue] = useState('');
   const [showCloneCollectionModalOpen, setShowCloneCollectionModalOpen] = useState(false);
   const [showShareCollectionModal, setShowShareCollectionModal] = useState(false);
   const [showGenerateDocumentationModal, setShowGenerateDocumentationModal] = useState(false);
@@ -221,6 +222,33 @@ const Collection = ({ collection, searchText }) => {
     e.preventDefault();
   };
 
+  const startInlineRename = () => {
+    setInlineRenameValue(collection.name);
+    setIsInlineRenaming(true);
+  };
+
+  const cancelInlineRename = () => {
+    setIsInlineRenaming(false);
+    setInlineRenameValue('');
+  };
+
+  const commitInlineRename = () => {
+    const newName = (inlineRenameValue || '').trim();
+    if (!isInlineRenaming) return;
+    if (!newName || newName === collection.name) {
+      cancelInlineRename();
+      return;
+    }
+    dispatch(renameCollection(newName, collection.uid))
+      .then(() => {
+        toast.success('Collection renamed!');
+      })
+      .catch((err) => {
+        toast.error(err ? err.message : 'An error occurred while renaming the collection');
+      });
+    cancelInlineRename();
+  };
+
   const handleRightClick = (event) => {
     event.preventDefault();
     menuDropdownRef.current?.show();
@@ -264,7 +292,7 @@ const Collection = ({ collection, searchText }) => {
   }, { enabled: isKeyboardFocused, deps: [isKeyboardFocused] });
 
   useKeybinding('renameItem', () => {
-    setShowRenameCollectionModal(true);
+    startInlineRename();
     return false;
   }, { enabled: isKeyboardFocused, deps: [isKeyboardFocused] });
 
@@ -462,7 +490,7 @@ const Collection = ({ collection, searchText }) => {
       leftSection: IconEdit,
       label: 'Rename',
       onClick: () => {
-        setShowRenameCollectionModal(true);
+        startInlineRename();
       }
     },
     {
@@ -528,9 +556,6 @@ const Collection = ({ collection, searchText }) => {
     <StyledWrapper className="flex flex-col" id={`collection-${collection.name.replace(/\s+/g, '-').toLowerCase()}`}>
       {showNewRequestModal && <NewRequest collectionUid={collection.uid} onClose={() => setShowNewRequestModal(false)} />}
       {showNewFolderModal && <NewFolder collectionUid={collection.uid} onClose={() => setShowNewFolderModal(false)} />}
-      {showRenameCollectionModal && (
-        <RenameCollection collectionUid={collection.uid} onClose={() => setShowRenameCollectionModal(false)} />
-      )}
       {showRemoveCollectionModal && (
         <RemoveCollection collectionUid={collection.uid} onClose={() => setShowRemoveCollectionModal(false)} />
       )}
@@ -572,7 +597,33 @@ const Collection = ({ collection, searchText }) => {
             />
           </ActionIcon>
           <div className="ml-1 w-full" id="sidebar-collection-name" title={collection.name}>
-            <SearchHighlight text={collection.name} searchText={searchText} />
+            {isInlineRenaming ? (
+              <input
+                type="text"
+                className="inline-rename-input w-full"
+                value={inlineRenameValue}
+                autoFocus
+                spellCheck="false"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                onClick={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onChange={(e) => setInlineRenameValue(e.target.value)}
+                onBlur={commitInlineRename}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    commitInlineRename();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelInlineRename();
+                  }
+                }}
+              />
+            ) : (
+              <SearchHighlight text={collection.name} searchText={searchText} />
+            )}
           </div>
           {isLoading ? <IconLoader2 className="animate-spin mx-1" size={18} strokeWidth={1.5} /> : null}
         </div>

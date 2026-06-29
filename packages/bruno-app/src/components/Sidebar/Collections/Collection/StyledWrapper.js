@@ -100,6 +100,16 @@ const Wrapper = styled.div`
     border-right: 1px solid ${(props) => props.theme.sidebar.collection.item.indentBorder};
   }
 
+  .inline-rename-input {
+    background: ${(props) => props.theme.sidebar?.bg || props.theme.bg || '#ffffff'};
+    color: ${(props) => props.theme.text};
+    border: 1px solid ${(props) => props.theme.input?.focusBorder || props.theme.input?.border || '#8884'};
+    border-radius: 3px;
+    padding: 0 4px;
+    font-size: ${(props) => props.theme.font.size.sm};
+    outline: none;
+  }
+
   .empty-collection-message {
     display: flex;
     align-items: center;
