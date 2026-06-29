@@ -3,7 +3,6 @@ import { useDispatch } from 'react-redux';
 import { IconBookmark } from '@tabler/icons';
 import { addResponseExample } from 'providers/ReduxStore/slices/collections';
 import { saveRequest } from 'providers/ReduxStore/slices/collections/actions';
-import { insertTaskIntoQueue } from 'providers/ReduxStore/slices/app';
 import { uuid, formatResponse } from 'utils/common';
 import toast from 'react-hot-toast';
 import CreateExampleModal from 'components/ResponseExample/CreateExampleModal';
@@ -96,10 +95,6 @@ const ResponseBookmark = forwardRef(({ item, collection, responseSize, children 
       description: description
     };
 
-    // Calculate the index where the example will be saved
-    // This will be the length of the examples array after adding the new one
-    const existingExamples = item.draft?.examples || item.examples || [];
-    const exampleIndex = existingExamples.length;
     const exampleUid = uuid();
 
     dispatch(addResponseExample({
@@ -114,14 +109,7 @@ const ResponseBookmark = forwardRef(({ item, collection, responseSize, children 
     // Save the request
     await dispatch(saveRequest(item.uid, collection.uid, true));
 
-    // Task middleware will track this and open the example in a new tab once the file is reloaded
-    dispatch(insertTaskIntoQueue({
-      uid: exampleUid,
-      type: 'OPEN_EXAMPLE',
-      collectionUid: collection.uid,
-      itemUid: item.uid,
-      exampleIndex: exampleIndex
-    }));
+    // Save the example in place (like Postman) — do not open it in a new tab.
 
     setShowSaveResponseExampleModal(false);
     toast.success(`Example "${name}" created successfully`);

@@ -1643,7 +1643,9 @@ export const transformExampleToDraft = (example, newExample) => {
  * @returns {string} - The suggested name for the new example
  */
 export const getInitialExampleName = (item) => {
-  const baseName = 'example';
+  // Default to the request/endpoint name (Postman behaviour) instead of a
+  // generic 'example'.
+  const baseName = (item?.draft?.name || item?.name || '').trim() || 'example';
   const existingExamples = item.draft?.examples || item.examples || [];
   const existingNames = new Set(existingExamples.map((example) => example.name || '').filter(Boolean));
 
