@@ -521,30 +521,15 @@ const WORKSPACE_SEARCH_DEFAULT_SCOPES = {
   examples: true
 };
 
-const { matchSearchFields } = require('../utils/workspace-search-match');
+const {
+  matchSearchFields,
+  boundSnippetSource,
+  createSearchSnippet
+} = require('../utils/workspace-search-match');
 const {
   getCollectionSearchIndex,
   createWorkspaceCollectionSearchResult
 } = require('./workspace-search-index');
-
-const createSearchSnippet = (content, query, foldOptions = {}) => {
-  if (!content || !query) {
-    return '';
-  }
-
-  const normalizedContent = String(content);
-  const range = utils.findFoldedMatchRange(normalizedContent, query, foldOptions);
-  if (!range) {
-    return '';
-  }
-
-  const start = Math.max(0, range.start - 40);
-  const end = Math.min(normalizedContent.length, range.end + 60);
-  const prefix = start > 0 ? '...' : '';
-  const suffix = end < normalizedContent.length ? '...' : '';
-
-  return `${prefix}${normalizedContent.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
-};
 
 const SNIPPET_FIELDS = new Set(['headers', 'body', 'examples']);
 
@@ -561,10 +546,13 @@ const matchWorkspaceSearchEntry = (entry, job) => {
 
   const { field } = match;
   if (SNIPPET_FIELDS.has(field)) {
+    // Fold-and-find only a window around the match, not the whole field.
+    const { source, truncatedStart } = boundSnippetSource(entry, field, job);
     const snippet = createSearchSnippet(
-      entry.raw[field],
+      source,
       job.query,
-      job.matchCase ? { caseSensitive: true } : {}
+      job.matchCase ? { caseSensitive: true } : {},
+      { truncatedStart }
     );
     return { matchField: field, matchText: snippet || entry.raw[field].slice(0, 100) };
   }

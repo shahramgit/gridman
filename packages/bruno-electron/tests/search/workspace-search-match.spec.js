@@ -1,4 +1,11 @@
-const { buildSearchFields, matchSearchFields, extractExampleEntries, matchExampleEntries } = require('../../src/utils/workspace-search-match');
+const {
+  buildSearchFields,
+  matchSearchFields,
+  extractExampleEntries,
+  matchExampleEntries,
+  boundSnippetSource,
+  createSearchSnippet
+} = require('../../src/utils/workspace-search-match');
 const { utils } = require('@usebruno/common');
 
 // A realistic .bru request with a response example block. The needle
@@ -114,6 +121,75 @@ example {
 
       const byContent = matchExampleEntries(entries, { foldedQueryCi: utils.foldSearchText('failuretoken') });
       expect(byContent.map((e) => e.index)).toEqual([1]);
+    });
+  });
+
+  describe('case-sensitive fold caching', () => {
+    it('computes the case-sensitive fold once and caches it on the entry', () => {
+      const entry = buildSearchFields({ content: '', format: 'bru', name: 'Get User', filename: 'get-user.bru' });
+      expect(entry.foldedCs).toBeUndefined();
+
+      const match = matchSearchFields(entry, {
+        scopes: { names: true },
+        foldedQueryCi: utils.foldSearchText('get'),
+        foldedQueryCs: utils.foldSearchText('Get', { caseSensitive: true }),
+        matchCase: true
+      });
+      expect(match).toEqual({ field: 'name' });
+      expect(entry.foldedCs.name).toBe(utils.foldSearchText('Get User', { caseSensitive: true }));
+
+      // wrong case must not match when matchCase is on
+      const noMatch = matchSearchFields(entry, {
+        scopes: { names: true },
+        foldedQueryCi: utils.foldSearchText('gET uSER'),
+        foldedQueryCs: utils.foldSearchText('gET uSER', { caseSensitive: true }),
+        matchCase: true
+      });
+      expect(noMatch).toBeNull();
+    });
+  });
+
+  describe('boundSnippetSource + createSearchSnippet', () => {
+    const makeEntry = (body) => {
+      const raw = { body };
+      return { raw, folded: { body: utils.foldSearchText(body) } };
+    };
+
+    it('returns a bounded window that still contains the match in a large body', () => {
+      const needle = 'uniqueneedletoken';
+      const body = `${'x'.repeat(50000)} ${needle} ${'y'.repeat(50000)}`;
+      const entry = makeEntry(body);
+      const job = { matchCase: false, foldedQueryCi: utils.foldSearchText(needle), foldedQueryCs: '' };
+
+      const { source, truncatedStart } = boundSnippetSource(entry, 'body', job);
+      expect(source.length).toBeLessThan(2000);
+      expect(truncatedStart).toBe(true);
+
+      const snippet = createSearchSnippet(source, needle, {}, { truncatedStart });
+      expect(snippet).toContain(needle);
+      expect(snippet.startsWith('...')).toBe(true);
+    });
+
+    it('finds a Persian needle despite folded/raw length differences', () => {
+      // ZWNJ and diacritics are removed by folding, shifting offsets.
+      const persian = 'می‌خواهم '.repeat(2000);
+      const needle = 'نشانه‌جستجو';
+      const body = `${persian}${needle} پایان`;
+      const entry = makeEntry(body);
+      const job = { matchCase: false, foldedQueryCi: utils.foldSearchText(needle), foldedQueryCs: '' };
+
+      const { source, truncatedStart } = boundSnippetSource(entry, 'body', job);
+      const snippet = createSearchSnippet(source, needle, {}, { truncatedStart });
+      expect(snippet.length).toBeGreaterThan(0);
+      expect(snippet).toContain('نشانه');
+    });
+
+    it('falls back to the full field when the folded offset is not found', () => {
+      const entry = makeEntry('short body');
+      const job = { matchCase: false, foldedQueryCi: utils.foldSearchText('absent'), foldedQueryCs: '' };
+      const { source, truncatedStart } = boundSnippetSource(entry, 'body', job);
+      expect(source).toBe('short body');
+      expect(truncatedStart).toBe(false);
     });
   });
 });

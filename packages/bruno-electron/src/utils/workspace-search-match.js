@@ -93,6 +93,19 @@ const buildSearchFields = ({ content = '', format = 'bru', name = '', filename =
   };
 };
 
+// Case-sensitive folds are only needed when match-case is on, so they are
+// computed lazily and cached on the entry — the first match-case keystroke
+// pays the fold once per field; every keystroke after that is a map lookup.
+// (Folding the full raw field per entry per keystroke was a main-process
+// stall on large workspaces.)
+const getCaseSensitiveFold = (entry, field) => {
+  entry.foldedCs = entry.foldedCs || {};
+  if (entry.foldedCs[field] === undefined) {
+    entry.foldedCs[field] = utils.foldSearchText(entry.raw[field], { caseSensitive: true });
+  }
+  return entry.foldedCs[field];
+};
+
 // Returns { field } of the first scope-enabled match, or null. Snippet/label
 // text is the caller's concern (it needs the original content + position).
 const matchSearchFields = (entry, { scopes, foldedQueryCi, foldedQueryCs, matchCase }) => {
@@ -104,13 +117,56 @@ const matchSearchFields = (entry, { scopes, foldedQueryCi, foldedQueryCs, matchC
     if (!foldedValue || !foldedValue.includes(foldedQueryCi)) {
       continue;
     }
-    if (matchCase
-      && !utils.foldSearchText(entry.raw[field], { caseSensitive: true }).includes(foldedQueryCs)) {
+    if (matchCase && !getCaseSensitiveFold(entry, field).includes(foldedQueryCs)) {
       continue;
     }
     return { field };
   }
   return null;
+};
+
+const SNIPPET_WINDOW_MARGIN = 300;
+
+// Bound the text handed to the (char-by-char) fold-and-find pass to a window
+// around the match instead of the whole field. The already-folded field gives
+// an approximate offset; folding only removes characters, so the true raw
+// match start lies within [approx, approx + removedChars] — the window covers
+// that span plus display margins. Without this, one large body/example block
+// re-folds in full for every matched result on every keystroke.
+const boundSnippetSource = (entry, field, { matchCase, foldedQueryCi, foldedQueryCs }) => {
+  const raw = entry.raw?.[field];
+  if (!raw) {
+    return { source: '', truncatedStart: false };
+  }
+  const folded = matchCase ? getCaseSensitiveFold(entry, field) : entry.folded?.[field];
+  const foldedQuery = matchCase ? foldedQueryCs : foldedQueryCi;
+  const approx = folded && foldedQuery ? folded.indexOf(foldedQuery) : -1;
+  if (approx < 0) {
+    return { source: raw, truncatedStart: false };
+  }
+  const removed = Math.max(0, raw.length - folded.length);
+  const start = Math.max(0, approx - 100);
+  const end = Math.min(raw.length, approx + removed * 2 + foldedQuery.length + SNIPPET_WINDOW_MARGIN);
+  return { source: raw.slice(start, end), truncatedStart: start > 0 };
+};
+
+const createSearchSnippet = (content, query, foldOptions = {}, { truncatedStart = false } = {}) => {
+  if (!content || !query) {
+    return '';
+  }
+
+  const normalizedContent = String(content);
+  const range = utils.findFoldedMatchRange(normalizedContent, query, foldOptions);
+  if (!range) {
+    return '';
+  }
+
+  const start = Math.max(0, range.start - 40);
+  const end = Math.min(normalizedContent.length, range.end + 60);
+  const prefix = start > 0 || truncatedStart ? '...' : '';
+  const suffix = end < normalizedContent.length ? '...' : '';
+
+  return `${prefix}${normalizedContent.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
 };
 
 module.exports = {
@@ -120,5 +176,7 @@ module.exports = {
   extractExampleEntries,
   matchExampleEntries,
   buildSearchFields,
-  matchSearchFields
+  matchSearchFields,
+  boundSnippetSource,
+  createSearchSnippet
 };
