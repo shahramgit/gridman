@@ -60,7 +60,8 @@ import { scrollToTheActiveTab } from 'utils/tabs';
 import { isTabForItemActive as isTabForItemActiveSelector, isTabForItemPresent as isTabForItemPresentSelector } from 'src/selectors/tab';
 import { isEqual } from 'lodash';
 import { createEmptyStateMenuItems } from 'utils/collections/emptyStateRequest';
-import { calculateDraggedItemNewPathname, getInitialExampleName, findParentItemInCollection } from 'utils/collections/index';
+import { calculateDraggedItemNewPathname, getInitialExampleName, findParentItemInCollection, findItemInCollection, flattenItems } from 'utils/collections/index';
+import { excludeDescendantItems } from 'utils/collections/multiSelect';
 import { sortByNameThenSequence } from 'utils/common/index';
 import { getRevealInFolderLabel } from 'utils/common/platform';
 import CreateExampleModal from 'components/ResponseExample/CreateExampleModal';
@@ -70,7 +71,7 @@ import MenuDropdown from 'ui/MenuDropdown';
 import { useSidebarAccordion } from 'components/Sidebar/SidebarAccordionContext';
 import useKeybinding from 'hooks/useKeybinding';
 
-const CollectionItem = ({ item, collectionUid, collectionPathname, searchText }) => {
+const CollectionItem = ({ item, collectionUid, collectionPathname, searchText, multiSelect }) => {
   const { dropdownContainerRef } = useSidebarAccordion();
   const _isTabForItemActiveSelector = isTabForItemActiveSelector({ itemUid: item.uid });
   const isTabForItemActive = useSelector(_isTabForItemActiveSelector, isEqual);
@@ -132,11 +133,40 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
 
   const [{ isDragging }, drag, dragPreview] = useDrag({
     type: 'collection-item',
-    item: {
-      ...item,
-      sourceCollectionUid: collectionUid,
-      sourcePathname: item.pathname,
-      sourceCollectionPathname: collectionPathname
+    item: () => {
+      const basePayload = {
+        ...item,
+        sourceCollectionUid: collectionUid,
+        sourcePathname: item.pathname,
+        sourceCollectionPathname: collectionPathname
+      };
+
+      // Group drag: when the dragged row is part of a multi-selection, carry
+      // one entry per selected item (same shape as the single payload).
+      const selectedUids = multiSelect?.selectedItemUids;
+      if (!selectedUids || selectedUids.size <= 1 || !selectedUids.has(item.uid)) {
+        return basePayload;
+      }
+
+      const visibleOrderByUid = new Map(flattenItems(collection?.items || []).map((flatItem, index) => [flatItem.uid, index]));
+      const selectedItems = [...selectedUids]
+        .map((uid) => findItemInCollection(collection, uid))
+        .filter(Boolean)
+        .sort((a, b) => (visibleOrderByUid.get(a.uid) ?? 0) - (visibleOrderByUid.get(b.uid) ?? 0));
+      // Skip selected items living inside another selected folder — moving
+      // the folder moves them.
+      const draggableItems = excludeDescendantItems(selectedItems).map((selectedItem) => ({
+        ...selectedItem,
+        sourceCollectionUid: collectionUid,
+        sourcePathname: selectedItem.pathname,
+        sourceCollectionPathname: collectionPathname
+      }));
+
+      if (draggableItems.length <= 1) {
+        return draggableItems[0] || basePayload;
+      }
+
+      return { ...basePayload, isMultiSelect: true, items: draggableItems };
     },
     collect: (monitor) => ({
       isDragging: monitor.isDragging()
@@ -239,53 +269,80 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
     return true;
   };
 
+  // A multi-select drag carries one entry per selected item; a plain drag is
+  // treated as a single-entry group so both flow through the same logic.
+  const getDraggedItems = (draggedPayload) => (
+    draggedPayload?.isMultiSelect && Array.isArray(draggedPayload.items) ? draggedPayload.items : [draggedPayload]
+  );
+
   const [{ isOver, canDrop }, drop] = useDrop({
     accept: 'collection-item',
-    hover: (draggedItem, monitor) => {
+    hover: (draggedPayload, monitor) => {
       const { uid: targetItemUid } = item;
-      const { uid: draggedItemUid } = draggedItem;
 
-      if (draggedItemUid === targetItemUid) return;
+      if (draggedPayload.uid === targetItemUid) return;
 
       const dropType = determineDropType(monitor);
 
-      const _canItemBeDropped = canItemBeDropped({ draggedItem, targetItem: item, dropType });
+      const allDroppable = getDraggedItems(draggedPayload).every((draggedItem) => (
+        draggedItem.uid !== targetItemUid && canItemBeDropped({ draggedItem, targetItem: item, dropType })
+      ));
 
-      setDropType(_canItemBeDropped ? dropType : null);
+      setDropType(allDroppable ? dropType : null);
     },
-    drop: async (draggedItem, monitor) => {
+    drop: async (draggedPayload, monitor) => {
       const { uid: targetItemUid } = item;
-      const { uid: draggedItemUid } = draggedItem;
 
-      if (draggedItemUid === targetItemUid) return;
+      if (draggedPayload.uid === targetItemUid) return;
 
       const dropType = determineDropType(monitor);
       if (!dropType) return;
 
+      const draggedItems = getDraggedItems(draggedPayload);
+
+      // No partial group moves: every selected item must be droppable here.
+      if (draggedItems.length > 1) {
+        const allDroppable = draggedItems.every((draggedItem) => (
+          draggedItem.uid !== targetItemUid && canItemBeDropped({ draggedItem, targetItem: item, dropType })
+        ));
+        if (!allDroppable) {
+          toast.error('Cannot move the selected items here');
+          setDropType(null);
+          return;
+        }
+      }
+
       try {
-        // Cross-collection moves and drags originating from the indexed
-        // sidebar (no hydrated item fields) go through the path-based move,
-        // which handles format conversion in the main process. Same-collection
-        // classic drags keep handleCollectionItemDrop for seq reordering.
-        const isCrossCollection = draggedItem.sourceCollectionUid && draggedItem.sourceCollectionUid !== collectionUid;
-        const isPathOnlyDragItem = Boolean(draggedItem.sourcePathname) && !draggedItem.filename;
-        if (isCrossCollection || isPathOnlyDragItem) {
-          await dispatch(moveCollectionItemByPath({
-            sourceCollectionUid: draggedItem.sourceCollectionUid || collectionUid,
-            targetCollectionUid: collectionUid,
-            sourcePathname: draggedItem.sourcePathname || draggedItem.pathname,
-            targetPathname: item.pathname,
-            dropType
-          }));
-        } else {
-          await dispatch(handleCollectionItemDrop({ targetItem: item, draggedItem, dropType, collectionUid }));
+        for (const draggedItem of draggedItems) {
+          // Cross-collection moves and drags originating from the indexed
+          // sidebar (no hydrated item fields) go through the path-based move,
+          // which handles format conversion in the main process. Same-collection
+          // classic drags keep handleCollectionItemDrop for seq reordering.
+          const isCrossCollection = draggedItem.sourceCollectionUid && draggedItem.sourceCollectionUid !== collectionUid;
+          const isPathOnlyDragItem = Boolean(draggedItem.sourcePathname) && !draggedItem.filename;
+          if (isCrossCollection || isPathOnlyDragItem) {
+            await dispatch(moveCollectionItemByPath({
+              sourceCollectionUid: draggedItem.sourceCollectionUid || collectionUid,
+              targetCollectionUid: collectionUid,
+              sourcePathname: draggedItem.sourcePathname || draggedItem.pathname,
+              targetPathname: item.pathname,
+              dropType
+            }));
+          } else {
+            await dispatch(handleCollectionItemDrop({ targetItem: item, draggedItem, dropType, collectionUid }));
+          }
+        }
+
+        if (draggedItems.length > 1) {
+          multiSelect?.clearItemSelection?.();
+          toast.success(`Moved ${draggedItems.length} items`);
         }
       } catch (error) {
         toast.error(error?.message || 'Unable to move item');
       }
       setDropType(null);
     },
-    canDrop: (draggedItem) => draggedItem.uid !== item.uid,
+    canDrop: (draggedPayload) => !getDraggedItems(draggedPayload).some((draggedItem) => draggedItem.uid === item.uid),
     collect: (monitor) => ({
       isOver: monitor.isOver()
     })
@@ -299,8 +356,11 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
     'rotate-90': examplesExpanded
   });
 
+  const isMultiSelected = Boolean(multiSelect?.selectedItemUids?.has(item.uid));
+
   const itemRowClassName = classnames('flex collection-item-name relative items-center', {
     'item-focused-in-tab': isTabForItemActive,
+    'item-multi-selected': isMultiSelected,
     'item-hovered': isOver && canDrop,
     'drop-target': isOver && dropType === 'inside',
     'drop-target-above': isOver && dropType === 'adjacent',
@@ -318,6 +378,23 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
 
   const handleClick = (event) => {
     if (event && event.detail != 1) return;
+
+    // Multi-select: ctrl/cmd-click toggles, shift-click selects the visible
+    // range from the last selected item. Neither opens the request.
+    if (event && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      multiSelect?.toggleItemSelection?.(item.uid);
+      return;
+    }
+    if (event && event.shiftKey) {
+      event.preventDefault();
+      multiSelect?.selectItemRange?.(item.uid);
+      return;
+    }
+    // Plain click: collapse the selection to just this item, then perform the
+    // normal open/toggle behavior.
+    multiSelect?.selectSingleItem?.(item.uid);
+
     // scroll to the active tab
     setTimeout(scrollToTheActiveTab, 50);
     const isRequest = isItemARequest(item);
@@ -832,12 +909,12 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
         <div>
           {folderItems && folderItems.length
             ? folderItems.map((i) => {
-                return <CollectionItem key={i.uid} item={i} collectionUid={collectionUid} collectionPathname={collectionPathname} searchText={searchText} />;
+                return <CollectionItem key={i.uid} item={i} collectionUid={collectionUid} collectionPathname={collectionPathname} searchText={searchText} multiSelect={multiSelect} />;
               })
             : null}
           {requestItems && requestItems.length
             ? requestItems.map((i) => {
-                return <CollectionItem key={i.uid} item={i} collectionUid={collectionUid} collectionPathname={collectionPathname} searchText={searchText} />;
+                return <CollectionItem key={i.uid} item={i} collectionUid={collectionUid} collectionPathname={collectionPathname} searchText={searchText} multiSelect={multiSelect} />;
               })
             : null}
           {showEmptyFolderMessage ? (

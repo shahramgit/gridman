@@ -32,7 +32,10 @@ export const CollectionItemDragPreview = () => {
   if (!isDragging) return null;
   if (!item.type) return null;
   const { x, y } = clientOffset || {};
-  const shouldShowFolderIcon = item.type === 'folder';
+  // Multi-select drags show the first selected item plus a count badge.
+  const isMultiSelect = Boolean(item.isMultiSelect && Array.isArray(item.items) && item.items.length > 1);
+  const primaryItem = isMultiSelect ? item.items[0] : item;
+  const shouldShowFolderIcon = primaryItem.type === 'folder';
   return (
     <StyledWrapper>
       <div style={getItemStyles({ x, y })} className="p-2">
@@ -42,7 +45,10 @@ export const CollectionItemDragPreview = () => {
           ) : (
             <IconFile size={16} />
           )}
-          {item.name}
+          {primaryItem.name}
+          {isMultiSelect ? (
+            <span className="drag-preview-count">+{item.items.length - 1}</span>
+          ) : null}
         </div>
       </div>
     </StyledWrapper>

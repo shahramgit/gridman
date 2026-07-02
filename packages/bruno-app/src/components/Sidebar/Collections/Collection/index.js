@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { getEmptyImage } from 'react-dnd-html5-backend';
 import classnames from 'classnames';
 import { uuid } from 'utils/common';
@@ -48,6 +48,7 @@ import SearchHighlight from '../SearchHighlight';
 import RemoveCollection from './RemoveCollection';
 import { doesCollectionHaveItemsMatchingSearchText } from 'utils/collections/search';
 import { isItemAFolder, isItemARequest, areItemsLoading, flattenItems, findParentItemInCollection } from 'utils/collections';
+import { buildClassicVisibleUids, getRangeUids } from 'utils/collections/multiSelect';
 import { isTabForItemActive } from 'src/selectors/tab';
 
 import StyledWrapper from './StyledWrapper';
@@ -97,6 +98,89 @@ const Collection = ({ collection, searchText }) => {
   const isCollectionFocused = useSelector(isTabForItemActive({ itemUid: collection.uid }));
   const { hasCopiedItems } = useSelector((state) => state.app.clipboard);
   const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
+
+  // Multi-select (Postman-style): selection lives here — the common ancestor
+  // of both sidebar renderers — because the indexed renderer is virtualized
+  // and its rows unmount while scrolled out of view.
+  const [selectedItemUids, setSelectedItemUids] = useState(() => new Set());
+  // Anchor for shift-click ranges. A ref (not state) so the selection
+  // callbacks stay referentially stable for the memoized row components;
+  // nothing renders from the anchor itself.
+  const lastSelectedUidRef = useRef(null);
+  // Refs so the stable callbacks below always read the current tree/search.
+  const collectionDataRef = useRef(collection);
+  collectionDataRef.current = collection;
+  const searchTextRef = useRef(searchText);
+  searchTextRef.current = searchText;
+
+  // The visible rows change wholesale on search/collection changes; a stale
+  // selection would silently target hidden items, so reset it.
+  useEffect(() => {
+    setSelectedItemUids(new Set());
+    lastSelectedUidRef.current = null;
+  }, [searchText, collection.uid]);
+
+  const clearItemSelection = useCallback(() => {
+    setSelectedItemUids((current) => (current.size ? new Set() : current));
+    lastSelectedUidRef.current = null;
+  }, []);
+
+  // ESC clears the multi-selection (bound only while a selection exists)
+  useEffect(() => {
+    if (!selectedItemUids.size) {
+      return undefined;
+    }
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        clearItemSelection();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [selectedItemUids.size, clearItemSelection]);
+
+  const toggleItemSelection = useCallback((uid) => {
+    setSelectedItemUids((current) => {
+      const next = new Set(current);
+      if (next.has(uid)) {
+        next.delete(uid);
+      } else {
+        next.add(uid);
+      }
+      return next;
+    });
+    lastSelectedUidRef.current = uid;
+  }, []);
+
+  const selectSingleItem = useCallback((uid) => {
+    setSelectedItemUids((current) => (current.size === 1 && current.has(uid) ? current : new Set([uid])));
+    lastSelectedUidRef.current = uid;
+  }, []);
+
+  // Shift-click: select the visible range between the anchor and the target.
+  // The indexed renderer passes its own visibleUids (from useVisibleRows);
+  // the classic renderer omits them and the order is computed from the tree.
+  const selectItemRange = useCallback((targetUid, visibleUids) => {
+    const anchorUid = lastSelectedUidRef.current;
+    if (!anchorUid) {
+      setSelectedItemUids(new Set([targetUid]));
+      lastSelectedUidRef.current = targetUid;
+      return;
+    }
+
+    const orderedUids = visibleUids || buildClassicVisibleUids(collectionDataRef.current?.items, {
+      treatFoldersAsExpanded: Boolean(searchTextRef.current?.trim?.())
+    });
+    setSelectedItemUids(new Set(getRangeUids(orderedUids, anchorUid, targetUid)));
+  }, []);
+
+  const multiSelect = useMemo(() => ({
+    selectedItemUids,
+    toggleItemSelection,
+    selectItemRange,
+    selectSingleItem,
+    clearItemSelection
+  }), [selectedItemUids, toggleItemSelection, selectItemRange, selectSingleItem, clearItemSelection]);
 
   // Reveal-in-sidebar: expand this collection and (for classic trees) the
   // collapsed ancestor folders of the revealed request. Scrolling is handled
@@ -341,26 +425,45 @@ const Collection = ({ collection, searchText }) => {
         setDropType('adjacent');
       }
     },
-    drop: (draggedItem, monitor) => {
+    drop: (draggedPayload, monitor) => {
       const itemType = monitor.getItemType();
       if (isCollectionItem(itemType)) {
-        const isCrossCollection = draggedItem.sourceCollectionUid && draggedItem.sourceCollectionUid !== collection.uid;
-        const isPathOnlyDragItem = Boolean(draggedItem.sourcePathname) && !draggedItem.filename;
-        if (isCrossCollection || isPathOnlyDragItem) {
-          dispatch(moveCollectionItemByPath({
-            sourceCollectionUid: draggedItem.sourceCollectionUid || collection.uid,
-            targetCollectionUid: collection.uid,
-            sourcePathname: draggedItem.sourcePathname || draggedItem.pathname,
-            targetPathname: collection.pathname,
-            dropType: 'inside'
-          })).catch((error) => {
+        // A multi-select drag carries one entry per selected item; a plain
+        // drag is handled as a single-entry group so both share one path.
+        const draggedItems = draggedPayload.isMultiSelect && Array.isArray(draggedPayload.items)
+          ? draggedPayload.items
+          : [draggedPayload];
+
+        const moveSequentially = async () => {
+          for (const draggedItem of draggedItems) {
+            const isCrossCollection = draggedItem.sourceCollectionUid && draggedItem.sourceCollectionUid !== collection.uid;
+            const isPathOnlyDragItem = Boolean(draggedItem.sourcePathname) && !draggedItem.filename;
+            if (isCrossCollection || isPathOnlyDragItem) {
+              await dispatch(moveCollectionItemByPath({
+                sourceCollectionUid: draggedItem.sourceCollectionUid || collection.uid,
+                targetCollectionUid: collection.uid,
+                sourcePathname: draggedItem.sourcePathname || draggedItem.pathname,
+                targetPathname: collection.pathname,
+                dropType: 'inside'
+              }));
+            } else {
+              await dispatch(handleCollectionItemDrop({ targetItem: collection, draggedItem, dropType: 'inside', collectionUid: collection.uid }));
+            }
+          }
+        };
+
+        moveSequentially()
+          .then(() => {
+            if (draggedItems.length > 1) {
+              clearItemSelection();
+              toast.success(`Moved ${draggedItems.length} items`);
+            }
+          })
+          .catch((error) => {
             toast.error(error?.message || 'Unable to move item');
           });
-        } else {
-          dispatch(handleCollectionItemDrop({ targetItem: collection, draggedItem, dropType: 'inside', collectionUid: collection.uid }));
-        }
       } else {
-        dispatch(moveCollectionAndPersist({ draggedItem, targetItem: collection }));
+        dispatch(moveCollectionAndPersist({ draggedItem: draggedPayload, targetItem: collection }));
       }
       setDropType(null);
     },
@@ -668,14 +771,14 @@ const Collection = ({ collection, searchText }) => {
         {!collectionIsCollapsed ? (
           <div>
             {collectionIndex ? (
-              <IndexedCollectionItems collectionUid={collection.uid} searchText={searchText} />
+              <IndexedCollectionItems collectionUid={collection.uid} searchText={searchText} multiSelect={multiSelect} />
             ) : (
               <>
                 {folderItems?.map?.((i) => {
-                  return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} />;
+                  return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} multiSelect={multiSelect} />;
                 })}
                 {requestItems?.map?.((i) => {
-                  return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} />;
+                  return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} multiSelect={multiSelect} />;
                 })}
               </>
             )}

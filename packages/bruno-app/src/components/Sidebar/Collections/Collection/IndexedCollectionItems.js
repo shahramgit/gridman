@@ -54,6 +54,7 @@ import ExportFolder from './CollectionItem/ExportFolder';
 import ImportIntoFolder from './ImportIntoFolder';
 import { getDefaultRequestPaneTab, getInitialExampleName } from 'utils/collections';
 import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname } from 'utils/collections';
+import { excludeDescendantItems } from 'utils/collections/multiSelect';
 import { uuid } from 'utils/common';
 import { foldSearchText } from '@usebruno/common';
 import { sortByNameThenSequence } from 'utils/common/index';
@@ -253,7 +254,7 @@ const IndexedRowExamples = ({ collectionUid, item }) => {
   );
 };
 
-const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUids, onToggleFolder }) => {
+const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUids, onToggleFolder, multiSelect }) => {
   const dispatch = useDispatch();
   const store = useStore();
   const { dropdownContainerRef } = useSidebarAccordion();
@@ -855,13 +856,42 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
   };
 
   const createDragItem = () => {
-    return {
+    const basePayload = {
       uid: node.uid,
       type: isFolder ? 'folder' : normalizeRequestType(node.type),
       sourcePathname: node.pathname,
       sourceCollectionUid: collectionUid,
       sourceCollectionPathname: collectionPathname
     };
+
+    // Group drag: when the dragged row is part of a multi-selection, carry
+    // one entry per selected item (same shape as the single payload).
+    const selectedUids = multiSelect?.selectedItemUids;
+    if (!selectedUids || selectedUids.size <= 1 || !selectedUids.has(node.uid)) {
+      return basePayload;
+    }
+
+    const nodesByUid = store.getState().collections.collectionIndexes?.[collectionUid]?.nodesByUid || {};
+    const selectedNodes = [...selectedUids]
+      .map((uid) => nodesByUid[uid])
+      .filter(Boolean)
+      .sort((a, b) => normalizeForPathCompare(a.pathname).localeCompare(normalizeForPathCompare(b.pathname)));
+    // Skip selected items living inside another selected folder — moving the
+    // folder moves them.
+    const draggableItems = excludeDescendantItems(selectedNodes).map((selectedNode) => ({
+      uid: selectedNode.uid,
+      name: selectedNode.name,
+      type: selectedNode.type === 'folder' ? 'folder' : normalizeRequestType(selectedNode.type),
+      sourcePathname: selectedNode.pathname,
+      sourceCollectionUid: collectionUid,
+      sourceCollectionPathname: collectionPathname
+    }));
+
+    if (draggableItems.length <= 1) {
+      return draggableItems[0] || basePayload;
+    }
+
+    return { ...basePayload, name: node.name, isMultiSelect: true, items: draggableItems };
   };
 
   const [{ isDragging }, drag, dragPreview] = useDrag({
@@ -955,37 +985,63 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
     await dispatch(updateItemsSequences({ itemsToResequence, collectionUid }));
   };
 
+  // A multi-select drag carries one entry per selected item; a plain drag is
+  // treated as a single-entry group so both flow through the same logic.
+  const getDraggedItems = (draggedPayload) => (
+    draggedPayload?.isMultiSelect && Array.isArray(draggedPayload.items) ? draggedPayload.items : [draggedPayload]
+  );
+
   const [{ isOver, canDrop }, drop] = useDrop({
     accept: 'collection-item',
-    hover: (draggedItem, monitor) => {
-      if (draggedItem.uid === node.uid) {
+    hover: (draggedPayload, monitor) => {
+      if (draggedPayload.uid === node.uid) {
         return;
       }
 
       const nextDropType = determineDropType(monitor);
-      setDropType(canItemBeDropped({ draggedItem, dropType: nextDropType }) ? nextDropType : null);
+      const allDroppable = getDraggedItems(draggedPayload).every(
+        (draggedItem) => canItemBeDropped({ draggedItem, dropType: nextDropType })
+      );
+      setDropType(allDroppable ? nextDropType : null);
     },
-    drop: async (draggedItem, monitor) => {
+    drop: async (draggedPayload, monitor) => {
       const nextDropType = determineDropType(monitor);
-      if (!canItemBeDropped({ draggedItem, dropType: nextDropType })) {
+      const draggedItems = getDraggedItems(draggedPayload);
+
+      // No partial group moves: every selected item must be droppable here.
+      const allDroppable = draggedItems.every(
+        (draggedItem) => canItemBeDropped({ draggedItem, dropType: nextDropType })
+      );
+      if (!allDroppable) {
+        if (draggedItems.length > 1 && nextDropType) {
+          toast.error('Cannot move the selected items here');
+        }
         setDropType(null);
         return;
       }
 
       try {
-        const result = await dispatch(moveCollectionItemByPath({
-          sourceCollectionUid: draggedItem.sourceCollectionUid || collectionUid,
-          targetCollectionUid: collectionUid,
-          sourcePathname: draggedItem.sourcePathname || draggedItem.pathname,
-          targetPathname: node.pathname,
-          dropType: nextDropType
-        }));
+        let lastMoveResult = null;
+        for (const draggedItem of draggedItems) {
+          lastMoveResult = await dispatch(moveCollectionItemByPath({
+            sourceCollectionUid: draggedItem.sourceCollectionUid || collectionUid,
+            targetCollectionUid: collectionUid,
+            sourcePathname: draggedItem.sourcePathname || draggedItem.pathname,
+            targetPathname: node.pathname,
+            dropType: nextDropType
+          }));
+        }
 
         // Reorder within the same folder returns skipped=true (the file is
         // already in the right directory), but we still need to persist the new
         // sibling order, so resequence whenever we have a resulting pathname.
-        if (nextDropType === 'adjacent' && result?.pathname) {
-          await resequenceAfterAdjacentDrop({ movedPathname: result.pathname });
+        if (nextDropType === 'adjacent' && lastMoveResult?.pathname) {
+          await resequenceAfterAdjacentDrop({ movedPathname: lastMoveResult.pathname });
+        }
+
+        if (draggedItems.length > 1) {
+          multiSelect?.clearItemSelection?.();
+          toast.success(`Moved ${draggedItems.length} items`);
         }
       } catch (error) {
         toast.error(error?.message || 'Unable to move item');
@@ -993,7 +1049,7 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
         setDropType(null);
       }
     },
-    canDrop: (draggedItem) => draggedItem.uid !== node.uid,
+    canDrop: (draggedPayload) => !getDraggedItems(draggedPayload).some((draggedItem) => draggedItem.uid === node.uid),
     collect: (monitor) => ({
       isOver: monitor.isOver(),
       canDrop: monitor.canDrop()
@@ -1004,6 +1060,23 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
     if (event && event.detail !== 1) {
       return;
     }
+
+    // Multi-select: ctrl/cmd-click toggles, shift-click selects the visible
+    // range from the last selected item. Neither opens the request.
+    if (event && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      multiSelect?.toggleItemSelection?.(node.uid);
+      return;
+    }
+    if (event && event.shiftKey) {
+      event.preventDefault();
+      multiSelect?.selectItemRange?.(node.uid);
+      return;
+    }
+    // Plain click: collapse the selection to just this item, then perform the
+    // normal open/toggle behavior.
+    multiSelect?.selectSingleItem?.(node.uid);
+
     setTimeout(scrollToTheActiveTab, 50);
 
     if (isRequest) {
@@ -1138,6 +1211,7 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
           'cursor-pointer': true,
           'opacity-50': isDragging,
           'item-focused-in-tab': isActiveTabRow,
+          'item-multi-selected': Boolean(multiSelect?.selectedItemUids?.has(node.uid)),
           'reveal-flash': revealFlash,
           'item-hovered': isOver && canDrop && dropType,
           'drop-target': isOver && canDrop && dropType === 'inside',
@@ -1241,11 +1315,24 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
 
 IndexedRow.displayName = 'IndexedRow';
 
-const IndexedCollectionItems = ({ collectionUid, searchText }) => {
+const IndexedCollectionItems = ({ collectionUid, searchText, multiSelect }) => {
   const dispatch = useDispatch();
   const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
   const [expandedNodeUids, setExpandedNodeUids] = useState(() => new Set());
   const visibleRows = useVisibleRows({ index, expandedNodeUids, searchText });
+
+  // Shift-click ranges must follow the virtualized list's visible order.
+  // The rows read it via a ref so the wrapped callback stays stable and the
+  // memoized rows don't re-render whenever visibility changes.
+  const visibleRowsRef = useRef(visibleRows);
+  visibleRowsRef.current = visibleRows;
+  const baseSelectItemRange = multiSelect?.selectItemRange;
+  const selectItemRangeInVisibleOrder = useCallback((targetUid) => {
+    baseSelectItemRange?.(targetUid, visibleRowsRef.current.map((row) => row.uid));
+  }, [baseSelectItemRange]);
+  const rowMultiSelect = useMemo(() => (
+    multiSelect ? { ...multiSelect, selectItemRange: selectItemRangeInVisibleOrder } : multiSelect
+  ), [multiSelect, selectItemRangeInVisibleOrder]);
   const virtuosoRef = useRef(null);
   const pendingRevealNodeUidRef = useRef(null);
   const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
@@ -1385,6 +1472,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
             searchText={searchText}
             expandedNodeUids={expandedNodeUids}
             onToggleFolder={onToggleFolder}
+            multiSelect={rowMultiSelect}
           />
         )}
       />

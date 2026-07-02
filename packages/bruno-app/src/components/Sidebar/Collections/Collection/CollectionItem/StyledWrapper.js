@@ -137,6 +137,19 @@ const Wrapper = styled.div`
       }
     }
 
+    /* Multi-select (ctrl/cmd/shift-click): mirror the focused-in-tab look */
+    &.item-multi-selected {
+      background: ${(props) => props.theme.sidebar.collection.item.bg};
+
+      &:hover {
+        background: ${(props) => props.theme.sidebar.collection.item.bg} !important;
+      }
+
+      .indent-block {
+        border-right: 1px solid ${(props) => props.theme.sidebar.collection.item.indentBorder} !important;
+      }
+    }
+
     &.item-keyboard-focused {
       border-top: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
       border-bottom: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
