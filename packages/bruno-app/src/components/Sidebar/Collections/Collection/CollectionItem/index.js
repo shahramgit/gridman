@@ -18,7 +18,9 @@ import {
   IconTrash,
   IconSettings,
   IconInfoCircle,
-  IconTerminal2
+  IconTerminal2,
+  IconFileExport,
+  IconFileImport
 } from '@tabler/icons';
 import { useSelector, useDispatch } from 'react-redux';
 import { addTab, focusTab, makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
@@ -42,6 +44,8 @@ import CloneCollectionItem from './CloneCollectionItem';
 import DeleteCollectionItem from './DeleteCollectionItem';
 import RunCollectionItem from './RunCollectionItem';
 import GenerateCodeItem from './GenerateCodeItem';
+import ExportFolder from './ExportFolder';
+import ImportIntoFolder from '../ImportIntoFolder';
 import { isItemARequest, isItemAFolder } from 'utils/tabs';
 import { doesRequestMatchSearchText, doesFolderHaveItemsMatchSearchText } from 'utils/collections/search';
 import { getDefaultRequestPaneTab } from 'utils/collections';
@@ -92,6 +96,8 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
   const [newFolderModalOpen, setNewFolderModalOpen] = useState(false);
   const [runCollectionModalOpen, setRunCollectionModalOpen] = useState(false);
   const [itemInfoModalOpen, setItemInfoModalOpen] = useState(false);
+  const [exportFolderModalOpen, setExportFolderModalOpen] = useState(false);
+  const [importIntoFolderModalOpen, setImportIntoFolderModalOpen] = useState(false);
   const [examplesExpanded, setExamplesExpanded] = useState(false);
   const [isKeyboardFocused, setIsKeyboardFocused] = useState(false);
   const hasSearchText = searchText && searchText?.trim()?.length;
@@ -445,6 +451,24 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
         onClick: () => setRenameItemModalOpen(true)
       }
     );
+
+    if (isFolder) {
+      items.push(
+        {
+          id: 'import',
+          leftSection: IconFileImport,
+          label: 'Import',
+          onClick: () => setImportIntoFolderModalOpen(true)
+        },
+        {
+          id: 'export',
+          leftSection: IconFileExport,
+          label: 'Export',
+          onClick: () => setExportFolderModalOpen(true)
+        }
+      );
+    }
+
     if (!isFolder && isItemARequest(item) && !(item.type === 'http-request' || item.type === 'graphql-request')) {
       items.push({
         id: 'run',
@@ -691,6 +715,22 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
       )}
       {itemInfoModalOpen && (
         <CollectionItemInfo item={item} onClose={() => setItemInfoModalOpen(false)} />
+      )}
+      {exportFolderModalOpen && (
+        <ExportFolder
+          folderName={item.name}
+          folderPathname={item.pathname}
+          collectionPathname={collectionPathname}
+          onClose={() => setExportFolderModalOpen(false)}
+        />
+      )}
+      {importIntoFolderModalOpen && (
+        <ImportIntoFolder
+          collectionUid={collectionUid}
+          targetDirectory={item.pathname}
+          targetName={item.name}
+          onClose={() => setImportIntoFolderModalOpen(false)}
+        />
       )}
       <CreateExampleModal
         isOpen={createExampleModalOpen}

@@ -15,6 +15,7 @@ import {
   IconPlayerPlay,
   IconEdit,
   IconShare,
+  IconFileImport,
   IconFoldDown,
   IconX,
   IconSettings,
@@ -42,6 +43,7 @@ import NewRequest from 'components/Sidebar/NewRequest';
 import NewFolder from 'components/Sidebar/NewFolder';
 import CollectionItem from './CollectionItem';
 import IndexedCollectionItems from './IndexedCollectionItems';
+import ImportIntoFolder from './ImportIntoFolder';
 import SearchHighlight from '../SearchHighlight';
 import RemoveCollection from './RemoveCollection';
 import { doesCollectionHaveItemsMatchingSearchText } from 'utils/collections/search';
@@ -78,6 +80,7 @@ const Collection = ({ collection, searchText }) => {
   const [inlineRenameValue, setInlineRenameValue] = useState('');
   const [showCloneCollectionModalOpen, setShowCloneCollectionModalOpen] = useState(false);
   const [showShareCollectionModal, setShowShareCollectionModal] = useState(false);
+  const [showImportIntoCollectionModal, setShowImportIntoCollectionModal] = useState(false);
   const [showGenerateDocumentationModal, setShowGenerateDocumentationModal] = useState(false);
   const [showRemoveCollectionModal, setShowRemoveCollectionModal] = useState(false);
   const [dropType, setDropType] = useState(null);
@@ -503,6 +506,15 @@ const Collection = ({ collection, searchText }) => {
       }
     },
     {
+      id: 'import',
+      leftSection: IconFileImport,
+      label: 'Import',
+      onClick: () => {
+        ensureCollectionIsMounted();
+        setShowImportIntoCollectionModal(true);
+      }
+    },
+    {
       id: 'generate-docs',
       leftSection: IconBook,
       label: 'Generate Docs',
@@ -561,6 +573,14 @@ const Collection = ({ collection, searchText }) => {
       )}
       {showShareCollectionModal && (
         <ShareCollection collectionUid={collection.uid} onClose={() => setShowShareCollectionModal(false)} />
+      )}
+      {showImportIntoCollectionModal && (
+        <ImportIntoFolder
+          collectionUid={collection.uid}
+          targetDirectory={collection.pathname}
+          targetName={collection.name}
+          onClose={() => setShowImportIntoCollectionModal(false)}
+        />
       )}
       {showGenerateDocumentationModal && (
         <GenerateDocumentation collectionUid={collection.uid} onClose={() => setShowGenerateDocumentationModal(false)} />

@@ -79,6 +79,7 @@ const { transformBrunoConfigBeforeSave } = require('../utils/transformBrunoConfi
 const { REQUEST_TYPES } = require('../utils/constants');
 const { cancelOAuth2AuthorizationRequest, isOauth2AuthorizationRequestInProgress } = require('../utils/oauth2-protocol-handler');
 const { findUniqueFolderName } = require('../utils/collection-import');
+const { readCollectionItemsFromDisk, readFolderForExport, writeItemsIntoFolder } = require('./collection-export-import');
 const { saveSpecAndUpdateMetadata, cleanupSpecFilesForCollection } = require('./openapi-sync');
 const {
   addCollectionToWorkspace,
@@ -3282,71 +3283,6 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       throw new Error('Collection path does not exist');
     }
 
-    const ignoredDirs = new Set(['node_modules', '.git', 'environments']);
-    const rootFileNames = new Set([
-      'collection.bru',
-      'opencollection.yml',
-      'folder.bru',
-      'folder.yml'
-    ]);
-
-    const readFolder = (dirPath) => {
-      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-      const items = [];
-
-      for (const entry of entries) {
-        const fullPath = path.join(dirPath, entry.name);
-
-        if (entry.isDirectory()) {
-          if (ignoredDirs.has(entry.name)) continue;
-
-          const folderItem = {
-            uid: generateUidBasedOnHash(fullPath),
-            name: entry.name,
-            type: 'folder',
-            filename: entry.name,
-            pathname: fullPath,
-            items: readFolder(fullPath)
-          };
-
-          for (const fmt of ['bru', 'yml']) {
-            const folderFile = path.join(fullPath, `folder.${fmt}`);
-            if (fs.existsSync(folderFile)) {
-              try {
-                folderItem.root = parseFolder(fs.readFileSync(folderFile, 'utf8'), { format: fmt });
-                if (folderItem.root?.meta?.seq != null) folderItem.seq = folderItem.root.meta.seq;
-              } catch (err) {
-                console.warn('[export] failed to parse folder root', folderFile, err?.message);
-              }
-              break;
-            }
-          }
-
-          items.push(folderItem);
-          continue;
-        }
-
-        if (rootFileNames.has(entry.name.toLowerCase())) continue;
-        if (!hasRequestExtension(entry.name)) continue;
-
-        try {
-          const content = fs.readFileSync(fullPath, 'utf8');
-          const format = hasBruExtension(fullPath) ? 'bru' : 'yml';
-          const data = parseRequest(content, { format });
-          hydrateRequestWithUuid(data, fullPath);
-          data.uid = data.uid || generateUidBasedOnHash(fullPath);
-          data.filename = entry.name;
-          data.pathname = fullPath;
-          if (data?.seq == null && data?.meta?.seq != null) data.seq = data.meta.seq;
-          items.push(data);
-        } catch (err) {
-          console.warn('[export] failed to parse request', fullPath, err?.message);
-        }
-      }
-
-      return items;
-    };
-
     let brunoConfig = null;
     const brunoJsonPath = path.join(collectionPathname, 'bruno.json');
     if (fs.existsSync(brunoJsonPath)) {
@@ -3392,9 +3328,46 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         brunoConfig,
         root,
         environments,
-        items: readFolder(collectionPathname)
+        items: readCollectionItemsFromDisk(collectionPathname)
       })
     );
+  });
+
+  // Reads a folder subtree from disk into a collection-shaped object so the
+  // renderer can hand it to the existing single-file exporters.
+  ipcMain.handle('renderer:read-folder-for-export', async (event, { folderPathname, collectionPathname }) => {
+    if (!collectionPathname || !fs.existsSync(collectionPathname)) {
+      throw new Error('Collection path does not exist');
+    }
+
+    const folderPath = assertCollectionItemPath({ collectionPathname, itemPathname: folderPathname });
+    if (!isDirectory(folderPath)) {
+      throw new Error('Folder path must be a directory inside the collection');
+    }
+
+    return safeParseJSON(safeStringifyJSON(readFolderForExport({ folderPathname: folderPath })));
+  });
+
+  // Writes imported (bruno-shaped) items into an existing folder of an open
+  // collection instead of creating a new collection.
+  ipcMain.handle('renderer:import-into-folder', async (event, { items, targetDirectory, collectionPathname }) => {
+    if (!collectionPathname || !fs.existsSync(collectionPathname)) {
+      throw new Error('Collection path does not exist');
+    }
+
+    const targetPath = assertPathInside(collectionPathname, targetDirectory, 'Target directory must stay inside the collection');
+    if (!fs.existsSync(targetPath) || !isDirectory(targetPath)) {
+      throw new Error('Target directory does not exist');
+    }
+
+    const format = getCollectionFormat(collectionPathname);
+    await writeItemsIntoFolder({
+      items: Array.isArray(items) ? items : [],
+      targetDirectory: targetPath,
+      format
+    });
+
+    return { success: true };
   });
 
   ipcMain.handle('renderer:is-bruno-collection-zip', async (event, zipFilePath) => {

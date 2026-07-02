@@ -9,6 +9,8 @@ import {
   IconCopy,
   IconDots,
   IconEdit,
+  IconFileExport,
+  IconFileImport,
   IconFilePlus,
   IconFolder,
   IconFolderPlus,
@@ -48,6 +50,8 @@ import DeleteCollectionItem from './CollectionItem/DeleteCollectionItem';
 import RunCollectionItem from './CollectionItem/RunCollectionItem';
 import GenerateCodeItem from './CollectionItem/GenerateCodeItem';
 import CollectionItemInfo from './CollectionItem/CollectionItemInfo';
+import ExportFolder from './CollectionItem/ExportFolder';
+import ImportIntoFolder from './ImportIntoFolder';
 import { getDefaultRequestPaneTab, getInitialExampleName } from 'utils/collections';
 import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname } from 'utils/collections';
 import { uuid } from 'utils/common';
@@ -269,6 +273,8 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
   const [runCollectionModalOpen, setRunCollectionModalOpen] = useState(false);
   const [generateCodeItemModalOpen, setGenerateCodeItemModalOpen] = useState(false);
   const [itemInfoModalOpen, setItemInfoModalOpen] = useState(false);
+  const [exportFolderModalOpen, setExportFolderModalOpen] = useState(false);
+  const [importIntoFolderModalOpen, setImportIntoFolderModalOpen] = useState(false);
   const [dropType, setDropType] = useState(null);
   const existingRequestTab = useSelector((state) => {
     if (!isRequest) {
@@ -757,6 +763,23 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
       onClick: () => openPathModal(setRenameItemModalOpen)
     });
 
+    if (isFolder) {
+      items.push(
+        {
+          id: 'import',
+          leftSection: IconFileImport,
+          label: 'Import',
+          onClick: () => openPathModal(setImportIntoFolderModalOpen)
+        },
+        {
+          id: 'export',
+          leftSection: IconFileExport,
+          label: 'Export',
+          onClick: () => openPathModal(setExportFolderModalOpen)
+        }
+      );
+    }
+
     if (!isFolder && !['http-request', 'graphql-request'].includes(normalizeRequestType(node.type))) {
       items.push({
         id: 'run',
@@ -1080,6 +1103,22 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
       )}
       {itemInfoModalOpen && (
         <CollectionItemInfo item={actionItem} onClose={() => setItemInfoModalOpen(false)} />
+      )}
+      {exportFolderModalOpen && (
+        <ExportFolder
+          folderName={node.name || node.filename}
+          folderPathname={node.pathname}
+          collectionPathname={collectionPathname}
+          onClose={() => setExportFolderModalOpen(false)}
+        />
+      )}
+      {importIntoFolderModalOpen && (
+        <ImportIntoFolder
+          collectionUid={collectionUid}
+          targetDirectory={node.pathname}
+          targetName={node.name || node.filename}
+          onClose={() => setImportIntoFolderModalOpen(false)}
+        />
       )}
       {!isFolder && createExampleModalOpen && (
         <CreateExampleModal
