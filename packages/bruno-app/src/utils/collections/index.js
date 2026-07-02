@@ -1369,11 +1369,6 @@ export const getTreePathFromCollectionToItem = (collection, _item) => {
         pathLength: path.length
       };
       console.warn('[gridman:collections] cycle detected in item tree path', cyclePayload);
-      try {
-        window.ipcRenderer?.send?.('renderer:debug-log-event', '[gridman:collections] tree-path-cycle', cyclePayload);
-      } catch (error) {
-        // non-electron context
-      }
       break;
     }
     seenUids.add(item.uid);

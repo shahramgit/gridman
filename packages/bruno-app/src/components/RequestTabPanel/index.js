@@ -52,16 +52,6 @@ const MIN_BOTTOM_PANE_HEIGHT = 150;
 const COLLAPSE_EDGE_THRESHOLD = 80;
 const EXPAND_EDGE_THRESHOLD = 100;
 
-const sendDebugLog = (label, payload) => {
-  try {
-    window.ipcRenderer?.send?.('renderer:debug-log-event', label, payload);
-  } catch (error) {
-    console.warn(label, payload);
-  }
-};
-
-let lastRenderEditorKey = null;
-
 const normalizePathnameForCompare = (pathname) => String(pathname || '').normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
 
 const findItemByPathWalk = (collection, pathname) => {
@@ -177,43 +167,6 @@ const RequestTabPanel = () => {
       pathname: revealPathname
     }));
   }, [activeTabUid]);
-
-  useEffect(() => {
-    if (!isRequestTab || !focusedTab?.collectionUid) {
-      return;
-    }
-
-    sendDebugLog('[gridman:request-panel] resolved-active-tab', {
-      activeTabUid,
-      tabUid: focusedTab.uid,
-      tabType: focusedTab.type,
-      collectionUid: focusedTab.collectionUid,
-      itemUid: focusedTab.itemUid,
-      itemPathname: focusedTab.itemPathname,
-      itemFound: Boolean(panelItem),
-      itemUidResolved: panelItem?.uid,
-      itemPathnameResolved: panelItem?.pathname,
-      itemLoading: panelItem?.loading,
-      itemPartial: panelItem?.partial,
-      itemHasRequest: Boolean(panelItem?.request),
-      itemMethod: panelItem?.request?.method,
-      itemUrl: panelItem?.request?.url
-    });
-  }, [
-    activeTabUid,
-    focusedTab?.uid,
-    focusedTab?.type,
-    focusedTab?.collectionUid,
-    focusedTab?.itemUid,
-    focusedTab?.itemPathname,
-    isRequestTab,
-    panelItem?.uid,
-    panelItem?.pathname,
-    panelItem?.loading,
-    panelItem?.partial,
-    panelItem?.request?.method,
-    panelItem?.request?.url
-  ]);
 
   const {
     left: leftPaneWidth,
@@ -612,18 +565,6 @@ const RequestTabPanel = () => {
           width: `${Math.max(leftPaneWidth, MIN_LEFT_PANE_WIDTH)}px`
         };
   };
-
-  const renderEditorKey = `${focusedTab.uid}|${item.uid}|${item.pathname}`;
-  if (lastRenderEditorKey !== renderEditorKey) {
-    lastRenderEditorKey = renderEditorKey;
-    sendDebugLog('[gridman:request-panel] render-editor-start', {
-      tabUid: focusedTab.uid,
-      itemUid: item.uid,
-      pathname: item.pathname,
-      type: item.type,
-      fromLoadedEntry: Boolean(loadedRequestItem)
-    });
-  }
 
   return (
     <ScopedPersistenceProvider scope={focusedTab.uid}>

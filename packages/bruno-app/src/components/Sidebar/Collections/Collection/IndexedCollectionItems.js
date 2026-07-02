@@ -144,14 +144,6 @@ const getIndexedRequestTabUid = ({ collectionUid, pathname, uid }) => {
   return `indexed-request:${collectionUid}:${pathname || uid}`;
 };
 
-const sendDebugLog = (label, payload) => {
-  try {
-    window.ipcRenderer?.send?.('renderer:debug-log-event', label, payload);
-  } catch (error) {
-    console.warn(label, payload);
-  }
-};
-
 const isSameOrDescendantPath = (targetPathname, sourcePathname) => {
   const target = normalizeForPathCompare(targetPathname);
   const source = normalizeForPathCompare(sourcePathname);
@@ -380,52 +372,11 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
       || item.request?.gridmanIndexOnly;
     const tabUid = getIndexedRequestTabUid({ collectionUid, pathname: node.pathname, uid: node.uid });
 
-    const clickPayload = {
-      collectionUid,
-      nodeUid: node.uid,
-      nodeName: node.name,
-      pathname: node.pathname,
-      computedTabUid: tabUid,
-      existingRequestTabUid: existingRequestTab?.uid,
-      existingRequestTabPathname: existingRequestTab?.itemPathname,
-      existingRequestTabIsExpectedUid: existingRequestTab?.uid === tabUid,
-      hasHydratedItem: Boolean(item),
-      hydratedItemUid: item?.uid,
-      hydratedItemPathname: item?.pathname,
-      hydratedItemLoading: item?.loading,
-      hydratedItemPartial: item?.partial,
-      hydratedItemHasRequest: Boolean(item?.request),
-      hasLoadedEntry: Boolean(loadedEntry),
-      shouldLoadRequest
-    };
-    console.warn('[gridman:request-open] indexed-click', clickPayload);
-    sendDebugLog('[gridman:request-open] indexed-click', clickPayload);
-
     dispatch(collectionIndexNodeActivated({ collectionUid, node }));
 
     if (existingRequestTab) {
-      sendDebugLog('[gridman:request-open] focus-existing-tab', {
-        collectionUid,
-        pathname: node.pathname,
-        tabUid: existingRequestTab.uid,
-        expectedTabUid: tabUid,
-        tabPathname: existingRequestTab.itemPathname,
-        itemFound: Boolean(item),
-        itemLoading: item?.loading,
-        itemPartial: item?.partial,
-        itemHasRequest: Boolean(item?.request)
-      });
       dispatch(focusTab({ uid: existingRequestTab.uid }));
     } else {
-      sendDebugLog('[gridman:request-open] add-new-tab', {
-        collectionUid,
-        pathname: node.pathname,
-        tabUid,
-        itemFound: Boolean(item),
-        itemLoading: item?.loading,
-        itemPartial: item?.partial,
-        itemHasRequest: Boolean(item?.request)
-      });
       dispatch(
         addTab({
           uid: tabUid,
@@ -437,25 +388,6 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
         })
       );
     }
-
-    const loadDecisionPayload = {
-      collectionUid,
-      nodeUid: node.uid,
-      pathname: node.pathname,
-      action: shouldLoadRequest ? 'dispatch-load' : 'skip-load',
-      reason: {
-        indexedRequest: true,
-        missingLoadedEntry: !loadedEntry,
-        missingItem: !item,
-        loading: item?.loading,
-        partial: item?.partial,
-        missingRequest: !item?.request,
-        indexOnly: item?.gridmanIndexOnly || item?.request?.gridmanIndexOnly,
-        newIndexedTab: !existingRequestTab
-      }
-    };
-    console.warn('[gridman:request-open] load-decision', loadDecisionPayload);
-    sendDebugLog('[gridman:request-open] load-decision', loadDecisionPayload);
 
     if (shouldLoadRequest) {
       dispatch(loadRequest({ collectionUid, pathname: node.pathname }));

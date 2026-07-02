@@ -34,14 +34,6 @@ const findTabForUpdate = (state, uid) => {
   return find(matches, (t) => t.uid === state.activeTabUid) || matches[0];
 };
 
-const debugTabEvent = (label, payload) => {
-  try {
-    window.ipcRenderer?.send?.('renderer:debug-log-event', label, payload);
-  } catch (error) {
-    // Reducers must stay side-effect tolerant for tests/non-Electron contexts.
-  }
-};
-
 export const tabsSlice = createSlice({
   name: 'tabs',
   initialState,
@@ -64,14 +56,6 @@ export const tabsSlice = createSlice({
 
       const existingTab = find(state.tabs, (tab) => tab.uid === uid);
       if (existingTab) {
-        debugTabEvent('[gridman:tabs] add-existing-tab-focus', {
-          uid,
-          collectionUid,
-          type,
-          itemUid,
-          itemPathname,
-          previousActiveTabUid: state.activeTabUid
-        });
         state.activeTabUid = existingTab.uid;
         return;
       }
@@ -152,24 +136,11 @@ export const tabsSlice = createSlice({
         ...(itemPathname ? { itemPathname } : {}),
         ...(isTransient ? { isTransient: true } : {})
       });
-      debugTabEvent('[gridman:tabs] add-new-tab', {
-        uid,
-        collectionUid,
-        type,
-        itemUid,
-        itemPathname,
-        previousActiveTabUid: state.activeTabUid
-      });
       state.activeTabUid = uid;
     },
     focusTab: (state, action) => {
       const { uid } = action.payload;
       const tabExists = state.tabs.some((t) => t.uid === uid);
-      debugTabEvent('[gridman:tabs] focus-tab', {
-        uid,
-        tabExists,
-        previousActiveTabUid: state.activeTabUid
-      });
       if (tabExists) {
         state.activeTabUid = uid;
       }

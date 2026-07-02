@@ -45,15 +45,6 @@ import { collectionAddOauth2CredentialsByUrl, collectionClearOauth2CredentialsBy
 import { addLog } from 'providers/ReduxStore/slices/logs';
 import { updateSystemResources } from 'providers/ReduxStore/slices/performance';
 import { apiSpecAddFileEvent, apiSpecChangeFileEvent } from 'providers/ReduxStore/slices/apiSpec';
-import { findItemInCollectionByPathname } from 'utils/collections';
-
-const sendDebugLog = (label, payload) => {
-  try {
-    window.ipcRenderer?.send?.('renderer:debug-log-event', label, payload);
-  } catch (error) {
-    console.warn(label, payload);
-  }
-};
 
 const useIpcEvents = () => {
   const dispatch = useDispatch();
@@ -82,26 +73,6 @@ const useIpcEvents = () => {
             file: val
           })
         );
-
-        if (val?.meta?.source === 'load-request') {
-          const state = store.getState();
-          const collection = state.collections.collections.find((c) => c.uid === val.meta.collectionUid);
-          const item = collection ? findItemInCollectionByPathname(collection, val.meta.pathname) : null;
-          sendDebugLog('[gridman:collection-tree] after-addFile-load-request', {
-            collectionUid: val.meta.collectionUid,
-            pathname: val.meta.pathname,
-            incomingLoading: val.loading,
-            incomingPartial: val.partial,
-            incomingUid: val.data?.uid,
-            stateFound: Boolean(item),
-            stateUid: item?.uid,
-            stateLoading: item?.loading,
-            statePartial: item?.partial,
-            stateHasRequest: Boolean(item?.request),
-            stateMethod: item?.request?.method,
-            stateUrl: item?.request?.url
-          });
-        }
       }
       if (type === 'change') {
         dispatch(
@@ -157,18 +128,6 @@ const useIpcEvents = () => {
         && val?.partial === false;
 
       if (isReadyRequestFile) {
-        if (val?.meta?.source === 'load-request') {
-          sendDebugLog('[gridman:collection-tree] ready-load-request-event-received', {
-            collectionUid: val.meta.collectionUid,
-            pathname: val.meta.pathname,
-            incomingUid: val.data?.uid,
-            loading: val.loading,
-            partial: val.partial,
-            method: val.data?.request?.method,
-            url: val.data?.request?.url
-          });
-        }
-
         const readyPathname = String(val.meta.pathname || '').normalize('NFC');
         for (let i = collectionTreeQueue.length - 1; i >= 0; i -= 1) {
           const update = collectionTreeQueue[i];
@@ -182,14 +141,6 @@ const useIpcEvents = () => {
         }
 
         dispatchCollectionTreeUpdate(type, val);
-        sendDebugLog('[gridman:collection-tree] dispatched-ready-request', {
-          collectionUid: val.meta.collectionUid,
-          pathname: val.meta.pathname,
-          loading: val.loading,
-          partial: val.partial,
-          method: val.data?.request?.method,
-          url: val.data?.request?.url
-        });
         return;
       }
 
@@ -201,19 +152,6 @@ const useIpcEvents = () => {
     };
 
     const _collectionTreeUpdated = (type, val) => {
-      if (val?.meta?.source === 'load-request') {
-        sendDebugLog('[gridman:collection-tree] event-received', {
-          type,
-          collectionUid: val.meta.collectionUid,
-          pathname: val.meta.pathname,
-          incomingUid: val.data?.uid,
-          loading: val.loading,
-          partial: val.partial,
-          method: val.data?.request?.method,
-          url: val.data?.request?.url
-        });
-      }
-
       if (window.__IS_DEV__) {
         console.log(type);
         console.log(val);
