@@ -528,6 +528,7 @@ const {
 } = require('../utils/workspace-search-match');
 const {
   getCollectionSearchIndex,
+  evictWorkspaceSearchForPath,
   createWorkspaceCollectionSearchResult
 } = require('./workspace-search-index');
 
@@ -1780,6 +1781,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     // Clean up
     const { clearCollectionWorkspace } = require('../store/process-env');
     clearCollectionWorkspace(collectionUid);
+    // Search caches hold folded file contents; free them with the collection.
+    evictWorkspaceSearchForPath(collectionPath);
 
     const shouldDeleteCollectionFiles = Boolean(workspacePath) && isWorkspaceCollectionPathAllowed(workspacePath, collectionPath);
 

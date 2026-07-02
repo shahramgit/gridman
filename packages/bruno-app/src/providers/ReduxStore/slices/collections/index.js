@@ -380,27 +380,6 @@ const applyCollectionAddDirectory = (state, dir, options = {}) => {
   return collection;
 };
 
-const getIndexForCollection = (state, collectionUid) => {
-  if (!state.collectionIndexes[collectionUid]) {
-    state.collectionIndexes[collectionUid] = {
-      collectionUid,
-      loadSessionId: null,
-      status: 'idle',
-      nodesByUid: {},
-      uidByPathname: {},
-      childrenByParentUid: {
-        root: []
-      },
-      rootChildUids: [],
-      totalScanned: 0,
-      totalNodes: 0,
-      error: null
-    };
-  }
-
-  return state.collectionIndexes[collectionUid];
-};
-
 const normalizeIndexPathKey = (pathname) => path.normalize(pathname || '');
 
 // uidByPathname is the O(1) pathname -> uid lookup for the index. Every
@@ -898,6 +877,10 @@ export const collectionsSlice = createSlice({
     },
     removeCollection: (state, action) => {
       state.collections = filter(state.collections, (c) => c.uid !== action.payload.collectionUid);
+      // Free the sidebar index and loaded request bodies with the collection —
+      // both grew unboundedly across close/reopen and workspace switches.
+      delete state.collectionIndexes[action.payload.collectionUid];
+      delete state.loadedRequestsByPath[action.payload.collectionUid];
     },
     sortCollections: (state, action) => {
       state.collectionSortOrder = action.payload.order;
@@ -3440,7 +3423,12 @@ export const collectionsSlice = createSlice({
     },
     collectionIndexBatchReceived: (state, action) => {
       const { collectionUid, loadSessionId, nodes = [], totalScanned } = action.payload;
-      const index = getIndexForCollection(state, collectionUid);
+      const index = state.collectionIndexes[collectionUid];
+      if (!index) {
+        // Straggler event after the collection was removed - do not resurrect
+        // a ghost index.
+        return;
+      }
       if (index.loadSessionId && index.loadSessionId !== loadSessionId) {
         return;
       }
@@ -3545,7 +3533,12 @@ export const collectionsSlice = createSlice({
     },
     collectionIndexReady: (state, action) => {
       const { collectionUid, loadSessionId, totalNodes } = action.payload;
-      const index = getIndexForCollection(state, collectionUid);
+      const index = state.collectionIndexes[collectionUid];
+      if (!index) {
+        // Straggler event after the collection was removed - do not resurrect
+        // a ghost index.
+        return;
+      }
       if (index.loadSessionId && index.loadSessionId !== loadSessionId) {
         return;
       }
@@ -3559,7 +3552,12 @@ export const collectionsSlice = createSlice({
     },
     collectionIndexFailed: (state, action) => {
       const { collectionUid, loadSessionId, error } = action.payload;
-      const index = getIndexForCollection(state, collectionUid);
+      const index = state.collectionIndexes[collectionUid];
+      if (!index) {
+        // Straggler event after the collection was removed - do not resurrect
+        // a ghost index.
+        return;
+      }
       if (index.loadSessionId && index.loadSessionId !== loadSessionId) {
         return;
       }
@@ -3573,7 +3571,12 @@ export const collectionsSlice = createSlice({
     },
     collectionIndexCancelled: (state, action) => {
       const { collectionUid, loadSessionId } = action.payload;
-      const index = getIndexForCollection(state, collectionUid);
+      const index = state.collectionIndexes[collectionUid];
+      if (!index) {
+        // Straggler event after the collection was removed - do not resurrect
+        // a ghost index.
+        return;
+      }
       if (index.loadSessionId && index.loadSessionId !== loadSessionId) {
         return;
       }

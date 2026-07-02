@@ -677,6 +677,11 @@ class CollectionWatcher {
     // Lazy require avoids a load-order cycle between the watcher and indexer.
     const { startCollectionIndex } = require('./collection-indexer');
 
+    // Per-file watcher events were suppressed during the git operation, so the
+    // search index never saw the rewritten files — invalidate it here or
+    // searches keep serving pre-pull content until the TTL.
+    invalidateSearchForPath(gitRootPath);
+
     for (const [watchPath, meta] of Object.entries(this.watcherMeta)) {
       if (!meta?.win || meta.win.isDestroyed?.()) {
         continue;

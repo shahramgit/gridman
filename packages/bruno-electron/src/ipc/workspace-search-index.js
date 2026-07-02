@@ -26,7 +26,11 @@ const invalidateWorkspaceSearchForPath = (pathname) => {
   }
   const normalized = path.normalize(pathname);
   for (const [collectionPath, index] of workspaceSearchIndex.entries()) {
-    if (normalized === collectionPath || normalized.startsWith(`${collectionPath}${path.sep}`)) {
+    // Match a changed file inside the collection AND a parent directory above
+    // it (a git operation invalidates by workspace root).
+    const changedInsideCollection = normalized === collectionPath || normalized.startsWith(`${collectionPath}${path.sep}`);
+    const collectionInsideChangedPath = collectionPath.startsWith(`${normalized}${path.sep}`);
+    if (changedInsideCollection || collectionInsideChangedPath) {
       // Force a rebuild on the next search; drop the changed file's cache.
       // The generation bump lets a build already in flight detect that it
       // raced this invalidation and mark its own result stale.
@@ -39,6 +43,42 @@ const invalidateWorkspaceSearchForPath = (pathname) => {
 
 // Let the collection watcher invalidate search caches on file changes.
 require('../app/search-invalidation').setSearchInvalidator(invalidateWorkspaceSearchForPath);
+
+// Drop everything cached under a collection (or workspace) path. Without
+// eviction the index + per-file cache grow forever across closed collections
+// and switched workspaces — entries hold full folded file contents.
+const evictWorkspaceSearchForPath = (pathname) => {
+  if (!pathname) {
+    return;
+  }
+  const normalized = path.normalize(pathname);
+  const isUnder = (candidate) => candidate === normalized || candidate.startsWith(`${normalized}${path.sep}`);
+
+  for (const collectionPath of [...workspaceSearchIndex.keys()]) {
+    if (isUnder(collectionPath)) {
+      workspaceSearchIndex.delete(collectionPath);
+    }
+  }
+  for (const filePath of [...workspaceSearchFileCache.keys()]) {
+    if (isUnder(path.normalize(filePath))) {
+      workspaceSearchFileCache.delete(filePath);
+    }
+  }
+};
+
+// After a rebuild, drop per-file cache entries under the collection that no
+// longer exist on disk (deleted files otherwise linger in the cache forever).
+const pruneWorkspaceSearchFileCache = (collectionPath, liveEntries) => {
+  const normalizedCollectionPath = path.normalize(collectionPath);
+  for (const filePath of [...workspaceSearchFileCache.keys()]) {
+    const normalized = path.normalize(filePath);
+    if (normalized === normalizedCollectionPath || normalized.startsWith(`${normalizedCollectionPath}${path.sep}`)) {
+      if (!liveEntries.has(filePath)) {
+        workspaceSearchFileCache.delete(filePath);
+      }
+    }
+  }
+};
 
 const cleanSearchMetaValue = (value) => {
   if (!value) {
@@ -312,6 +352,7 @@ const getCollectionSearchIndex = async (workspacePath, collectionPath) => {
   const startGeneration = existing?.generation || 0;
   const buildPromise = (async () => {
     const entries = await buildCollectionSearchEntries(workspacePath, collectionPath, format);
+    pruneWorkspaceSearchFileCache(collectionPath, entries);
     const current = workspaceSearchIndex.get(collectionPath);
     const generation = current?.generation ?? startGeneration;
     const built = {
@@ -351,6 +392,7 @@ const getCollectionSearchIndex = async (workspacePath, collectionPath) => {
 module.exports = {
   getCollectionSearchIndex,
   invalidateWorkspaceSearchForPath,
+  evictWorkspaceSearchForPath,
   createWorkspaceCollectionSearchResult,
   // exposed for eviction and tests
   buildCollectionSearchEntries,

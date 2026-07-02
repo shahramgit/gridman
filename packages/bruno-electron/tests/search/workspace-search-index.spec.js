@@ -9,6 +9,7 @@ const path = require('path');
 const {
   getCollectionSearchIndex,
   invalidateWorkspaceSearchForPath,
+  evictWorkspaceSearchForPath,
   workspaceSearchIndex,
   workspaceSearchFileCache
 } = require('../../src/ipc/workspace-search-index');
@@ -127,6 +128,38 @@ describe('workspace-search-index', () => {
     const index = await getCollectionSearchIndex(workspacePath, collectionPath);
     const indexedPaths = [...index.entries.keys()];
     expect(indexedPaths.some((p) => p.includes('environments'))).toBe(false);
+  });
+
+  it('invalidates when a parent directory (git root) is invalidated', async () => {
+    const built = await getCollectionSearchIndex(workspacePath, collectionPath);
+    expect(built.builtAt).toBeGreaterThan(0);
+
+    // A git pull invalidates by workspace root — a parent of the collection.
+    invalidateWorkspaceSearchForPath(workspacePath);
+    expect(workspaceSearchIndex.get(collectionPath).builtAt).toBe(0);
+  });
+
+  it('evicts the index and file cache for a removed collection', async () => {
+    await getCollectionSearchIndex(workspacePath, collectionPath);
+    expect(workspaceSearchIndex.has(collectionPath)).toBe(true);
+    expect(workspaceSearchFileCache.size).toBeGreaterThan(0);
+
+    evictWorkspaceSearchForPath(collectionPath);
+    expect(workspaceSearchIndex.has(collectionPath)).toBe(false);
+    expect([...workspaceSearchFileCache.keys()].some((p) => p.startsWith(collectionPath))).toBe(false);
+  });
+
+  it('prunes deleted files from the cache on rebuild', async () => {
+    await getCollectionSearchIndex(workspacePath, collectionPath);
+    const target = path.join(collectionPath, 'users', 'get-user.bru');
+    expect(workspaceSearchFileCache.has(target)).toBe(true);
+
+    fs.rmSync(target);
+    invalidateWorkspaceSearchForPath(target);
+    const stale = await getCollectionSearchIndex(workspacePath, collectionPath);
+    const rebuilt = await (stale.building || stale);
+    expect(rebuilt.entries.has(target)).toBe(false);
+    expect(workspaceSearchFileCache.has(target)).toBe(false);
   });
 
   it('recovers after a failed call instead of staying wedged', async () => {

@@ -211,6 +211,15 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
   const [browseExpanded, setBrowseExpanded] = useState(false);
   const [browseChildren, setBrowseChildren] = useState(null);
   const [browseLoading, setBrowseLoading] = useState(false);
+  // Rows unmount on every result change; their polling loops must stop instead
+  // of running to timeout and calling setState on an unmounted component.
+  const cancelledRef = useRef(false);
+  useEffect(() => {
+    cancelledRef.current = false;
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, []);
   const isCollapsed = collapsedNodeUids.has(node.uid);
   const showMatchContext = node.matchText && !doesVisibleRowMatch(node, searchText);
 
@@ -227,7 +236,7 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
     if (!collection) {
       await dispatch(openMultipleCollections([node.collectionPathname], { workspacePath }));
       const startedAt = Date.now();
-      while (!collection && Date.now() - startedAt < 8000) {
+      while (!collection && !cancelledRef.current && Date.now() - startedAt < 8000) {
         await new Promise((resolve) => setTimeout(resolve, 100));
         collection = findCollection();
       }
@@ -302,9 +311,12 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
     };
     let found = resolveExample();
     const startedAt = Date.now();
-    while (!found && Date.now() - startedAt < 8000) {
+    while (!found && !cancelledRef.current && Date.now() - startedAt < 8000) {
       await new Promise((r) => setTimeout(r, 100));
       found = resolveExample();
+    }
+    if (cancelledRef.current) {
+      return;
     }
     if (!found) {
       toast.error('Unable to open the example');
@@ -353,55 +365,77 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
   });
 
   // Read children from the warm index (large collections) or, when there is no
-  // index, the classic in-memory tree (small collections).
+  // index, the classic in-memory tree (small collections). Returns
+  // { children, settled }: `settled` means the answer is final (index ready /
+  // tree mounted), so an empty container stops the poll immediately instead of
+  // spinning to the timeout.
   const readChildren = (collectionUid) => {
     const state = store.getState().collections;
     const index = state.collectionIndexes?.[collectionUid];
     if (index?.nodesByUid) {
+      const indexReady = index.status === 'ready';
       let parentKey = 'root';
       if (node.type !== 'collection') {
-        const indexNode = Object.values(index.nodesByUid)
-          .find((candidate) => normalizePath(candidate.pathname) === normalizePath(node.pathname));
-        parentKey = indexNode?.uid;
+        // O(1) via the index's pathname map; scan only as a fallback for
+        // normalization mismatches.
+        const mappedUid = index.uidByPathname?.[normalizePath(node.pathname)];
+        const indexNode = (mappedUid && index.nodesByUid[mappedUid])
+          || Object.values(index.nodesByUid)
+            .find((candidate) => normalizePath(candidate.pathname) === normalizePath(node.pathname));
+        if (!indexNode) {
+          // Missing from a ready index -> it will not appear; keep waiting
+          // only while indexing is still running.
+          return { children: null, settled: indexReady };
+        }
+        parentKey = indexNode.uid;
       }
       const childUids = index.childrenByParentUid?.[parentKey] || [];
-      return childUids.map((uid) => index.nodesByUid[uid]).filter(Boolean).map((n) => toBrowseChild(n, n.uid));
+      const children = childUids.map((uid) => index.nodesByUid[uid]).filter(Boolean).map((n) => toBrowseChild(n, n.uid));
+      return { children, settled: indexReady || children.length > 0 };
     }
     const collection = state.collections.find((c) => c.uid === collectionUid);
     const parent = node.type === 'collection'
       ? collection
       : (collection && findItemInCollectionByPathname(collection, node.pathname));
     if (parent?.items) {
-      return parent.items.map((item) => toBrowseChild(item, item.uid));
+      return { children: parent.items.map((item) => toBrowseChild(item, item.uid)), settled: true };
     }
-    return null;
+    return { children: null, settled: false };
   };
 
   const loadBrowseChildren = async () => {
     setBrowseLoading(true);
     try {
       const collection = await ensureCollectionLoaded();
+      if (cancelledRef.current) {
+        return;
+      }
       if (!collection) {
         toast.error('Unable to open the collection for this result');
         setBrowseChildren([]);
         return;
       }
-      // Keep polling until children actually appear: a freshly opened or still
-      // indexing collection can momentarily report an empty root, so stop only
-      // once we have entries (or we time out on a genuinely empty container).
+      // Poll until the answer settles: a freshly opened or still-indexing
+      // collection can momentarily report an empty root, but a genuinely empty
+      // container stops immediately once the index/tree is ready.
       let children = null;
       const startedAt = Date.now();
-      while (Date.now() - startedAt < 15000) {
-        const next = readChildren(collection.uid);
-        if (next && next.length) {
-          children = next;
+      while (!cancelledRef.current && Date.now() - startedAt < 15000) {
+        const { children: next, settled } = readChildren(collection.uid);
+        if (next?.length || settled) {
+          children = next || [];
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
+      if (cancelledRef.current) {
+        return;
+      }
       setBrowseChildren(children ? sortTreeNodes(children) : []);
     } finally {
-      setBrowseLoading(false);
+      if (!cancelledRef.current) {
+        setBrowseLoading(false);
+      }
     }
   };
 
