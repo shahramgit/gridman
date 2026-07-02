@@ -272,7 +272,7 @@ const applyCollectionAddFile = (state, file, options = {}) => {
       currentPath = path.join(currentPath, directoryName);
       let childItem = currentSubItems.find((f) => (
         f.type === 'folder'
-        && path.normalize(f.pathname || '') === path.normalize(currentPath || '')
+        && normalizePathnameForCompare(f.pathname) === normalizePathnameForCompare(currentPath)
       ));
       if (!childItem) {
         childItem = {
@@ -298,7 +298,7 @@ const applyCollectionAddFile = (state, file, options = {}) => {
       // this results in duplicate uids causing react renderer to go mad
       const currentItem = find(
         currentSubItems,
-        (i) => path.normalize(i.pathname || '') === path.normalize(file.meta.pathname || '')
+        (i) => normalizePathnameForCompare(i.pathname) === normalizePathnameForCompare(file.meta.pathname)
       );
       if (currentItem) {
         applyFileDataToItem(currentItem, file, isTransientFile);
@@ -350,7 +350,7 @@ const applyCollectionAddDirectory = (state, dir, options = {}) => {
       currentPath = path.join(currentPath, directoryName);
       let childItem = currentSubItems.find((f) => (
         f.type === 'folder'
-        && path.normalize(f.pathname || '') === path.normalize(currentPath || '')
+        && normalizePathnameForCompare(f.pathname) === normalizePathnameForCompare(currentPath)
       ));
       if (!childItem) {
         childItem = {
@@ -380,7 +380,11 @@ const applyCollectionAddDirectory = (state, dir, options = {}) => {
   return collection;
 };
 
-const normalizeIndexPathKey = (pathname) => path.normalize(pathname || '');
+// NFC-normalized like normalizePathnameForCompare: macOS reports NFD paths
+// from disk while renderer-built paths are NFC; comparing without unicode
+// normalization left duplicate sidebar rows after rename/drag of items with
+// Persian/accented names (a second index node under the other form).
+const normalizeIndexPathKey = (pathname) => normalizePathnameForCompare(pathname);
 
 // uidByPathname is the O(1) pathname -> uid lookup for the index. Every
 // mutation of nodesByUid / node.pathname must go through the helpers below —
@@ -579,9 +583,9 @@ const addCollectionIndexSubtreeByPathname = (state, {
     return;
   }
 
-  const normalizedSourcePathname = path.normalize(sourcePathname);
-  const normalizedTargetPathname = path.normalize(targetPathname);
-  const sourceRootNode = sourceNodes.find((node) => path.normalize(node.pathname || '') === normalizedSourcePathname) || sourceNodes[0];
+  const normalizedSourcePathname = normalizeIndexPathKey(sourcePathname);
+  const normalizedTargetPathname = normalizeIndexPathKey(targetPathname);
+  const sourceRootNode = sourceNodes.find((node) => normalizeIndexPathKey(node.pathname) === normalizedSourcePathname) || sourceNodes[0];
   const targetParentPathname = path.dirname(normalizedTargetPathname);
   const targetParentNode = findIndexNodeByPathname(targetIndex, targetParentPathname);
   const targetParentUid = targetParentNode?.uid || null;
@@ -595,7 +599,7 @@ const addCollectionIndexSubtreeByPathname = (state, {
 
   const sortedNodes = [...sourceNodes].sort((a, b) => (a.depth || 0) - (b.depth || 0));
   for (const sourceNode of sortedNodes) {
-    const normalizedNodePathname = path.normalize(sourceNode.pathname || '');
+    const normalizedNodePathname = normalizeIndexPathKey(sourceNode.pathname);
     const nextPathname = normalizedNodePathname === normalizedSourcePathname
       ? normalizedTargetPathname
       : normalizedNodePathname.replace(normalizedSourcePathname, normalizedTargetPathname);
@@ -627,9 +631,9 @@ const addCollectionIndexSubtreeByPathname = (state, {
 };
 
 const updateCollectionIndexNodePath = (node, previousPathname, nextPathname) => {
-  const normalizedPreviousPathname = path.normalize(previousPathname || '');
-  const normalizedNextPathname = path.normalize(nextPathname || '');
-  const normalizedNodePathname = path.normalize(node.pathname || '');
+  const normalizedPreviousPathname = normalizeIndexPathKey(previousPathname);
+  const normalizedNextPathname = normalizeIndexPathKey(nextPathname);
+  const normalizedNodePathname = normalizeIndexPathKey(node.pathname);
 
   if (normalizedNodePathname === normalizedPreviousPathname || normalizedNodePathname.startsWith(`${normalizedPreviousPathname}${path.sep}`)) {
     node.pathname = normalizedNodePathname.replace(normalizedPreviousPathname, normalizedNextPathname);
@@ -3488,7 +3492,7 @@ export const collectionsSlice = createSlice({
         uid,
         name: name || path.basename(pathname),
         type,
-        pathname: path.normalize(pathname),
+        pathname: normalizeIndexPathKey(pathname),
         parentUid,
         depth: parentNode ? (parentNode.depth || 0) + 1 : 0,
         seq,

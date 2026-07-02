@@ -450,7 +450,7 @@ export const tabsSlice = createSlice({
         return;
       }
 
-      const normalize = (pathname) => String(pathname || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      const normalize = (pathname) => String(pathname || '').normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
       const source = normalize(sourcePathname);
       const target = normalize(targetPathname);
 

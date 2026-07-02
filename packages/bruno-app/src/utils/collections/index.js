@@ -878,12 +878,17 @@ export const deleteItemInCollection = (itemUid, collection) => {
 };
 
 export const deleteItemInCollectionByPathname = (pathname, collection) => {
-  collection.items = filter(collection.items, (i) => i.pathname !== pathname);
+  // NFC-aware compare: watcher unlink events carry disk-form (NFD on macOS)
+  // paths while renderer-created items may be NFC — a raw !== left ghost
+  // rows behind after deleting/renaming items with unicode names.
+  const normalizedPathname = normalizeItemPathname(pathname);
+  const isSamePath = (candidate) => normalizeItemPathname(candidate) === normalizedPathname;
+  collection.items = filter(collection.items, (i) => !isSamePath(i.pathname));
 
   let flattenedItems = flattenItems(collection.items);
   each(flattenedItems, (i) => {
     if (i.items && i.items.length) {
-      i.items = filter(i.items, (i) => i.pathname !== pathname);
+      i.items = filter(i.items, (i) => !isSamePath(i.pathname));
     }
   });
 };

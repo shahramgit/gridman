@@ -151,6 +151,66 @@ describe('collection index reducers (uidByPathname invariants)', () => {
     expect(state.collectionIndexes[COLLECTION_UID].totalNodes).toBe(before);
   });
 
+  it('treats NFD (disk) and NFC (renderer) forms of the same pathname as one node', () => {
+    // macOS reports NFD from disk; renderer-built paths are NFC. Mixed forms
+    // used to leave duplicate sidebar rows after rename/drag (fixed by
+    // NFC-normalizing every pathname key/compare).
+    const nfdName = 'cafe\u0301'; // 'cafe' + combining acute (NFD)
+    const nfcName = 'caf\u00e9'; // precomposed (NFC)
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+    state = reducer(
+      state,
+      collectionIndexBatchReceived({
+        collectionUid: COLLECTION_UID,
+        loadSessionId: 's1',
+        nodes: [
+          { uid: 'p1', name: nfdName, type: 'folder', pathname: `/ws/collections/api/${nfdName}`, parentUid: null, depth: 0 }
+        ]
+      })
+    );
+
+    // A remove issued with the NFC form must find the NFD-keyed node.
+    state = reducer(
+      state,
+      collectionIndexNodeRemoved({ collectionUid: COLLECTION_UID, sourcePathname: `/ws/collections/api/${nfcName}` })
+    );
+    const index = state.collectionIndexes[COLLECTION_UID];
+    expect(index.nodesByUid.p1).toBeUndefined();
+    expect(Object.keys(index.uidByPathname)).toHaveLength(0);
+  });
+
+  it('a move issued in NFC re-keys an NFD-indexed node without duplicating it', () => {
+    const nfd = 'u\u0308ber'; // 'u' + combining diaeresis (NFD)
+    const nfc = '\u00fcber'; // precomposed (NFC)
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+    state = reducer(
+      state,
+      collectionIndexBatchReceived({
+        collectionUid: COLLECTION_UID,
+        loadSessionId: 's1',
+        nodes: [
+          { uid: 'q1', name: nfd, type: 'http', pathname: `/ws/collections/api/${nfd}.bru`, parentUid: null, depth: 0 }
+        ]
+      })
+    );
+
+    state = reducer(
+      state,
+      collectionIndexNodeMoved({
+        collectionUid: COLLECTION_UID,
+        sourcePathname: `/ws/collections/api/${nfc}.bru`,
+        targetPathname: `/ws/collections/api/renamed-${nfc}.bru`
+      })
+    );
+    const index = state.collectionIndexes[COLLECTION_UID];
+    expect(Object.keys(index.nodesByUid)).toHaveLength(1);
+    expect(index.nodesByUid.q1.pathname).toContain('renamed-');
+    // one map key, addressable via either unicode form
+    expect(Object.keys(index.uidByPathname)).toHaveLength(1);
+  });
+
   it('ignores batches from a stale load session', () => {
     let state = buildIndexedState();
     state = reducer(

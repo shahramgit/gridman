@@ -1484,18 +1484,17 @@ export const handleCollectionItemDrop
         }
 
         // Update sequences in the source directory
+        let reorderedSourceItems = [];
         if (draggedItemDirectoryItems?.length) {
           // reorder items in the source directory
           const draggedItemDirectoryItemsWithoutDraggedItem = draggedItemDirectoryItems.filter((i) => i.uid !== draggedItemUid);
-          const reorderedSourceItems = getReorderedItemsInSourceDirectory({
+          reorderedSourceItems = getReorderedItemsInSourceDirectory({
             items: draggedItemDirectoryItemsWithoutDraggedItem
-          });
-          if (reorderedSourceItems?.length) {
-            await dispatch(updateItemsSequences({ itemsToResequence: reorderedSourceItems, collectionUid: sourceCollectionUid || collectionUid }));
-          }
+          }) || [];
         }
 
         // Update sequences in the target directory (if dropping adjacent)
+        let reorderedTargetItems = [];
         if (dropType === 'adjacent') {
           const targetItemSequence = targetItemDirectoryItems.find((i) => i.uid === targetItemUid)?.seq;
 
@@ -1506,13 +1505,27 @@ export const handleCollectionItemDrop
           };
 
           // draggedItem is added to the targetItem's directory
-          const reorderedTargetItems = getReorderedItemsInTargetDirectory({
+          reorderedTargetItems = getReorderedItemsInTargetDirectory({
             items: [...targetItemDirectoryItems, draggedItemWithNewPathAndSequence],
             targetItemUid,
             draggedItemUid
-          });
+          }) || [];
+        }
 
-          if (reorderedTargetItems?.length) {
+        // One IPC round-trip for both directories when they belong to the
+        // same collection — two sequential calls doubled the disk writes and
+        // watcher churn that made drops feel slow.
+        const sourceUid = sourceCollectionUid || collectionUid;
+        if (sourceUid === collectionUid) {
+          const itemsToResequence = [...reorderedSourceItems, ...reorderedTargetItems];
+          if (itemsToResequence.length) {
+            await dispatch(updateItemsSequences({ itemsToResequence, collectionUid }));
+          }
+        } else {
+          if (reorderedSourceItems.length) {
+            await dispatch(updateItemsSequences({ itemsToResequence: reorderedSourceItems, collectionUid: sourceUid }));
+          }
+          if (reorderedTargetItems.length) {
             await dispatch(updateItemsSequences({ itemsToResequence: reorderedTargetItems, collectionUid }));
           }
         }
