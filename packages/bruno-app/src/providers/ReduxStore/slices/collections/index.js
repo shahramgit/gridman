@@ -3652,6 +3652,20 @@ export const collectionsSlice = createSlice({
           if (requestsByPath?.[loadedKey] && item.request && !item.partial && !item.loading) {
             requestsByPath[loadedKey] = item;
           }
+        } else if (file?.data?.uid) {
+          // Not hydrated into the tree (the common case on indexed
+          // collections) — still refresh the sidebar's index node so external
+          // edits to name/method/url/seq don't leave a stale row.
+          const index = state.collectionIndexes?.[file.meta.collectionUid];
+          const existingNode = index ? findIndexNodeByPathname(index, file.meta.pathname) : null;
+          if (existingNode) {
+            upsertCollectionIndexNodeFromItem(state, file.meta.collectionUid, {
+              ...file.data,
+              pathname: file.meta.pathname,
+              filename: file.meta.name,
+              depth: existingNode.depth
+            });
+          }
         }
       }
     },
@@ -3664,10 +3678,14 @@ export const collectionsSlice = createSlice({
 
         if (item) {
           deleteItemInCollectionByPathname(file.meta.pathname, collection);
-          removeCollectionIndexNodeByPathname(state, file.meta.collectionUid, file.meta.pathname);
-          removeLoadedRequestsByPathname(state, file.meta.collectionUid, file.meta.pathname);
         }
       }
+
+      // Index + loaded-entry cleanup must not depend on the tree item: on
+      // indexed collections most requests are never hydrated, and gating on
+      // `item` left ghost sidebar rows after external deletes.
+      removeCollectionIndexNodeByPathname(state, file.meta.collectionUid, file.meta.pathname);
+      removeLoadedRequestsByPathname(state, file.meta.collectionUid, file.meta.pathname);
     },
     collectionUnlinkDirectoryEvent: (state, action) => {
       const { directory } = action.payload;
@@ -3678,14 +3696,15 @@ export const collectionsSlice = createSlice({
 
         if (item) {
           deleteItemInCollectionByPathname(directory.meta.pathname, collection);
-          removeCollectionIndexNodeByPathname(state, directory.meta.collectionUid, directory.meta.pathname, {
-            recursive: true
-          });
-          removeLoadedRequestsByPathname(state, directory.meta.collectionUid, directory.meta.pathname, {
-            recursive: true
-          });
         }
       }
+
+      removeCollectionIndexNodeByPathname(state, directory.meta.collectionUid, directory.meta.pathname, {
+        recursive: true
+      });
+      removeLoadedRequestsByPathname(state, directory.meta.collectionUid, directory.meta.pathname, {
+        recursive: true
+      });
     },
     collectionAddEnvFileEvent: (state, action) => {
       const { environment, collectionUid } = action.payload;

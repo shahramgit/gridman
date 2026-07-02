@@ -2,6 +2,7 @@ import { createSlice } from '@reduxjs/toolkit';
 import filter from 'lodash/filter';
 import find from 'lodash/find';
 import last from 'lodash/last';
+import { collectionIndexNodeMoved } from './collections';
 
 // todo: errors should be tracked in each slice and displayed as toasts
 
@@ -466,6 +467,46 @@ export const tabsSlice = createSlice({
       state.tabs.push(tab);
       state.activeTabUid = tab.uid;
     }
+  },
+  extraReducers: (builder) => {
+    // When an indexed node moves/renames on disk, open tabs must follow: the
+    // synthetic `indexed-request:` uid and itemPathname embed the path, and a
+    // stale path makes the request panel lose the tab (and a sidebar click
+    // then opens a duplicate).
+    builder.addCase(collectionIndexNodeMoved, (state, action) => {
+      const { collectionUid, sourcePathname, targetPathname } = action.payload || {};
+      if (!collectionUid || !sourcePathname || !targetPathname) {
+        return;
+      }
+
+      const normalize = (pathname) => String(pathname || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      const source = normalize(sourcePathname);
+      const target = normalize(targetPathname);
+
+      for (const tab of state.tabs) {
+        if (tab.collectionUid !== collectionUid || !tab.itemPathname) {
+          continue;
+        }
+        const tabPath = normalize(tab.itemPathname);
+        if (tabPath !== source && !tabPath.startsWith(`${source}/`)) {
+          continue;
+        }
+
+        // Rebuild from the raw payload paths so OS-native separators are
+        // preserved (normalized forms are used only for comparison).
+        const nextPathname = tabPath === source
+          ? targetPathname
+          : `${targetPathname}${tab.itemPathname.slice(sourcePathname.length)}`;
+        const previousUid = tab.uid;
+        tab.itemPathname = nextPathname;
+        if (typeof tab.uid === 'string' && tab.uid.startsWith('indexed-request:')) {
+          tab.uid = `indexed-request:${collectionUid}:${nextPathname}`;
+          if (state.activeTabUid === previousUid) {
+            state.activeTabUid = tab.uid;
+          }
+        }
+      }
+    });
   }
 });
 
