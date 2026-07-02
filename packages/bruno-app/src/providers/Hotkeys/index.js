@@ -13,6 +13,7 @@ import { saveMultipleRequests, saveMultipleCollections, saveMultipleFolders, sav
 import { toggleSidebarCollapse, savePreferences } from 'providers/ReduxStore/slices/app';
 import { openDevtoolsAndSwitchToTerminal } from 'utils/terminal';
 import { getKeyBindingsForActionAllOS } from './keyMappings';
+import { getWorkspaceTabs } from 'providers/ReduxStore/slices/workspaces/getTabToFocusForCurrentWorkspace';
 
 export const HotkeysContext = React.createContext();
 
@@ -38,11 +39,14 @@ export const HotkeysProvider = (props) => {
     }
   };
 
-  // Get tabs scoped to the active tab's collection
+  const workspaces = useSelector((state) => state.workspaces.workspaces);
+  const activeWorkspaceUid = useSelector((state) => state.workspaces.activeWorkspaceUid);
+
+  // Tabs visible in the strip: every open tab of the current workspace
+  // (Postman-style), so tab shortcuts operate on what the user sees.
   const getCollectionTabs = () => {
-    const activeTab = find(tabs, (t) => t.uid === activeTabUid);
-    if (!activeTab) return [];
-    return tabs.filter((t) => t.collectionUid === activeTab.collectionUid);
+    const activeWorkspace = find(workspaces, (w) => w.uid === activeWorkspaceUid);
+    return getWorkspaceTabs(tabs, collections, activeWorkspace);
   };
 
   // Helper: get Mousetrap combos for an action, merged with user overrides
@@ -183,18 +187,14 @@ export const HotkeysProvider = (props) => {
     };
   }, [activeTabUid, tabs, dispatch, userKeyBindings, keybindingsEnabled]);
 
-  // Close all tabs
+  // Close all tabs — closes everything visible in the strip (all open tabs
+  // of the current workspace), matching the Postman-style tab bar.
   useEffect(() => {
     bindAction('closeAllTabs', (e) => {
-      const activeTab = find(tabs, (t) => t.uid === activeTabUid);
-      if (activeTab) {
-        const collection = findCollectionByUid(collections, activeTab.collectionUid);
-
-        if (collection) {
-          const tabUids = tabs.filter((tab) => tab.collectionUid === collection.uid).map((tab) => tab.uid);
-          setTabUidsToClose(tabUids);
-          setShowSaveRequestsModal(true);
-        }
+      const tabUids = getCollectionTabs().map((tab) => tab.uid);
+      if (tabUids.length) {
+        setTabUidsToClose(tabUids);
+        setShowSaveRequestsModal(true);
       }
 
       return false; // this stops the event bubbling
@@ -203,7 +203,7 @@ export const HotkeysProvider = (props) => {
     return () => {
       unbindAction('closeAllTabs');
     };
-  }, [activeTabUid, tabs, collections, userKeyBindings, keybindingsEnabled]);
+  }, [activeTabUid, tabs, collections, workspaces, activeWorkspaceUid, userKeyBindings, keybindingsEnabled]);
 
   // Reopen last closed tab (active-collection-tabs-only)
   useEffect(() => {

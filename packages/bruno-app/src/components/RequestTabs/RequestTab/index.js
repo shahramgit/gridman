@@ -26,7 +26,7 @@ import { getInvalidVariableNames } from 'utils/common/variables';
 import ExampleTab from '../ExampleTab';
 import toast from 'react-hot-toast';
 
-const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUid, hasOverflow, setHasOverflow, dropdownContainerRef }) => {
+const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUid, hasOverflow, setHasOverflow, dropdownContainerRef, showCollectionHint }) => {
   const dispatch = useDispatch();
   const { theme } = useTheme();
   const tabNameRef = useRef(null);
@@ -63,7 +63,9 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     : null;
   // Prefer the hydrated tree item (it carries drafts); the loaded-by-path
   // snapshot is only a fallback for tabs whose tree item is missing/stub.
-  const treeItem = isSpecialTab ? null : (
+  // The strip shows tabs from every collection in the workspace, so guard
+  // against a tab whose collection object is not (or no longer) loaded.
+  const treeItem = isSpecialTab || !collection ? null : (
     (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null)
     || findItemInCollection(collection, tab.itemUid || tab.uid)
   );
@@ -564,10 +566,19 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
           }
         }}
       >
+        {showCollectionHint && collection?.name ? (
+          <span className="tab-collection-hint" title={collection.name}>
+            {collection.name}
+          </span>
+        ) : null}
         <span className="tab-method uppercase" style={{ color: getMethodColor(method) }}>
           {method}
         </span>
-        <span ref={tabNameRef} className="ml-1 tab-name" title={item.name}>
+        <span
+          ref={tabNameRef}
+          className="ml-1 tab-name"
+          title={showCollectionHint && collection?.name ? `${collection.name} / ${item.name}` : item.name}
+        >
           {item.name}
         </span>
         <RequestTabMenu
@@ -611,17 +622,30 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
     return tabLabelRef.current.getBoundingClientRect();
   };
 
+  const collections = useSelector((state) => state.collections.collections);
+
   const totalTabs = collectionRequestTabs.length || 0;
+  // The strip holds tabs from several collections; every lookup/save must use
+  // the tab's OWN collection, not the collection of the tab this menu sits on.
+  const findCollectionForTab = (tab) => {
+    if (!tab?.collectionUid || tab.collectionUid === collection?.uid) {
+      return collection;
+    }
+    return collections?.find((c) => c.uid === tab.collectionUid) || collection;
+  };
   const findItemForTab = (tab) => {
     if (!tab) {
       return null;
     }
 
+    const tabCollection = findCollectionForTab(tab);
     const loadedRequestItem = tab.collectionUid && tab.itemPathname
       ? loadedRequestsByPath?.[tab.collectionUid]?.[normalizeItemPathname(tab.itemPathname)]
       : null;
-    const treeItem = (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null)
-      || findItemInCollection(collection, tab.itemUid || tab.uid);
+    const treeItem = !tabCollection ? null : (
+      (tab.itemPathname ? findItemInCollectionByPathname(tabCollection, tab.itemPathname) : null)
+      || findItemInCollection(tabCollection, tab.itemUid || tab.uid)
+    );
     const isTreeItemUsable = Boolean(treeItem?.request && !treeItem.gridmanIndexOnly && !treeItem.request?.gridmanIndexOnly);
 
     return isTreeItemUsable ? treeItem : (loadedRequestItem || treeItem);
@@ -646,7 +670,7 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
       const item = findItemForTab(tab);
       // silently save unsaved changes before closing the tab
       if (hasRequestChanges(item)) {
-        await dispatch(saveRequest(item.uid, collection.uid, true));
+        await dispatch(saveRequest(item.uid, tab?.collectionUid || collection.uid, true));
       }
 
       dispatch(closeTabs({ tabUids: [tabUid] }));
@@ -676,7 +700,7 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
       const item = findItemForTab(tab);
       if (item && hasRequestChanges(item)) {
         try {
-          await dispatch(saveRequest(item.uid, collection.uid, true));
+          await dispatch(saveRequest(item.uid, tab?.collectionUid || collection.uid, true));
         } catch (err) {
           continue;
         }

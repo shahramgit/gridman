@@ -19,6 +19,22 @@ const StyledWrapper = styled.div`
     flex-shrink: 0;
   }
 
+  /* Shown when tabs from several collections are open at once, so the user
+     can tell which collection a tab belongs to (Postman-style strip). */
+  .tab-collection-hint {
+    font-size: 0.625rem;
+    opacity: 0.55;
+    max-width: 72px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    flex-shrink: 0;
+    margin-right: 4px;
+    padding: 0 4px;
+    border-radius: 3px;
+    background: rgba(128, 128, 128, 0.15);
+  }
+
   .tab-name {
     position: relative;
     overflow: hidden;

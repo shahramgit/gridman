@@ -35,13 +35,27 @@ export function getWorkspaceCollectionUids(state, workspace) {
  * inside the workspace folder. Without this, any workspace re-broadcast
  * bounces focus away from an open workflow tab.
  */
-const isWorkflowTabInWorkspace = (tab, workspace) => {
+export const isWorkflowTabInWorkspace = (tab, workspace) => {
   if (tab?.type !== 'workflow' || !tab.itemPathname || !workspace?.pathname) {
     return false;
   }
   const workspacePath = normalizePath(workspace.pathname);
   return normalizePath(tab.itemPathname).startsWith(`${workspacePath}/`);
 };
+
+/**
+ * All tabs that belong to the given workspace — the set the tab strip shows
+ * (Postman-style: every open tab in the workspace, regardless of collection).
+ */
+export function getWorkspaceTabs(tabs, collections, workspace) {
+  if (!workspace) {
+    return tabs;
+  }
+  const collectionUids = getWorkspaceCollectionUids({ collections: { collections } }, workspace);
+  return (tabs || []).filter(
+    (t) => collectionUids.has(t.collectionUid) || isWorkflowTabInWorkspace(t, workspace)
+  );
+}
 
 /**
  * Returns the tab to focus so the active tab is in the current workspace, or null if no change needed.

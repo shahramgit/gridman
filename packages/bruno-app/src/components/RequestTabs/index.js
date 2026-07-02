@@ -5,6 +5,7 @@ import classnames from 'classnames';
 import { IconChevronRight, IconChevronLeft } from '@tabler/icons';
 import { useSelector, useDispatch } from 'react-redux';
 import { focusTab, reorderTabs } from 'providers/ReduxStore/slices/tabs';
+import { getWorkspaceTabs } from 'providers/ReduxStore/slices/workspaces/getTabToFocusForCurrentWorkspace';
 import NewRequest from 'components/Sidebar/NewRequest';
 import CollectionHeader from './CollectionHeader';
 import RequestTab from './RequestTab';
@@ -28,6 +29,7 @@ const RequestTabs = () => {
   const sidebarCollapsed = useSelector((state) => state.app.sidebarCollapsed);
   const screenWidth = useSelector((state) => state.app.screenWidth);
   const workspaces = useSelector((state) => state.workspaces.workspaces);
+  const activeWorkspaceUid = useSelector((state) => state.workspaces.activeWorkspaceUid);
 
   const createSetHasOverflow = useCallback((tabUid) => {
     return (hasOverflow) => {
@@ -45,7 +47,20 @@ const RequestTabs = () => {
 
   const activeTab = find(tabs, (t) => t.uid === activeTabUid);
   const activeCollection = find(collections, (c) => c?.uid === activeTab?.collectionUid);
-  const collectionRequestTabs = filter(tabs, (t) => t.collectionUid === activeTab?.collectionUid);
+  const activeWorkspace = find(workspaces, (w) => w.uid === activeWorkspaceUid);
+  // Postman-style tab strip: every open tab of the current workspace stays
+  // visible, whatever collection it belongs to. Only workspace switches change
+  // the visible set.
+  const collectionRequestTabs = useMemo(
+    () => getWorkspaceTabs(tabs, collections, activeWorkspace),
+    [tabs, collections, activeWorkspace]
+  );
+  // Show a collection hint on tabs only when tabs from several collections
+  // are open at once.
+  const showCollectionHint = useMemo(() => {
+    const uids = new Set(collectionRequestTabs.map((t) => t.collectionUid).filter(Boolean));
+    return uids.size > 1;
+  }, [collectionRequestTabs]);
 
   const isScratchCollection = useMemo(() => {
     return activeCollection ? workspaces.some((w) => w.scratchCollectionUid === activeCollection.uid) : false;
@@ -137,6 +152,11 @@ const RequestTabs = () => {
               <ul role="tablist" ref={tabsRef}>
                 {collectionRequestTabs && collectionRequestTabs.length
                   ? collectionRequestTabs.map((tab, index) => {
+                      // Each tab renders against ITS collection — the strip
+                      // holds tabs from several collections at once.
+                      const tabCollection = tab.collectionUid === activeCollection?.uid
+                        ? activeCollection
+                        : find(collections, (c) => c?.uid === tab.collectionUid);
                       return (
                         <DraggableTab
                           key={tab.uid}
@@ -156,7 +176,8 @@ const RequestTabs = () => {
                             tabIndex={index}
                             key={tab.uid}
                             tab={tab}
-                            collection={activeCollection}
+                            collection={tabCollection}
+                            showCollectionHint={showCollectionHint}
                             folderUid={tab.folderUid}
                             hasOverflow={tabOverflowStates[tab.uid]}
                             setHasOverflow={createSetHasOverflow(tab.uid)}
