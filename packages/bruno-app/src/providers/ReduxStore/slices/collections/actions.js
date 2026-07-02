@@ -67,6 +67,8 @@ import {
   updatePathParam,
   collectionIndexNodeCloned,
   collectionIndexNodeMoved,
+  collectionIndexNodeRenamed,
+  collectionIndexNodeAdded,
   collectionIndexNodeRemoved
 } from './index';
 
@@ -930,7 +932,18 @@ export const newFolderByPath = ({ collectionUid, parentPathname, folderName, dir
     folderName,
     directoryName
   });
-  await dispatch(refreshCollectionIndex({ collectionUid }));
+  // Insert the one new node instead of re-reading the whole collection.
+  if (state.collections.collectionIndexes?.[collectionUid] && result?.pathname) {
+    dispatch(collectionIndexNodeAdded({
+      collectionUid,
+      pathname: result.pathname,
+      name: folderName,
+      type: 'folder',
+      uid: uuid()
+    }));
+  } else {
+    await dispatch(refreshCollectionIndex({ collectionUid }));
+  }
   return result;
 };
 
@@ -1130,7 +1143,9 @@ export const cloneCollectionItemByPath = ({ collectionUid, sourcePathname, newNa
     newName,
     newFilename
   });
-  if (state.collections.collectionIndexes?.[collectionUid] && result?.pathname && result?.type !== 'folder') {
+  // collectionIndexNodeCloned copies the whole subtree (uids remapped), so
+  // folder clones no longer need a full re-index either.
+  if (state.collections.collectionIndexes?.[collectionUid] && result?.pathname) {
     dispatch(collectionIndexNodeCloned({
       sourceCollectionUid: collectionUid,
       targetCollectionUid: collectionUid,
@@ -1158,7 +1173,26 @@ export const renameCollectionItemByPath = ({ collectionUid, sourcePathname, newN
     newName,
     newFilename
   });
-  await dispatch(refreshCollectionIndex({ collectionUid }));
+  // Apply the rename as a targeted index update — a full re-index reads every
+  // file in the collection and blanks the sidebar while it rebuilds.
+  if (state.collections.collectionIndexes?.[collectionUid] && result?.pathname) {
+    if (path.normalize(result.pathname) !== path.normalize(sourcePathname)) {
+      dispatch(collectionIndexNodeMoved({
+        collectionUid,
+        sourcePathname,
+        targetPathname: result.pathname
+      }));
+    }
+    if (newName) {
+      dispatch(collectionIndexNodeRenamed({
+        collectionUid,
+        pathname: result.pathname,
+        name: newName
+      }));
+    }
+  } else {
+    await dispatch(refreshCollectionIndex({ collectionUid }));
+  }
   return result;
 };
 

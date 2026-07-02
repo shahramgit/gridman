@@ -3,6 +3,8 @@ import reducer, {
   collectionIndexBatchReceived,
   collectionIndexNodeMoved,
   collectionIndexNodeRemoved,
+  collectionIndexNodeRenamed,
+  collectionIndexNodeAdded,
   collectionIndexNodesResequenced
 } from './index';
 
@@ -97,6 +99,56 @@ describe('collection index reducers (uidByPathname invariants)', () => {
     expect(index.nodesByUid.r2.seq).toBe(6);
     // map unchanged by resequence
     expect(index.uidByPathname['/ws/collections/api/users/get-user.bru']).toBe('r1');
+  });
+
+  it('renames a node in place without touching the map', () => {
+    let state = buildIndexedState();
+    state = reducer(
+      state,
+      collectionIndexNodeRenamed({
+        collectionUid: COLLECTION_UID,
+        pathname: '/ws/collections/api/users/get-user.bru',
+        name: 'Get User v2'
+      })
+    );
+    const index = state.collectionIndexes[COLLECTION_UID];
+    expect(index.nodesByUid.r1.name).toBe('Get User v2');
+    expect(index.uidByPathname['/ws/collections/api/users/get-user.bru']).toBe('r1');
+  });
+
+  it('adds a single node under its parent', () => {
+    let state = buildIndexedState();
+    state = reducer(
+      state,
+      collectionIndexNodeAdded({
+        collectionUid: COLLECTION_UID,
+        pathname: '/ws/collections/api/users/archived',
+        name: 'archived',
+        type: 'folder',
+        uid: 'new-folder-uid'
+      })
+    );
+    const index = state.collectionIndexes[COLLECTION_UID];
+    const uid = index.uidByPathname['/ws/collections/api/users/archived'];
+    expect(uid).toBe('new-folder-uid');
+    expect(index.nodesByUid[uid].parentUid).toBe('f1');
+    expect(index.nodesByUid[uid].depth).toBe(1);
+    expect(index.childrenByParentUid.f1).toContain(uid);
+    expect(index.totalNodes).toBe(5);
+
+    // idempotent when the watcher already reported it
+    const before = index.totalNodes;
+    state = reducer(
+      state,
+      collectionIndexNodeAdded({
+        collectionUid: COLLECTION_UID,
+        pathname: '/ws/collections/api/users/archived',
+        name: 'archived',
+        type: 'folder',
+        uid: 'another-uid'
+      })
+    );
+    expect(state.collectionIndexes[COLLECTION_UID].totalNodes).toBe(before);
   });
 
   it('ignores batches from a stale load session', () => {
