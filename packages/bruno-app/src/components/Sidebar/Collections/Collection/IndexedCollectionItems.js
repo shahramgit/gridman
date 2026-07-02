@@ -237,7 +237,27 @@ const useVisibleRows = ({ index, expandedNodeUids, searchText }) => {
   }, [index, expandedNodeUids, searchText]);
 };
 
-const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggleFolder }) => {
+// Rendered only while a row's examples are expanded, so the full-collection
+// subscription (needed by ExampleItem) stays out of the hot row render path.
+const IndexedRowExamples = ({ collectionUid, item }) => {
+  const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid), isEqual);
+
+  return (
+    <div>
+      {(item.examples || []).map((example, exampleIndex) => (
+        <ExampleItem
+          key={example.uid || exampleIndex}
+          example={example}
+          item={item}
+          index={exampleIndex}
+          collection={collection}
+        />
+      ))}
+    </div>
+  );
+};
+
+const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUids, onToggleFolder }) => {
   const dispatch = useDispatch();
   const store = useStore();
   const { dropdownContainerRef } = useSidebarAccordion();
@@ -287,11 +307,30 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
   }, [sidebarReveal?.nonce]);
   const { hasCopiedItems } = useSelector((state) => state.app.clipboard);
   const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
-  const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid), isEqual);
-  const item = useSelector((state) => {
-    const collection = state.collections.collections?.find((c) => c.uid === collectionUid);
-    return collection ? findItemInCollectionByPathname(collection, node.pathname) : null;
-  }, isEqual);
+  // Subscribe to primitives/O(1) lookups only. The old selectors deep-compared
+  // the whole collection and flattened the hydrated tree per visible row on
+  // every store action — the main renderer cost while typing or streaming a
+  // response with a large collection open.
+  const collectionPathname = useSelector(
+    (state) => state.collections.collections?.find((c) => c.uid === collectionUid)?.pathname
+  );
+  // Requests resolve O(1) from loadedRequestsByPath — the same store the
+  // request panel renders from, kept consistent on load/change/move/unlink.
+  const loadedEntry = useSelector((state) => (
+    isRequest
+      ? state.collections.loadedRequestsByPath?.[collectionUid]?.[normalizeItemPathname(node.pathname)] || null
+      : null
+  ));
+  // Folders need the hydrated tree item (children for folder Run); recompute
+  // the tree walk only when the collection's items reference changes.
+  const collectionItems = useSelector((state) => (
+    isFolder ? state.collections.collections?.find((c) => c.uid === collectionUid)?.items : null
+  ));
+  const folderItem = useMemo(
+    () => (collectionItems ? findItemInCollectionByPathname({ items: collectionItems }, node.pathname) : null),
+    [collectionItems, node.pathname]
+  );
+  const item = isRequest ? loadedEntry : folderItem;
   const displayItem = item || {
     ...node,
     type: normalizeRequestType(node.type),
@@ -843,7 +882,7 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
           label: 'Open in Terminal',
           onClick: async () => {
             ensureNodeHydrated();
-            await openDevtoolsAndSwitchToTerminal(dispatch, node.pathname || collection?.pathname);
+            await openDevtoolsAndSwitchToTerminal(dispatch, node.pathname || collectionPathname);
           }
         }
       );
@@ -866,7 +905,7 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
       type: isFolder ? 'folder' : normalizeRequestType(node.type),
       sourcePathname: node.pathname,
       sourceCollectionUid: collectionUid,
-      sourceCollectionPathname: collection?.pathname
+      sourceCollectionPathname: collectionPathname
     };
   };
 
@@ -904,7 +943,7 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
   };
 
   const canItemBeDropped = ({ draggedItem, dropType }) => {
-    if (!collection?.pathname || !node.pathname || !dropType || draggedItem.uid === node.uid) {
+    if (!collectionPathname || !node.pathname || !dropType || draggedItem.uid === node.uid) {
       return false;
     }
 
@@ -1218,17 +1257,7 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
       </div>
       {hasExamples && examplesExpanded ? (
         item?.examples?.length ? (
-          <div>
-            {(item.examples || []).map((example, exampleIndex) => (
-              <ExampleItem
-                key={example.uid || exampleIndex}
-                example={example}
-                item={item}
-                index={exampleIndex}
-                collection={collection}
-              />
-            ))}
-          </div>
+          <IndexedRowExamples collectionUid={collectionUid} item={item} />
         ) : (
           <div className="text-xs text-muted" style={{ paddingLeft: 8 + displayDepth * 16 + 24 }}>
             Loading examples...
@@ -1237,7 +1266,9 @@ const IndexedRow = ({ node, collectionUid, searchText, expandedNodeUids, onToggl
       ) : null}
     </StyledWrapper>
   );
-};
+});
+
+IndexedRow.displayName = 'IndexedRow';
 
 const IndexedCollectionItems = ({ collectionUid, searchText }) => {
   const dispatch = useDispatch();
@@ -1320,7 +1351,9 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
     }
   }, [visibleRows, dispatch]);
 
-  const onToggleFolder = (uid) => {
+  // Stable identity so memoized rows don't re-render on unrelated parent
+  // renders just because the handler was recreated.
+  const onToggleFolder = useCallback((uid) => {
     setExpandedNodeUids((current) => {
       const next = new Set(current);
       if (next.has(uid)) {
@@ -1330,7 +1363,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
       }
       return next;
     });
-  };
+  }, []);
 
   if (!index) {
     return null;
