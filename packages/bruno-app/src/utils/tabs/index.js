@@ -15,6 +15,8 @@ export const itemIsOpenedInTabs = (item, tabs) => {
 export const scrollToTheActiveTab = () => {
   const activeTab = document.querySelector('.request-tab.active');
   if (activeTab) {
-    activeTab.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // 'nearest' scrolls only when the tab is out of view — 'start' also
+    // shifted vertical ancestors, nudging the layout on every click.
+    activeTab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
   }
 };

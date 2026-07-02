@@ -176,7 +176,10 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText })
       return;
     }
     try {
-      ref.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // 'nearest' is a no-op when the row is already visible — clicking a
+      // request (which also fires a reveal via tab activation) must not
+      // yank the row the user is looking at to the center.
+      ref.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } catch (err) {
       // ignore scroll errors
     }

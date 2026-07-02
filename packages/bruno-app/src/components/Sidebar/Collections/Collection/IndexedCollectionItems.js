@@ -1316,7 +1316,14 @@ const IndexedCollectionItems = ({ collectionUid, searchText }) => {
     }
     const rowIndex = visibleRows.findIndex((row) => row.uid === pendingRevealNodeUidRef.current);
     if (rowIndex >= 0) {
-      virtuosoRef.current?.scrollToIndex?.({ index: rowIndex, align: 'center' });
+      // scrollIntoView scrolls only when the row is off-screen. Clicking a
+      // request also fires a reveal (via tab activation), and centering the
+      // row the user just clicked yanked the sidebar around.
+      if (virtuosoRef.current?.scrollIntoView) {
+        virtuosoRef.current.scrollIntoView({ index: rowIndex, behavior: 'smooth' });
+      } else {
+        virtuosoRef.current?.scrollToIndex?.({ index: rowIndex, align: 'center' });
+      }
       pendingRevealNodeUidRef.current = null;
       dispatch(clearSidebarReveal());
     }
