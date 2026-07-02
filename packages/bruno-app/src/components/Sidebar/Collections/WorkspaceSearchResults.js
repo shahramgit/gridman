@@ -537,11 +537,18 @@ const WorkspaceSearchResults = ({ searchText, searchOptions, activeWorkspace }) 
   const [error, setError] = useState('');
   const [collapsedNodeUids, setCollapsedNodeUids] = useState(() => new Set());
   const sessionRef = useRef(null);
+  // When a new search starts we keep the previous results on screen until the
+  // new session's first data arrives — clearing eagerly made every keystroke
+  // flash an empty list (and a bare spinner during index rebuilds).
+  const pendingClearRef = useRef(false);
   const collectionPaths = useMemo(() => {
     return (activeWorkspace?.collections || [])
       .map((collection) => collection.path)
       .filter(Boolean);
-  }, [activeWorkspace]);
+  }, [activeWorkspace?.collections]);
+  // Primitive key so effects don't re-run on unrelated workspace-slice updates
+  // (the workspace object identity changes on every config broadcast).
+  const collectionPathsKey = collectionPaths.join('\n');
 
   const tree = useMemo(() => buildSearchTree(results), [results]);
   const visibleRows = useMemo(() => flattenSearchTree(tree, collapsedNodeUids), [tree, collapsedNodeUids]);
@@ -566,17 +573,23 @@ const WorkspaceSearchResults = ({ searchText, searchOptions, activeWorkspace }) 
       }
       setStatus('searching');
       setError('');
-      setResults([]);
-      setCollapsedNodeUids(new Set());
     });
 
     const removeBatchListener = ipcRenderer.on('main:workspace-collection-search-batch', ({ searchSessionId, results: batch = [] }) => {
       if (sessionRef.current !== searchSessionId) {
         return;
       }
+      // First data of a new session replaces the previous search's results;
+      // later batches of the same session append.
+      const replacing = pendingClearRef.current;
+      pendingClearRef.current = false;
+      if (replacing) {
+        setCollapsedNodeUids(new Set());
+      }
       setResults((current) => {
-        const seen = new Set(current.map((result) => result.pathname));
-        const next = [...current];
+        const base = replacing ? [] : current;
+        const seen = new Set(base.map((result) => result.pathname));
+        const next = [...base];
         for (const result of batch) {
           if (!seen.has(result.pathname)) {
             seen.add(result.pathname);
@@ -590,6 +603,12 @@ const WorkspaceSearchResults = ({ searchText, searchOptions, activeWorkspace }) 
     const removeReadyListener = ipcRenderer.on('main:workspace-collection-search-ready', ({ searchSessionId }) => {
       if (sessionRef.current !== searchSessionId) {
         return;
+      }
+      // No batches arrived for this session -> genuinely no matches.
+      if (pendingClearRef.current) {
+        pendingClearRef.current = false;
+        setResults([]);
+        setCollapsedNodeUids(new Set());
       }
       setStatus('ready');
     });
@@ -614,6 +633,7 @@ const WorkspaceSearchResults = ({ searchText, searchOptions, activeWorkspace }) 
     const trimmedSearchText = searchText.trim();
     if (trimmedSearchText.length < 2 || !activeWorkspace?.pathname || !collectionPaths.length) {
       sessionRef.current = null;
+      pendingClearRef.current = false;
       setResults([]);
       setStatus('idle');
       setError('');
@@ -623,10 +643,11 @@ const WorkspaceSearchResults = ({ searchText, searchOptions, activeWorkspace }) 
 
     const searchSessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     sessionRef.current = searchSessionId;
+    // Keep the previous results visible; they are replaced when the new
+    // session's first batch (or an empty 'ready') arrives.
+    pendingClearRef.current = true;
     setStatus('searching');
-    setResults([]);
     setError('');
-    setCollapsedNodeUids(new Set());
 
     const timer = setTimeout(() => {
       window.ipcRenderer.invoke('renderer:start-workspace-collection-search', {
@@ -648,7 +669,7 @@ const WorkspaceSearchResults = ({ searchText, searchOptions, activeWorkspace }) 
     }, SEARCH_DEBOUNCE_MS);
 
     return () => clearTimeout(timer);
-  }, [activeWorkspace, collectionPaths, searchText, searchOptions]);
+  }, [activeWorkspace?.pathname, collectionPathsKey, searchText, searchOptions?.matchCase, searchOptions?.scopes]);
 
   if (searchText.trim().length < 2) {
     return (
