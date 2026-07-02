@@ -512,38 +512,6 @@ const workspaceSearchJobs = new Map();
 const WORKSPACE_SEARCH_BATCH_SIZE = 25;
 const WORKSPACE_SEARCH_RESULT_LIMIT = 250;
 
-// In-memory search cache: pathname -> { mtimeMs, size, isFolderMeta, result,
-// folded: {...}, raw: {...} }.
-const workspaceSearchFileCache = new Map();
-
-// Warm per-collection index: collectionPath -> { builtAt, format, building,
-// entries: Map<pathname, cacheEntry> }. Building (readdir + stat + read +
-// fold over every request file) is the expensive pass; we do it once and then
-// match in memory. Within the TTL, searches never touch the filesystem, which
-// is what makes typing feel instant on large collections (GSB has ~11.5k
-// files; statting them per keystroke was the 5-6s cost). The index is
-// invalidated on file changes via invalidateWorkspaceSearchForPath (wired from
-// the collection watcher) and falls back to a TTL rebuild.
-const workspaceSearchIndex = new Map();
-const WORKSPACE_SEARCH_INDEX_TTL_MS = 60 * 1000;
-
-const invalidateWorkspaceSearchForPath = (pathname) => {
-  if (!pathname) {
-    return;
-  }
-  const normalized = path.normalize(pathname);
-  for (const [collectionPath, index] of workspaceSearchIndex.entries()) {
-    if (normalized === collectionPath || normalized.startsWith(`${collectionPath}${path.sep}`)) {
-      // Force a rebuild on the next search; drop the changed file's cache.
-      index.builtAt = 0;
-      workspaceSearchFileCache.delete(normalized);
-    }
-  }
-};
-
-// Let the collection watcher invalidate search caches on file changes.
-require('../app/search-invalidation').setSearchInvalidator(invalidateWorkspaceSearchForPath);
-
 const WORKSPACE_SEARCH_DEFAULT_SCOPES = {
   collections: true,
   names: true,
@@ -553,23 +521,11 @@ const WORKSPACE_SEARCH_DEFAULT_SCOPES = {
   examples: true
 };
 
+const { matchSearchFields } = require('../utils/workspace-search-match');
 const {
-  buildSearchFields,
-  matchSearchFields
-} = require('../utils/workspace-search-match');
-
-const cleanSearchMetaValue = (value) => {
-  if (!value) {
-    return '';
-  }
-
-  return String(value).trim().replace(/^['"]|['"]$/g, '');
-};
-
-const extractSearchLineValue = (content, key) => {
-  const match = content.match(new RegExp(`^\\s*${key}:\\s*(.+?)\\s*$`, 'm'));
-  return cleanSearchMetaValue(match?.[1]);
-};
+  getCollectionSearchIndex,
+  createWorkspaceCollectionSearchResult
+} = require('./workspace-search-index');
 
 const createSearchSnippet = (content, query, foldOptions = {}) => {
   if (!content || !query) {
@@ -588,166 +544,6 @@ const createSearchSnippet = (content, query, foldOptions = {}) => {
   const suffix = end < normalizedContent.length ? '...' : '';
 
   return `${prefix}${normalizedContent.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
-};
-
-const extractSearchBruType = (content) => {
-  const metaBlock = content.match(/meta\s*\{([\s\S]*?)\n\}/);
-  if (metaBlock?.[1]) {
-    return extractSearchLineValue(metaBlock[1], 'type');
-  }
-  return '';
-};
-
-const extractSearchBruMethod = (content) => {
-  const blockMatch = content.match(/^\s*(get|post|put|delete|patch|head|options|trace)\s*\{/im);
-  if (blockMatch?.[1]) {
-    return blockMatch[1].toUpperCase();
-  }
-
-  return extractSearchLineValue(content, 'method').toUpperCase();
-};
-
-const normalizeSearchRequestType = (type) => {
-  const normalizedType = cleanSearchMetaValue(type).toLowerCase();
-  const typeMap = {
-    http: 'http-request',
-    graphql: 'graphql-request',
-    grpc: 'grpc-request',
-    ws: 'ws-request',
-    websocket: 'ws-request'
-  };
-
-  return typeMap[normalizedType] || normalizedType || 'http-request';
-};
-
-const shouldSkipWorkspaceSearchEntry = (name) => {
-  return !name
-    || name === '.'
-    || name === '..'
-    || name === '.git'
-    || name === 'node_modules'
-    || name === 'environments'
-    || name === '.env'
-    || name.startsWith('.env.');
-};
-
-const isWorkspaceSearchCollectionMetadataFile = (name, dirname, collectionPath) => {
-  return path.normalize(dirname) === path.normalize(collectionPath)
-    && (name === 'collection.bru' || name === 'opencollection.yml' || name === 'bruno.json');
-};
-
-const readSearchText = async (pathname) => {
-  try {
-    return await fs.promises.readFile(pathname, 'utf8');
-  } catch (_err) {
-    return '';
-  }
-};
-
-const toPortableRelativePath = (basePath, pathname) => {
-  return path.relative(basePath, pathname).split(path.sep).join('/');
-};
-
-const createWorkspaceSearchResult = ({ workspacePath, collectionPath, pathname, content, format }) => {
-  const fallbackName = path.basename(pathname, path.extname(pathname));
-  const name = extractSearchLineValue(content, 'name') || fallbackName;
-  const type = format === 'bru'
-    ? extractSearchBruType(content)
-    : extractSearchLineValue(content, 'type');
-
-  const method = format === 'bru'
-    ? extractSearchBruMethod(content)
-    : extractSearchLineValue(content, 'method').toUpperCase();
-
-  return {
-    uid: getRequestUid(pathname),
-    collectionUid: generateUidBasedOnHash(collectionPath),
-    collectionPathname: collectionPath,
-    collectionName: path.basename(collectionPath),
-    pathname,
-    relativePath: toPortableRelativePath(workspacePath, pathname),
-    collectionRelativePath: toPortableRelativePath(collectionPath, pathname),
-    parentCollectionRelativePath: toPortableRelativePath(collectionPath, path.dirname(pathname)),
-    name,
-    filename: path.basename(pathname),
-    type: normalizeSearchRequestType(type),
-    method,
-    url: extractSearchLineValue(content, 'url')
-  };
-};
-
-const createWorkspaceFolderSearchResult = ({ workspacePath, collectionPath, pathname, content, format }) => {
-  const folderPathname = path.dirname(pathname);
-  const fallbackName = path.basename(folderPathname);
-
-  return {
-    uid: getRequestUid(folderPathname),
-    collectionUid: generateUidBasedOnHash(collectionPath),
-    collectionPathname: collectionPath,
-    collectionName: path.basename(collectionPath),
-    pathname: folderPathname,
-    relativePath: toPortableRelativePath(workspacePath, folderPathname),
-    collectionRelativePath: toPortableRelativePath(collectionPath, folderPathname),
-    parentCollectionRelativePath: toPortableRelativePath(collectionPath, path.dirname(folderPathname)),
-    name: extractSearchLineValue(content, 'name') || fallbackName,
-    filename: path.basename(folderPathname),
-    type: 'folder',
-    method: '',
-    url: '',
-    seq: Number(extractSearchLineValue(content, 'seq')) || undefined,
-    fileFormat: format
-  };
-};
-
-const createWorkspaceCollectionSearchResult = ({ workspacePath, collectionPath }) => {
-  return {
-    uid: generateUidBasedOnHash(collectionPath),
-    collectionUid: generateUidBasedOnHash(collectionPath),
-    collectionPathname: collectionPath,
-    collectionName: path.basename(collectionPath),
-    pathname: collectionPath,
-    relativePath: toPortableRelativePath(workspacePath, collectionPath),
-    collectionRelativePath: '',
-    parentCollectionRelativePath: '',
-    name: path.basename(collectionPath),
-    filename: path.basename(collectionPath),
-    type: 'collection',
-    method: '',
-    url: ''
-  };
-};
-
-const buildWorkspaceSearchCacheEntry = async ({ workspacePath, collectionPath, pathname, format, mtimeMs, size, isFolderMeta }) => {
-  const content = await readSearchText(pathname);
-  const result = isFolderMeta
-    ? createWorkspaceFolderSearchResult({ workspacePath, collectionPath, pathname, content, format })
-    : createWorkspaceSearchResult({ workspacePath, collectionPath, pathname, content, format });
-
-  const fields = buildSearchFields({
-    content,
-    format,
-    name: result.name,
-    filename: result.filename,
-    url: result.url
-  });
-
-  // Attach a lightweight example list to the request result so search rows can
-  // show the "has examples" marker and expand to the examples without parsing.
-  const exampleEntries = fields.exampleEntries || [];
-  if (!isFolderMeta && exampleEntries.length) {
-    result.exampleCount = exampleEntries.length;
-    result.examples = exampleEntries.slice(0, 100).map((entry) => ({ name: entry.name, index: entry.index }));
-  }
-
-  return {
-    mtimeMs,
-    size,
-    isFolderMeta,
-    result,
-    raw: fields.raw,
-    folded: fields.folded,
-    exampleEntries
-  };
 };
 
 const SNIPPET_FIELDS = new Set(['headers', 'body', 'examples']);
@@ -789,89 +585,6 @@ const sendWorkspaceSearchBatch = (event, job, force = false) => {
     searchSessionId: job.searchSessionId,
     results
   });
-};
-
-// Walk a collection once, (re)building cache entries for changed files, and
-// return a Map<pathname, cacheEntry>. This is the expensive pass.
-const buildCollectionSearchEntries = async (workspacePath, collectionPath, format) => {
-  const entries = new Map();
-
-  const walk = async (dirname) => {
-    let dirents;
-    try {
-      dirents = await fs.promises.readdir(dirname, { withFileTypes: true });
-    } catch (_err) {
-      return;
-    }
-
-    for (const dirent of dirents) {
-      if (shouldSkipWorkspaceSearchEntry(dirent.name)) {
-        continue;
-      }
-      const pathname = path.join(dirname, dirent.name);
-      if (dirent.isDirectory()) {
-        await walk(pathname);
-        continue;
-      }
-      if (!dirent.isFile() || !hasRequestExtension(pathname, format)) {
-        continue;
-      }
-      if (isWorkspaceSearchCollectionMetadataFile(dirent.name, dirname, collectionPath)) {
-        continue;
-      }
-
-      let cacheEntry = workspaceSearchFileCache.get(pathname);
-      try {
-        const stat = await fs.promises.stat(pathname);
-        if (!cacheEntry || cacheEntry.mtimeMs !== stat.mtimeMs || cacheEntry.size !== stat.size) {
-          cacheEntry = await buildWorkspaceSearchCacheEntry({
-            workspacePath,
-            collectionPath,
-            pathname,
-            format,
-            mtimeMs: stat.mtimeMs,
-            size: stat.size,
-            isFolderMeta: dirent.name === `folder.${format}`
-          });
-          workspaceSearchFileCache.set(pathname, cacheEntry);
-        }
-      } catch (_err) {
-        continue;
-      }
-      entries.set(pathname, cacheEntry);
-    }
-  };
-
-  await walk(collectionPath);
-  return entries;
-};
-
-// Return the warm index for a collection, building (or rebuilding when stale)
-// as needed. Concurrent callers coalesce on the in-flight build promise.
-const getCollectionSearchIndex = async (workspacePath, collectionPath) => {
-  const existing = workspaceSearchIndex.get(collectionPath);
-  if (existing && !existing.building && (Date.now() - existing.builtAt) < WORKSPACE_SEARCH_INDEX_TTL_MS) {
-    return existing;
-  }
-  if (existing?.building) {
-    return existing.building;
-  }
-
-  const format = getCollectionFormat(collectionPath);
-  const buildPromise = (async () => {
-    const entries = await buildCollectionSearchEntries(workspacePath, collectionPath, format);
-    const built = { builtAt: Date.now(), format, entries, building: null };
-    workspaceSearchIndex.set(collectionPath, built);
-    return built;
-  })();
-
-  workspaceSearchIndex.set(collectionPath, {
-    builtAt: existing?.builtAt || 0,
-    format,
-    entries: existing?.entries || new Map(),
-    building: buildPromise
-  });
-  return buildPromise;
 };
 
 // Warm all collection indexes in the background (called when the search box
