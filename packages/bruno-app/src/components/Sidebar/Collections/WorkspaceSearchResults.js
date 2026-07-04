@@ -397,10 +397,16 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
     const parent = node.type === 'collection'
       ? collection
       : (collection && findItemInCollectionByPathname(collection, node.pathname));
-    if (parent?.items) {
+    if (parent?.items?.length) {
       return { children: parent.items.map((item) => toBrowseChild(item, item.uid)), settled: true };
     }
-    return { children: null, settled: false };
+    // The items array exists (empty) from the moment a collection registers,
+    // long before its tree loads — a just-opened collection must keep polling
+    // or it renders "(empty)". Empty is final only once the mount finished.
+    const treeSettled = Boolean(parent)
+      && collection?.mountStatus === 'mounted'
+      && !collection?.isLoading;
+    return { children: parent ? [] : null, settled: treeSettled };
   };
 
   const loadBrowseChildren = async () => {
@@ -415,16 +421,27 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
         setBrowseChildren([]);
         return;
       }
-      // Poll until the answer settles: a freshly opened or still-indexing
-      // collection can momentarily report an empty root, but a genuinely empty
-      // container stops immediately once the index/tree is ready.
+      // Poll until the answer settles. A freshly opened collection streams its
+      // tree in via watcher events even after it reports mounted, so an empty
+      // answer is accepted only after it stays settled-empty for ~2s straight;
+      // any sign of loading resets the streak. Items appearing win instantly.
       let children = null;
+      let emptySettledTicks = 0;
       const startedAt = Date.now();
       while (!cancelledRef.current && Date.now() - startedAt < 15000) {
         const { children: next, settled } = readChildren(collection.uid);
-        if (next?.length || settled) {
-          children = next || [];
+        if (next?.length) {
+          children = next;
           break;
+        }
+        if (settled) {
+          emptySettledTicks += 1;
+          if (emptySettledTicks >= 10) {
+            children = next || [];
+            break;
+          }
+        } else {
+          emptySettledTicks = 0;
         }
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
