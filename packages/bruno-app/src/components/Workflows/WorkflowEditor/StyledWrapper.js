@@ -805,8 +805,18 @@ const StyledWrapper = styled.div`
   }
 
   .panel-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
     font-size: 14px;
     font-weight: 600;
+
+    > span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
   }
 
   .panel-section {
@@ -929,6 +939,234 @@ const StyledWrapper = styled.div`
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* ---- Node Detail View (n8n-style fullscreen node editor) ---- */
+
+  .ndv-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    background: black;
+    opacity: ${(props) => props.theme.modal.backdrop.opacity};
+  }
+
+  .ndv {
+    position: fixed;
+    inset: 40px 48px;
+    z-index: 46;
+    display: flex;
+    flex-direction: column;
+    background: ${(props) => props.theme.bg};
+    border: 1px solid ${(props) => props.theme.input.border};
+    border-radius: ${(props) => props.theme.border.radius.md};
+    box-shadow: ${(props) => props.theme.shadow.lg};
+    overflow: hidden;
+  }
+
+  .ndv-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid ${(props) => props.theme.input.border};
+    flex-shrink: 0;
+  }
+
+  .ndv-type {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.6;
+    flex-shrink: 0;
+  }
+
+  .ndv-name {
+    font-size: 14px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ndv-name-input {
+    flex: 0 1 320px;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .ndv-header-actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+
+    .execute-node-button {
+      align-self: center;
+    }
+  }
+
+  .ndv-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 9px;
+    border: 1px solid transparent;
+
+    &.ndv-status-passed {
+      color: ${(props) => props.theme.colors.text.green};
+      border-color: ${(props) => props.theme.colors.text.green};
+    }
+
+    &.ndv-status-failed {
+      color: ${(props) => props.theme.colors.text.danger};
+      border-color: ${(props) => props.theme.colors.text.danger};
+    }
+
+    &.ndv-status-running {
+      color: ${(props) => props.theme.textLink};
+      border-color: ${(props) => props.theme.textLink};
+    }
+
+    &.ndv-status-stopped {
+      color: ${(props) => props.theme.colors.text.yellow};
+      border-color: ${(props) => props.theme.colors.text.yellow};
+    }
+  }
+
+  .ndv-body {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+  }
+
+  .ndv-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 260px;
+    min-height: 0;
+    border-right: 1px solid ${(props) => props.theme.input.border};
+
+    &:last-child {
+      border-right: none;
+    }
+  }
+
+  .ndv-col-input,
+  .ndv-col-output {
+    flex: 1 1 28%;
+  }
+
+  .ndv-col-params {
+    flex: 1 1 44%;
+  }
+
+  .ndv-col-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid ${(props) => props.theme.input.border};
+    flex-shrink: 0;
+  }
+
+  .ndv-col-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.6;
+  }
+
+  .ndv-col-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* The NDV columns fill the available height — lift the side panel's caps. */
+  .ndv-col .io-field-list,
+  .ndv-col .io-pre {
+    max-height: none;
+  }
+
+  .ndv-col .step-editor {
+    margin-left: 0;
+  }
+
+  .ndv-pre {
+    flex: 1;
+    margin: 0;
+  }
+
+  .ndv-view-toggle {
+    display: flex;
+    gap: 2px;
+
+    button {
+      border: 1px solid ${(props) => props.theme.input.border};
+      background: transparent;
+      color: inherit;
+      font-size: 10px;
+      padding: 1px 7px;
+      border-radius: 4px;
+      cursor: pointer;
+      opacity: 0.7;
+
+      &:hover {
+        opacity: 1;
+      }
+
+      &.active {
+        opacity: 1;
+        border-color: ${(props) => props.theme.colors.text.yellow};
+        color: ${(props) => props.theme.colors.text.yellow};
+      }
+    }
+  }
+
+  .ndv-empty {
+    font-size: 12px;
+    opacity: 0.7;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+
+    p {
+      margin: 0;
+    }
+  }
+
+  .ndv-hint {
+    font-size: 12px;
+    opacity: 0.65;
+    line-height: 1.5;
+  }
+
+  .ndv-error {
+    flex-shrink: 0;
+    font-size: 12px;
+    font-family: monospace;
+    color: ${(props) => props.theme.colors.text.danger};
+    border: 1px solid ${(props) => props.theme.colors.text.danger};
+    border-radius: 4px;
+    padding: 6px 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 `;
 

@@ -268,7 +268,7 @@ const QuickAddEdge = ({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
 
 const edgeTypes = { quickadd: QuickAddEdge };
 
-const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo, canRedo }) => {
+const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo, canRedo, shortcutsDisabled }) => {
   const { screenToFlowPosition, fitView } = useReactFlow();
   const wrapperRef = useRef(null);
   // Node ids to select once they appear in the doc (set after paste/duplicate,
@@ -384,12 +384,14 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
     onSelectNodes((selectedNodes || []).map((n) => n.id));
   }, [onSelectNodes]);
 
-  // Double-click focuses a node: it becomes the single selection, which opens
-  // the right panel.
+  // Double-click opens the fullscreen Node Detail View for the node (it also
+  // becomes the single selection, so the side panel matches once the NDV
+  // closes).
   const onNodeDoubleClick = useCallback((event, node) => {
     setNodes((prev) => prev.map((n) => (n.selected === (n.id === node.id) ? n : { ...n, selected: n.id === node.id })));
     onSelectNodes([node.id]);
-  }, [setNodes, onSelectNodes]);
+    handlers.onOpenNodeDetail?.(node.id);
+  }, [setNodes, onSelectNodes, handlers]);
 
   const clearSelection = useCallback(() => {
     setNodes((prev) => prev.map((n) => (n.selected ? { ...n, selected: false } : n)));
@@ -429,9 +431,13 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
 
   // Canvas shortcuts: Escape deselect, Ctrl/Cmd C/V/D copy/paste/duplicate,
   // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z / Ctrl/Cmd+Y redo. Guarded so they
-  // never fire while typing, and only while this canvas is visible.
+  // never fire while typing, only while this canvas is visible, and never
+  // while the Node Detail View is open (Escape must close only the NDV).
   useEffect(() => {
     const onKeyDown = (event) => {
+      if (shortcutsDisabled) {
+        return; // the NDV owns the keyboard while it's open
+      }
       if (!wrapperRef.current || !wrapperRef.current.offsetParent) {
         return; // canvas hidden (e.g. another view) — don't hijack keys
       }
@@ -468,7 +474,7 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [clearSelection, copySelection, pasteClipboard, duplicateSelection, handlers]);
+  }, [clearSelection, copySelection, pasteClipboard, duplicateSelection, handlers, shortcutsDisabled]);
 
   const [{ isOver }, dropRef] = useDrop({
     accept: ['collection-item', 'workflow-node-template'],
@@ -523,7 +529,7 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
         panOnDrag={[1, 2]}
         selectionMode={SelectionMode.Partial}
         multiSelectionKeyCode={['Meta', 'Control', 'Shift']}
-        deleteKeyCode={['Backspace', 'Delete']}
+        deleteKeyCode={shortcutsDisabled ? null : ['Backspace', 'Delete']}
         fitView
         proOptions={{ hideAttribution: true }}
       >

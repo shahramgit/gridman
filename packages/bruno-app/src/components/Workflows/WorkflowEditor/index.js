@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { useDrag, useDrop } from 'react-dnd';
+import { useDrag } from 'react-dnd';
 import toast from 'react-hot-toast';
 import {
+  IconArrowsMaximize,
   IconArrowsSplit,
   IconCircleCheck,
   IconCircleX,
@@ -56,27 +57,14 @@ import ActionIcon from 'ui/ActionIcon';
 import MenuDropdown from 'ui/MenuDropdown';
 import RequestPickerModal from './RequestPickerModal';
 import WorkflowCanvas from './WorkflowCanvas';
+import NodeDetailView from './NodeDetailView';
+import NodeParamsEditor, { STATUS_LABELS } from './NodeParamsEditor';
+import { blurOnEnter, formatDuration, InputFieldTree, prettyJson } from './nodeIo';
 import StyledWrapper from './StyledWrapper';
-
-const STATUS_LABELS = { linked: 'linked', drifted: 'changed', detached: 'detached' };
 
 // The single "continuation" output for each node type, used when auto-wiring
 // a freshly added node into a linear chain.
 const PRIMARY_PORT = { start: 'main', request: 'main', map: 'main', delay: 'main', condition: 'true', loop: 'loop' };
-
-// Commit text inputs on Enter (they save on blur).
-const blurOnEnter = (event) => {
-  if (event.key === 'Enter') {
-    event.currentTarget.blur();
-  }
-};
-
-const formatDuration = (ms) => {
-  if (typeof ms !== 'number' || Number.isNaN(ms)) {
-    return '';
-  }
-  return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`;
-};
 
 const formatTime = (ts) => {
   if (!ts) {
@@ -125,243 +113,6 @@ const StepResult = ({ result }) => {
       </span>
     </span>
   );
-};
-
-const WORKFLOW_FIELD_DND = 'workflow-field';
-const MAX_INPUT_FIELDS = 250;
-
-// Flatten a node's input snapshot ({ response, vars }) into leaf fields the user
-// can drag onto parameter inputs. Each field carries every reference form so the
-// drop target can pick the right one (JSONPath for Map, expression for
-// Condition, {{template}} for Set Vars, bare var name for Loop).
-const flattenInputFields = (input) => {
-  const fields = [];
-  if (!input) {
-    return fields;
-  }
-
-  const sampleOf = (value) => {
-    if (value === null || value === undefined) return String(value);
-    if (typeof value === 'object') return Array.isArray(value) ? `[${value.length}]` : '{…}';
-    return String(value).slice(0, 40);
-  };
-
-  const res = input.response;
-  if (res) {
-    if (res.status !== undefined) {
-      fields.push({ label: 'status', expr: 'res.status', kind: 'status', sample: sampleOf(res.status) });
-    }
-    const headers = res.headers || {};
-    for (const key of Object.keys(headers)) {
-      fields.push({ label: `header: ${key}`, expr: `res.headers['${key}']`, headerName: key, kind: 'header', sample: sampleOf(headers[key]) });
-    }
-    const walk = (value, jsonPath, exprPath) => {
-      if (fields.length > MAX_INPUT_FIELDS) return;
-      if (value === null || typeof value !== 'object') {
-        fields.push({ label: jsonPath, expr: exprPath, jsonPath, kind: 'body', sample: sampleOf(value) });
-        return;
-      }
-      if (Array.isArray(value)) {
-        if (!value.length) {
-          fields.push({ label: jsonPath, expr: exprPath, jsonPath, kind: 'body', sample: '[]' });
-        }
-        value.slice(0, 3).forEach((item, i) => walk(item, `${jsonPath}[${i}]`, `${exprPath}[${i}]`));
-        return;
-      }
-      for (const key of Object.keys(value)) {
-        walk(value[key], `${jsonPath}.${key}`, `${exprPath}.${key}`);
-      }
-    };
-    if (res.body !== undefined) {
-      walk(res.body, '$', 'res.body');
-    }
-  }
-
-  const vars = input.vars || {};
-  for (const key of Object.keys(vars)) {
-    fields.push({ label: `vars.${key}`, expr: `vars.${key}`, template: `{{${key}}}`, varName: key, kind: 'var', sample: sampleOf(vars[key]) });
-  }
-  return fields;
-};
-
-const InputFieldChip = ({ field }) => {
-  const [{ isDragging }, drag] = useDrag({
-    type: WORKFLOW_FIELD_DND,
-    item: field,
-    collect: (monitor) => ({ isDragging: monitor.isDragging() })
-  });
-  return (
-    <div ref={drag} className={`io-field io-field-${field.kind}`} style={{ opacity: isDragging ? 0.4 : 1 }} title={`Drag onto a field — ${field.expr}`}>
-      <span className="io-field-label">{field.label}</span>
-      <span className="io-field-sample">{field.sample}</span>
-    </div>
-  );
-};
-
-const InputFieldTree = ({ input }) => {
-  const fields = flattenInputFields(input);
-  if (!fields.length) {
-    return <div className="io-empty">Run the flow to see the previous node's data here, then drag fields onto the parameters above.</div>;
-  }
-  return (
-    <div className="io-field-list" data-testid="workflow-input-fields">
-      {fields.map((field, index) => <InputFieldChip key={`${field.kind}-${field.label}-${index}`} field={field} />)}
-    </div>
-  );
-};
-
-// Text input that also accepts a dragged input field. `getRef` maps the dropped
-// field to the reference string appropriate for this parameter. Keyed by value
-// so a drop re-seeds the uncommitted (uncontrolled) input.
-const DroppableInput = ({ value, placeholder, onCommit, getRef, type = 'text', style, className = '' }) => {
-  const [{ isOver, canDrop }, drop] = useDrop({
-    accept: WORKFLOW_FIELD_DND,
-    drop: (field) => onCommit(getRef(field)),
-    collect: (monitor) => ({ isOver: monitor.isOver(), canDrop: monitor.canDrop() })
-  });
-  return (
-    <input
-      ref={drop}
-      key={value}
-      type={type}
-      style={style}
-      className={`${className} ${isOver && canDrop ? 'wf-drop-over' : ''}`.trim()}
-      placeholder={placeholder}
-      defaultValue={value}
-      onBlur={(e) => onCommit(e.target.value)}
-    />
-  );
-};
-
-const MapNodeEditor = ({ node, onChange }) => {
-  const mappings = node.mappings || [];
-  const updateMapping = (index, patch) => {
-    onChange({ mappings: mappings.map((m, i) => (i === index ? { ...m, ...patch } : m)) });
-  };
-  return (
-    <div className="step-editor">
-      {mappings.map((mapping, index) => (
-        <div key={index} className="editor-row">
-          <select value={mapping.from} onChange={(e) => updateMapping(index, { from: e.target.value })}>
-            <option value="body">Body (JSONPath)</option>
-            <option value="header">Header</option>
-            <option value="status">Status</option>
-          </select>
-          {mapping.from !== 'status' && (
-            <DroppableInput
-              placeholder={mapping.from === 'header' ? 'header name' : '$.data.token'}
-              value={mapping.path}
-              onCommit={(val) => updateMapping(index, { path: val })}
-              getRef={(field) => (mapping.from === 'header' ? (field.headerName || field.label) : (field.jsonPath || field.expr))}
-            />
-          )}
-          <span className="editor-arrow">to</span>
-          <input
-            type="text"
-            placeholder="variable name"
-            defaultValue={mapping.target}
-            onBlur={(e) => updateMapping(index, { target: e.target.value })}
-          />
-          <ActionIcon label="Remove mapping" onClick={() => onChange({ mappings: mappings.filter((_, i) => i !== index) })}>
-            <IconTrash size={13} stroke={1.5} />
-          </ActionIcon>
-        </div>
-      ))}
-      <button type="button" className="editor-add" onClick={() => onChange({ mappings: [...mappings, { from: 'body', path: '$.', target: '' }] })}>
-        + mapping
-      </button>
-    </div>
-  );
-};
-
-const SetVarsNodeEditor = ({ node, onChange }) => {
-  const assignments = node.assignments || [];
-  const update = (index, patch) => {
-    onChange({ assignments: assignments.map((a, i) => (i === index ? { ...a, ...patch } : a)) });
-  };
-  return (
-    <div className="step-editor">
-      {assignments.map((assignment, index) => (
-        <div key={index} className="editor-row">
-          <input
-            type="text"
-            placeholder="variable name"
-            defaultValue={assignment.name}
-            onBlur={(e) => update(index, { name: e.target.value })}
-          />
-          <span className="editor-arrow">=</span>
-          <DroppableInput
-            placeholder="value or {{otherVar}}"
-            value={assignment.value}
-            onCommit={(val) => update(index, { value: val })}
-            getRef={(field) => field.template || field.expr}
-          />
-          <ActionIcon label="Remove" onClick={() => onChange({ assignments: assignments.filter((_, i) => i !== index) })}>
-            <IconTrash size={13} stroke={1.5} />
-          </ActionIcon>
-        </div>
-      ))}
-      <button type="button" className="editor-add" onClick={() => onChange({ assignments: [...assignments, { name: '', value: '' }] })}>
-        + variable
-      </button>
-      <div className="editor-hint">Values resolve {'{{var}}'} placeholders against the current flow variables.</div>
-    </div>
-  );
-};
-
-const ConditionNodeEditor = ({ node, onChange }) => (
-  <div className="step-editor">
-    <div className="editor-row">
-      <DroppableInput
-        className="expression-input"
-        placeholder="res.status === 200 && vars.token"
-        value={node.expression}
-        onCommit={(val) => onChange({ expression: val })}
-        getRef={(field) => field.expr}
-      />
-    </div>
-    <div className="editor-hint">Wire the <strong>true</strong> and <strong>false</strong> outputs on the canvas. Expression sees res and vars.</div>
-  </div>
-);
-
-const DelayNodeEditor = ({ node, onChange }) => (
-  <div className="step-editor">
-    <div className="editor-row">
-      <input type="number" min="0" step="100" defaultValue={node.durationMs} onBlur={(e) => onChange({ durationMs: Number(e.target.value) || 0 })} />
-      <span className="editor-arrow">ms</span>
-    </div>
-  </div>
-);
-
-const LoopNodeEditor = ({ node, onChange }) => (
-  <div className="step-editor">
-    <div className="editor-row">
-      <span className="editor-arrow">for each</span>
-      <input type="text" placeholder="item" style={{ width: 80 }} defaultValue={node.itemVar} onBlur={(e) => onChange({ itemVar: e.target.value || 'item' })} />
-      <span className="editor-arrow">in vars.</span>
-      <DroppableInput
-        placeholder="arrayVariable"
-        value={node.source}
-        onCommit={(val) => onChange({ source: val })}
-        getRef={(field) => field.varName || field.expr}
-      />
-      <span className="editor-arrow">max</span>
-      <input type="number" min="1" style={{ width: 80 }} defaultValue={node.maxIterations} onBlur={(e) => onChange({ maxIterations: Number(e.target.value) || 100 })} />
-    </div>
-    <div className="editor-hint">
-      Wire the <strong>loop</strong> output through the body and back into this node; <strong>done</strong> continues after the loop.
-      Exposes vars.{node.itemVar || 'item'} and vars.{node.itemVar || 'item'}Index.
-    </div>
-  </div>
-);
-
-const NodeParamEditor = ({ node, onChange }) => {
-  if (node.type === 'map') return <MapNodeEditor node={node} onChange={onChange} />;
-  if (node.type === 'setvars') return <SetVarsNodeEditor node={node} onChange={onChange} />;
-  if (node.type === 'condition') return <ConditionNodeEditor node={node} onChange={onChange} />;
-  if (node.type === 'delay') return <DelayNodeEditor node={node} onChange={onChange} />;
-  if (node.type === 'loop') return <LoopNodeEditor node={node} onChange={onChange} />;
-  return null;
 };
 
 const WorkflowInputs = ({ inputs, onChange }) => {
@@ -552,6 +303,9 @@ const WorkflowEditor = ({ pathname }) => {
   // Mirror of the canvas selection (React Flow owns it). The right panel opens
   // only when exactly one node is selected.
   const [selectedNodeIds, setSelectedNodeIds] = useState([]);
+  // Node shown in the fullscreen Node Detail View (null = closed). Lives here
+  // (like the selection mirror) so it survives canvas re-renders.
+  const [ndvNodeId, setNdvNodeId] = useState(null);
   const [view, setViewState] = useState(() => {
     try {
       return window.localStorage.getItem(VIEW_STORAGE_KEY) || 'list';
@@ -591,6 +345,14 @@ const WorkflowEditor = ({ pathname }) => {
 
   const graph = useMemo(() => (doc ? analyzeGraph(doc) : null), [doc]);
 
+  // Close the NDV gracefully if its node disappears (deleted, undo, doc
+  // refresh from disk).
+  useEffect(() => {
+    if (ndvNodeId && doc && !doc.nodes.some((node) => node.id === ndvNodeId)) {
+      setNdvNodeId(null);
+    }
+  }, [ndvNodeId, doc]);
+
   const canvasHandlers = useMemo(() => ({
     onConnect: (conn) => dispatch(connectWorkflowNodes(pathname, conn)).catch((e) => toast.error(e?.message || 'Unable to connect')),
     onReconnect: (id, conn) => dispatch(reconnectWorkflowConnection(pathname, id, conn)).catch((e) => toast.error(e?.message || 'Unable to rewire')),
@@ -622,7 +384,9 @@ const WorkflowEditor = ({ pathname }) => {
     onDropNode: (nodeType, position) => dispatch(addWorkflowNode(pathname, nodeType, position)).catch((e) => toast.error(e?.message || 'Unable to add node')),
     onTidy: () => dispatch(layoutWorkflowNodes(pathname)).catch((e) => toast.error(e?.message || 'Unable to tidy layout')),
     onQuickAddOutput: ({ source, sourcePort, position, screen }) => setQuickAdd({ wireFrom: { source, sourcePort }, position, screen }),
-    onInsertOnEdge: ({ connectionId, position, screen }) => setQuickAdd({ insertConnectionId: connectionId, position, screen })
+    onInsertOnEdge: ({ connectionId, position, screen }) => setQuickAdd({ insertConnectionId: connectionId, position, screen }),
+    // Double-click on a node opens the fullscreen Node Detail View.
+    onOpenNodeDetail: (id) => setNdvNodeId(id)
   }), [dispatch, pathname, handleSelectNodes]);
 
   if (!openWorkflowState) {
@@ -759,6 +523,7 @@ const WorkflowEditor = ({ pathname }) => {
   ];
 
   const selectedNode = selectedNodeId ? graph.nodesById[selectedNodeId] : null;
+  const ndvNode = ndvNodeId ? graph.nodesById[ndvNodeId] : null;
 
   const renderSelectionPanel = () => {
     if (selectedNodeIds.length > 1) {
@@ -785,6 +550,9 @@ const WorkflowEditor = ({ pathname }) => {
           ) : (
             <input className="step-name-input" type="text" defaultValue={selectedNode.name} onKeyDown={blurOnEnter} onBlur={(e) => handleNodePatch(selectedNode.id)({ name: e.target.value })} />
           )}
+          <ActionIcon label="Open node detail view" data-testid="workflow-node-expand" onClick={() => setNdvNodeId(selectedNode.id)}>
+            <IconArrowsMaximize size={14} stroke={1.6} />
+          </ActionIcon>
         </div>
         {selectedNode.type !== 'start' && (
           <button
@@ -799,42 +567,11 @@ const WorkflowEditor = ({ pathname }) => {
             <span>Execute node</span>
           </button>
         )}
-        {selectedNode.type === 'request' && (
-          <div className="panel-section">
-            <div className="step-ref">{selectedNode.ref.collection}/{selectedNode.ref.request}</div>
-            {selDrift && (
-              <div className={`step-status status-${selDrift.status}`} style={{ alignSelf: 'flex-start' }}>
-                {selectedNode.pinned ? 'pinned' : STATUS_LABELS[selDrift.status] || selDrift.status}
-              </div>
-            )}
-            <div className="panel-actions">
-              <button type="button" className="add-button" onClick={() => canvasHandlers.onRevealNode(selectedNode.id)}>
-                <IconTarget size={14} /> <span>Show in sidebar</span>
-              </button>
-              {selDrift?.status === 'drifted' && !selectedNode.pinned && (
-                <button type="button" className="add-button" onClick={() => dispatch(syncWorkflowNodes(pathname, [selectedNode.id])).catch((e) => toast.error(e?.message || 'Unable to sync'))}>
-                  <IconRefresh size={14} /> <span>Sync</span>
-                </button>
-              )}
-              <button type="button" className="add-button" onClick={() => dispatch(togglePinWorkflowNode(pathname, selectedNode.id))}>
-                {selectedNode.pinned ? <IconPinned size={14} /> : <IconPin size={14} />}
-                <span>{selectedNode.pinned ? 'Unpin' : 'Pin'}</span>
-              </button>
-            </div>
-          </div>
-        )}
-        <NodeParamEditor node={selectedNode} onChange={handleNodePatch(selectedNode.id)} />
+        <NodeParamsEditor pathname={pathname} node={selectedNode} drift={selDrift} onChange={handleNodePatch(selectedNode.id)} />
         <StepResult result={run?.stepResults?.[selectedNode.id]} />
 
         {(() => {
           const data = run?.nodeData?.[selectedNode.id];
-          const preview = (value) => {
-            try {
-              return JSON.stringify(value, null, 2).slice(0, 4000);
-            } catch (error) {
-              return String(value);
-            }
-          };
           const editable = ['map', 'setvars', 'condition', 'loop'].includes(selectedNode.type);
           return (
             <div className="node-io" data-testid="workflow-node-io">
@@ -844,14 +581,14 @@ const WorkflowEditor = ({ pathname }) => {
                 {data?.input && (
                   <details className="io-raw">
                     <summary>raw JSON</summary>
-                    <pre className="io-pre">{preview(data.input)}</pre>
+                    <pre className="io-pre">{prettyJson(data.input)}</pre>
                   </details>
                 )}
               </details>
               {data?.output !== undefined && (
                 <details open>
                   <summary>Output</summary>
-                  <pre className="io-pre">{preview(data.output)}</pre>
+                  <pre className="io-pre">{prettyJson(data.output)}</pre>
                 </details>
               )}
             </div>
@@ -938,7 +675,7 @@ const WorkflowEditor = ({ pathname }) => {
                   </ActionIcon>
                 </span>
               </div>
-              {node.type !== 'request' && <NodeParamEditor node={node} onChange={handleNodePatch(node.id)} />}
+              {node.type !== 'request' && <NodeParamsEditor pathname={pathname} node={node} onChange={handleNodePatch(node.id)} />}
             </div>
           );
         })}
@@ -1025,11 +762,22 @@ const WorkflowEditor = ({ pathname }) => {
             onSelectNodes={handleSelectNodes}
             canUndo={Boolean(docHistory?.past?.length)}
             canRedo={Boolean(docHistory?.future?.length)}
+            shortcutsDisabled={Boolean(ndvNode)}
           />
           {renderSelectionPanel()}
         </div>
       ) : (
         renderListView()
+      )}
+
+      {ndvNode && (
+        <NodeDetailView
+          pathname={pathname}
+          node={ndvNode}
+          drift={drift?.[ndvNode.id]}
+          workflowInputs={doc.inputs}
+          onClose={() => setNdvNodeId(null)}
+        />
       )}
 
       {quickAdd && (
