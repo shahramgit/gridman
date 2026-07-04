@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useCallback } from 'react';
+import { useEffect, useMemo, useCallback, useRef } from 'react';
 import { useDrop } from 'react-dnd';
 import {
   ReactFlow,
@@ -12,14 +12,18 @@ import {
   Handle,
   NodeToolbar,
   Position,
+  SelectionMode,
   getBezierPath,
   useNodesState,
   useEdgesState,
   useReactFlow
 } from '@xyflow/react';
 import {
+  IconArrowBackUp,
+  IconArrowForwardUp,
   IconArrowsSplit,
   IconClock,
+  IconCopy,
   IconLayoutGridAdd,
   IconPlayerPause,
   IconPlayerPlay,
@@ -30,6 +34,7 @@ import {
   IconWand,
   IconWorld
 } from '@tabler/icons';
+import { collectClipboardPayload } from 'providers/ReduxStore/slices/workflows-canvas-helpers';
 import '@xyflow/react/dist/style.css';
 
 const STATUS_COLORS = {
@@ -50,6 +55,25 @@ const TYPE_ICONS = {
   condition: IconArrowsSplit,
   delay: IconClock,
   loop: IconRepeat
+};
+
+// Renderer-local clipboard shared by all workflow canvases (NOT the OS
+// clipboard). pasteCount grows with each paste so repeats don't stack.
+let workflowClipboard = null; // { nodes, connections, pasteCount }
+
+// Keyboard shortcuts must never fire while the user is typing.
+const isEditableTarget = (element) => {
+  if (!element || element === document.body) {
+    return false;
+  }
+  const tag = element.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+    return true;
+  }
+  if (element.isContentEditable) {
+    return true;
+  }
+  return Boolean(element.closest?.('.CodeMirror'));
 };
 
 const nodeTitle = (node) => {
@@ -96,6 +120,11 @@ const GridmanNode = ({ data, selected }) => {
     ? STATUS_COLORS[result.status]
     : (drift && DRIFT_COLORS[drift] ? DRIFT_COLORS[drift] : 'var(--wf-node-border, #8886)');
 
+  // Surface a failed node's error on hover without opening the panel.
+  const errorTitle = result?.status === 'failed' && result.error
+    ? String(result.error).slice(0, 200)
+    : undefined;
+
   const outputs = node.type === 'condition'
     ? ['true', 'false']
     : node.type === 'loop'
@@ -108,6 +137,7 @@ const GridmanNode = ({ data, selected }) => {
     <div
       className={`wf-node wf-node-${node.type} ${selected ? 'wf-node-selected' : ''} ${node.disabled ? 'wf-node-disabled' : ''}`}
       style={{ borderColor }}
+      title={errorTitle}
     >
       <NodeToolbar isVisible={selected} position={Position.Top} className="wf-node-toolbar">
         {node.type === 'request' && (
@@ -122,6 +152,11 @@ const GridmanNode = ({ data, selected }) => {
             onClick={() => data.onToggleDisabled(node.id, !node.disabled)}
           >
             {node.disabled ? <IconPlayerPlay size={14} stroke={1.6} /> : <IconPlayerPause size={14} stroke={1.6} />}
+          </button>
+        )}
+        {node.type !== 'start' && (
+          <button type="button" title="Duplicate node (Ctrl/Cmd+D)" onClick={() => data.onDuplicate(node.id)}>
+            <IconCopy size={14} stroke={1.6} />
           </button>
         )}
         {node.type !== 'start' && (
@@ -233,8 +268,12 @@ const QuickAddEdge = ({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
 
 const edgeTypes = { quickadd: QuickAddEdge };
 
-const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSelectNode }) => {
+const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo, canRedo }) => {
   const { screenToFlowPosition, fitView } = useReactFlow();
+  const wrapperRef = useRef(null);
+  // Node ids to select once they appear in the doc (set after paste/duplicate,
+  // consumed by the layout sync effect below).
+  const pendingSelectionRef = useRef(null);
 
   const onTidy = useCallback(async () => {
     await handlers.onTidy();
@@ -242,11 +281,19 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
     setTimeout(() => fitView({ duration: 300, padding: 0.2 }), 50);
   }, [handlers, fitView]);
 
+  // Duplicate nodes and select the copies once the refreshed doc lands.
+  const duplicateNodes = useCallback(async (nodeIds) => {
+    const newIds = await handlers.onDuplicateNodes(nodeIds);
+    if (newIds?.length) {
+      pendingSelectionRef.current = newIds;
+    }
+  }, [handlers]);
+
   const layoutNodes = useMemo(() => doc.nodes.map((node) => ({
     id: node.id,
     type: 'gridman',
     position: node.position || { x: 0, y: 0 },
-    selected: node.id === selectedNodeId,
+    deletable: node.type !== 'start', // the Start node is permanent
     data: {
       node,
       drift: drift?.[node.id]?.status,
@@ -254,9 +301,10 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
       onDelete: handlers.onDeleteNode,
       onReveal: handlers.onRevealNode,
       onToggleDisabled: handlers.onToggleDisabled,
-      onQuickAddOutput: handlers.onQuickAddOutput
+      onQuickAddOutput: handlers.onQuickAddOutput,
+      onDuplicate: (id) => duplicateNodes([id])
     }
-  })), [doc.nodes, drift, stepResults, handlers, selectedNodeId]);
+  })), [doc.nodes, drift, stepResults, handlers, duplicateNodes]);
 
   const layoutEdges = useMemo(() => (doc.connections || []).map((conn) => ({
     id: conn.id,
@@ -272,7 +320,23 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
 
   const [nodes, setNodes, onNodesChange] = useNodesState(layoutNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(layoutEdges);
-  useEffect(() => setNodes(layoutNodes), [layoutNodes, setNodes]);
+
+  // Sync nodes from the doc while preserving the current multi-selection
+  // (React Flow owns selection state). A pending selection (from paste or
+  // duplicate) wins once all of its nodes exist.
+  useEffect(() => {
+    const pending = pendingSelectionRef.current;
+    if (pending?.length && pending.every((id) => layoutNodes.some((n) => n.id === id))) {
+      pendingSelectionRef.current = null;
+      setNodes(layoutNodes.map((n) => ({ ...n, selected: pending.includes(n.id) })));
+      onSelectNodes(pending);
+      return;
+    }
+    setNodes((prev) => {
+      const selectedIds = new Set(prev.filter((n) => n.selected).map((n) => n.id));
+      return layoutNodes.map((n) => ({ ...n, selected: selectedIds.has(n.id) }));
+    });
+  }, [layoutNodes, setNodes, onSelectNodes]);
   useEffect(() => setEdges(layoutEdges), [layoutEdges, setEdges]);
 
   const onConnect = useCallback((connection) => {
@@ -291,27 +355,120 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
     });
   }, [handlers]);
 
-  const onEdgesDelete = useCallback((deleted) => {
-    for (const edge of deleted) {
-      handlers.onDeleteConnection(edge.id);
-    }
+  // A group drag reports every dragged node — persist all their positions in
+  // one write.
+  const onNodeDragStop = useCallback((event, node, draggedNodes) => {
+    const moved = (draggedNodes?.length ? draggedNodes : [node])
+      .map((n) => ({ id: n.id, position: n.position }));
+    handlers.onMoveNodes(moved);
   }, [handlers]);
 
-  const onNodeDragStop = useCallback((event, node) => {
-    handlers.onMoveNode(node.id, node.position);
-  }, [handlers]);
-
-  const onNodesDelete = useCallback((deleted) => {
-    for (const node of deleted) {
-      if (node.id !== doc.nodes.find((n) => n.type === 'start')?.id) {
-        handlers.onDeleteNode(node.id);
-      }
+  // Delete/Backspace removes the whole selection (nodes minus Start, plus any
+  // selected edges) in one doc write. Edges attached to removed nodes are
+  // dropped by the same write, so they're filtered out here.
+  const onDelete = useCallback(({ nodes: deletedNodes = [], edges: deletedEdges = [] }) => {
+    const nodeIds = deletedNodes
+      .filter((n) => n.data?.node?.type !== 'start')
+      .map((n) => n.id);
+    const removedSet = new Set(nodeIds);
+    const edgeIds = deletedEdges
+      .filter((e) => !removedSet.has(e.source) && !removedSet.has(e.target))
+      .map((e) => e.id);
+    if (!nodeIds.length && !edgeIds.length) {
+      return;
     }
-  }, [handlers, doc.nodes]);
+    handlers.onDeleteSelection(nodeIds, edgeIds);
+  }, [handlers]);
 
   const handleSelectionChange = useCallback(({ nodes: selectedNodes }) => {
-    onSelectNode(selectedNodes?.[0]?.id || null);
-  }, [onSelectNode]);
+    onSelectNodes((selectedNodes || []).map((n) => n.id));
+  }, [onSelectNodes]);
+
+  // Double-click focuses a node: it becomes the single selection, which opens
+  // the right panel.
+  const onNodeDoubleClick = useCallback((event, node) => {
+    setNodes((prev) => prev.map((n) => (n.selected === (n.id === node.id) ? n : { ...n, selected: n.id === node.id })));
+    onSelectNodes([node.id]);
+  }, [setNodes, onSelectNodes]);
+
+  const clearSelection = useCallback(() => {
+    setNodes((prev) => prev.map((n) => (n.selected ? { ...n, selected: false } : n)));
+    setEdges((prev) => prev.map((e) => (e.selected ? { ...e, selected: false } : e)));
+    onSelectNodes([]);
+  }, [setNodes, setEdges, onSelectNodes]);
+
+  const copySelection = useCallback(() => {
+    const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
+    const payload = collectClipboardPayload(doc, selectedIds);
+    if (!payload.nodes.length) {
+      return;
+    }
+    workflowClipboard = { ...payload, pasteCount: 0 };
+  }, [nodes, doc]);
+
+  const pasteClipboard = useCallback(async () => {
+    if (!workflowClipboard?.nodes?.length) {
+      return;
+    }
+    workflowClipboard.pasteCount += 1;
+    const newIds = await handlers.onPasteNodes(
+      { nodes: workflowClipboard.nodes, connections: workflowClipboard.connections },
+      workflowClipboard.pasteCount
+    );
+    if (newIds?.length) {
+      pendingSelectionRef.current = newIds;
+    }
+  }, [handlers]);
+
+  const duplicateSelection = useCallback(() => {
+    const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id);
+    if (selectedIds.length) {
+      duplicateNodes(selectedIds);
+    }
+  }, [nodes, duplicateNodes]);
+
+  // Canvas shortcuts: Escape deselect, Ctrl/Cmd C/V/D copy/paste/duplicate,
+  // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z / Ctrl/Cmd+Y redo. Guarded so they
+  // never fire while typing, and only while this canvas is visible.
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (!wrapperRef.current || !wrapperRef.current.offsetParent) {
+        return; // canvas hidden (e.g. another view) — don't hijack keys
+      }
+      if (isEditableTarget(event.target) || isEditableTarget(document.activeElement)) {
+        return;
+      }
+      if (event.key === 'Escape') {
+        clearSelection();
+        return;
+      }
+      if (!(event.metaKey || event.ctrlKey)) {
+        return;
+      }
+      const key = String(event.key).toLowerCase();
+      if (key === 'c') {
+        copySelection();
+      } else if (key === 'v') {
+        event.preventDefault();
+        pasteClipboard();
+      } else if (key === 'd') {
+        event.preventDefault();
+        duplicateSelection();
+      } else if (key === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) {
+          handlers.onRedo();
+        } else {
+          handlers.onUndo();
+        }
+      } else if (key === 'y') {
+        event.preventDefault();
+        handlers.onRedo();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [clearSelection, copySelection, pasteClipboard, duplicateSelection, handlers]);
 
   const [{ isOver }, dropRef] = useDrop({
     accept: ['collection-item', 'workflow-node-template'],
@@ -335,9 +492,17 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
     collect: (monitor) => ({ isOver: monitor.isOver() })
   });
 
+  const setWrapperRef = useCallback((element) => {
+    wrapperRef.current = element;
+    dropRef(element);
+  }, [dropRef]);
+
+  // Only the permanent Start node -> nudge the user toward the palette.
+  const isEmpty = doc.nodes.length <= 1;
+
   return (
     <div
-      ref={dropRef}
+      ref={setWrapperRef}
       className={`wf-canvas ${isOver ? 'wf-canvas-drop-active' : ''}`}
       data-testid="workflow-canvas"
     >
@@ -350,10 +515,15 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onReconnect={onReconnect}
-        onEdgesDelete={onEdgesDelete}
-        onNodesDelete={onNodesDelete}
+        onDelete={onDelete}
         onNodeDragStop={onNodeDragStop}
+        onNodeDoubleClick={onNodeDoubleClick}
         onSelectionChange={handleSelectionChange}
+        selectionOnDrag
+        panOnDrag={[1, 2]}
+        selectionMode={SelectionMode.Partial}
+        multiSelectionKeyCode={['Meta', 'Control', 'Shift']}
+        deleteKeyCode={['Backspace', 'Delete']}
         fitView
         proOptions={{ hideAttribution: true }}
       >
@@ -362,9 +532,20 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, selectedNodeId, onSele
           <ControlButton onClick={onTidy} title="Tidy up (auto-layout)">
             <IconLayoutGridAdd size={14} stroke={1.6} />
           </ControlButton>
+          <ControlButton onClick={handlers.onUndo} disabled={!canUndo} title="Undo (Ctrl/Cmd+Z)">
+            <IconArrowBackUp size={14} stroke={1.6} />
+          </ControlButton>
+          <ControlButton onClick={handlers.onRedo} disabled={!canRedo} title="Redo (Ctrl/Cmd+Shift+Z)">
+            <IconArrowForwardUp size={14} stroke={1.6} />
+          </ControlButton>
         </Controls>
         <MiniMap pannable zoomable nodeStrokeWidth={2} />
       </ReactFlow>
+      {isEmpty && (
+        <div className="wf-canvas-empty-hint">
+          Drag a request from the sidebar, or drag a node from the palette
+        </div>
+      )}
     </div>
   );
 };

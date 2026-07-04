@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { useDrag, useDrop } from 'react-dnd';
 import toast from 'react-hot-toast';
@@ -32,21 +32,24 @@ import {
   addWorkflowRequestNodeFromDragItem,
   cancelWorkflowRun,
   connectWorkflowNodes,
-  disconnectWorkflowConnection,
+  duplicateWorkflowNodes,
   executeWorkflowNode,
   layoutWorkflowNodes,
   loadWorkflowRunHistory,
+  pasteWorkflowNodes,
   quickAddNode,
   reconnectWorkflowConnection,
+  redoWorkflowDoc,
   refreshWorkflow,
-  removeWorkflowNode,
+  removeWorkflowNodes,
   revealWorkflowNode,
   runWorkflow,
   syncWorkflowNodes,
   togglePinWorkflowNode,
+  undoWorkflowDoc,
   updateWorkflowInputs,
   updateWorkflowNode,
-  updateWorkflowNodePosition
+  updateWorkflowNodePositions
 } from 'providers/ReduxStore/slices/workflows';
 import Modal from 'components/Modal';
 import ActionIcon from 'ui/ActionIcon';
@@ -60,6 +63,13 @@ const STATUS_LABELS = { linked: 'linked', drifted: 'changed', detached: 'detache
 // The single "continuation" output for each node type, used when auto-wiring
 // a freshly added node into a linear chain.
 const PRIMARY_PORT = { start: 'main', request: 'main', map: 'main', delay: 'main', condition: 'true', loop: 'loop' };
+
+// Commit text inputs on Enter (they save on blur).
+const blurOnEnter = (event) => {
+  if (event.key === 'Enter') {
+    event.currentTarget.blur();
+  }
+};
 
 const formatDuration = (ms) => {
   if (typeof ms !== 'number' || Number.isNaN(ms)) {
@@ -539,7 +549,9 @@ const WorkflowEditor = ({ pathname }) => {
   const [quickAddPickerCtx, setQuickAddPickerCtx] = useState(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
-  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  // Mirror of the canvas selection (React Flow owns it). The right panel opens
+  // only when exactly one node is selected.
+  const [selectedNodeIds, setSelectedNodeIds] = useState([]);
   const [view, setViewState] = useState(() => {
     try {
       return window.localStorage.getItem(VIEW_STORAGE_KEY) || 'list';
@@ -550,6 +562,15 @@ const WorkflowEditor = ({ pathname }) => {
   const openWorkflowState = useSelector((state) => state.workflows.open[pathname]);
   const run = useSelector((state) => state.workflows.runs[pathname]);
   const history = useSelector((state) => state.workflows.history[pathname]);
+  const docHistory = useSelector((state) => state.workflows.docHistory[pathname]);
+
+  const handleSelectNodes = useCallback((ids) => {
+    setSelectedNodeIds((prev) => (
+      prev.length === ids.length && prev.every((id, i) => id === ids[i]) ? prev : ids
+    ));
+  }, []);
+
+  const selectedNodeId = selectedNodeIds.length === 1 ? selectedNodeIds[0] : null;
 
   const setView = (nextView) => {
     setViewState(nextView);
@@ -573,12 +594,28 @@ const WorkflowEditor = ({ pathname }) => {
   const canvasHandlers = useMemo(() => ({
     onConnect: (conn) => dispatch(connectWorkflowNodes(pathname, conn)).catch((e) => toast.error(e?.message || 'Unable to connect')),
     onReconnect: (id, conn) => dispatch(reconnectWorkflowConnection(pathname, id, conn)).catch((e) => toast.error(e?.message || 'Unable to rewire')),
-    onDeleteConnection: (id) => dispatch(disconnectWorkflowConnection(pathname, id)).catch(() => {}),
-    onMoveNode: (id, position) => dispatch(updateWorkflowNodePosition(pathname, id, position)).catch(() => {}),
+    onMoveNodes: (moves) => dispatch(updateWorkflowNodePositions(pathname, moves)).catch(() => {}),
     onDeleteNode: (id) => {
-      setSelectedNodeId(null);
-      dispatch(removeWorkflowNode(pathname, id)).catch((e) => toast.error(e?.message || 'Unable to delete node'));
+      handleSelectNodes([]);
+      dispatch(removeWorkflowNodes(pathname, [id])).catch((e) => toast.error(e?.message || 'Unable to delete node'));
     },
+    // Group delete (nodes + any selected edges) in one write.
+    onDeleteSelection: (nodeIds, connectionIds) => {
+      handleSelectNodes([]);
+      dispatch(removeWorkflowNodes(pathname, nodeIds, connectionIds)).catch((e) => toast.error(e?.message || 'Unable to delete selection'));
+    },
+    onPasteNodes: (clipboard, offsetStep) => dispatch(pasteWorkflowNodes(pathname, clipboard, offsetStep))
+      .catch((e) => {
+        toast.error(e?.message || 'Unable to paste nodes');
+        return [];
+      }),
+    onDuplicateNodes: (nodeIds) => dispatch(duplicateWorkflowNodes(pathname, nodeIds))
+      .catch((e) => {
+        toast.error(e?.message || 'Unable to duplicate nodes');
+        return [];
+      }),
+    onUndo: () => dispatch(undoWorkflowDoc(pathname)).catch((e) => toast.error(e?.message || 'Unable to undo')),
+    onRedo: () => dispatch(redoWorkflowDoc(pathname)).catch((e) => toast.error(e?.message || 'Unable to redo')),
     onRevealNode: (id) => dispatch(revealWorkflowNode(pathname, id)).catch((e) => toast.error(e?.message || 'Unable to locate request')),
     onToggleDisabled: (id, disabled) => dispatch(updateWorkflowNode(pathname, id, { disabled })).catch((e) => toast.error(e?.message || 'Unable to update node')),
     onDropRequest: (item, position) => dispatch(addWorkflowRequestNodeFromDragItem(pathname, item, position)).catch((e) => toast.error(e?.message || 'Unable to add request')),
@@ -586,7 +623,7 @@ const WorkflowEditor = ({ pathname }) => {
     onTidy: () => dispatch(layoutWorkflowNodes(pathname)).catch((e) => toast.error(e?.message || 'Unable to tidy layout')),
     onQuickAddOutput: ({ source, sourcePort, position, screen }) => setQuickAdd({ wireFrom: { source, sourcePort }, position, screen }),
     onInsertOnEdge: ({ connectionId, position, screen }) => setQuickAdd({ insertConnectionId: connectionId, position, screen })
-  }), [dispatch, pathname]);
+  }), [dispatch, pathname, handleSelectNodes]);
 
   if (!openWorkflowState) {
     return <StyledWrapper><div className="p-4">Loading workflow...</div></StyledWrapper>;
@@ -724,6 +761,13 @@ const WorkflowEditor = ({ pathname }) => {
   const selectedNode = selectedNodeId ? graph.nodesById[selectedNodeId] : null;
 
   const renderSelectionPanel = () => {
+    if (selectedNodeIds.length > 1) {
+      return (
+        <div className="canvas-panel canvas-panel-empty" data-testid="workflow-node-panel">
+          {selectedNodeIds.length} nodes selected
+        </div>
+      );
+    }
     if (!selectedNode) {
       return (
         <div className="canvas-panel canvas-panel-empty" data-testid="workflow-node-panel">
@@ -739,7 +783,7 @@ const WorkflowEditor = ({ pathname }) => {
           {selectedNode.type === 'request' ? (
             <span>{selectedNode.name}</span>
           ) : (
-            <input className="step-name-input" type="text" defaultValue={selectedNode.name} onBlur={(e) => handleNodePatch(selectedNode.id)({ name: e.target.value })} />
+            <input className="step-name-input" type="text" defaultValue={selectedNode.name} onKeyDown={blurOnEnter} onBlur={(e) => handleNodePatch(selectedNode.id)({ name: e.target.value })} />
           )}
         </div>
         {selectedNode.type !== 'start' && (
@@ -864,7 +908,7 @@ const WorkflowEditor = ({ pathname }) => {
                       <span className="step-ref">{node.ref.collection}/{node.ref.request}</span>
                     </>
                   ) : (
-                    <input className="step-name-input" type="text" defaultValue={node.name} onBlur={(e) => handleNodePatch(node.id)({ name: e.target.value })} />
+                    <input className="step-name-input" type="text" defaultValue={node.name} onKeyDown={blurOnEnter} onBlur={(e) => handleNodePatch(node.id)({ name: e.target.value })} />
                   )}
                 </span>
                 {isRequest && (
@@ -978,8 +1022,9 @@ const WorkflowEditor = ({ pathname }) => {
             drift={drift}
             stepResults={run?.stepResults}
             handlers={canvasHandlers}
-            selectedNodeId={selectedNodeId}
-            onSelectNode={setSelectedNodeId}
+            onSelectNodes={handleSelectNodes}
+            canUndo={Boolean(docHistory?.past?.length)}
+            canRedo={Boolean(docHistory?.future?.length)}
           />
           {renderSelectionPanel()}
         </div>

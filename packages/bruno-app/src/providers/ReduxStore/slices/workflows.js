@@ -9,6 +9,14 @@ import { sendNetworkRequest } from 'utils/network';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import { revealRequestInSidebar } from 'providers/ReduxStore/slices/app';
 import { openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
+import {
+  DOC_HISTORY_LIMIT,
+  buildPasteFragment,
+  collectClipboardPayload,
+  describeDocChange,
+  PASTE_OFFSET,
+  shouldCoalesceHistoryEntry
+} from './workflows-canvas-helpers';
 
 const initialState = {
   // workspaceUid -> [{ pathname, filename, name }]
@@ -18,7 +26,10 @@ const initialState = {
   // workflow pathname -> { status, stepResults: { stepId: {...} }, startedAt }
   runs: {},
   // workflow pathname -> [{ startedAt, finishedAt, status, steps, flowVars }]
-  history: {}
+  history: {},
+  // undo/redo snapshots per open workflow:
+  // pathname -> { past: [{ doc, meta }], future: [{ doc, meta }] }
+  docHistory: {}
 };
 
 // Output ports per node type (mirror of the main-process schema).
@@ -66,6 +77,50 @@ export const workflowsSlice = createSlice({
       const { pathname } = action.payload;
       delete state.open[pathname];
       delete state.runs[pathname];
+      delete state.docHistory[pathname];
+    },
+    // Push the pre-change doc onto the undo stack (clearing redo). Consecutive
+    // position-only changes of the same node set are coalesced into the
+    // existing top entry so a drag doesn't flood the history.
+    workflowDocHistoryRecorded: (state, action) => {
+      const { pathname, prevDoc, meta } = action.payload;
+      const hist = state.docHistory[pathname] || { past: [], future: [] };
+      const top = hist.past[hist.past.length - 1];
+      if (top && shouldCoalesceHistoryEntry(top.meta, meta)) {
+        top.meta = { ...top.meta, at: meta.at };
+      } else {
+        hist.past.push({ doc: prevDoc, meta });
+        if (hist.past.length > DOC_HISTORY_LIMIT) {
+          hist.past.shift();
+        }
+      }
+      hist.future = [];
+      state.docHistory[pathname] = hist;
+    },
+    // Move the current doc across the undo/redo boundary. The actual doc swap
+    // happens through the normal save path (with history recording skipped).
+    workflowDocHistoryStepped: (state, action) => {
+      const { pathname, direction, currentDoc } = action.payload;
+      const hist = state.docHistory[pathname];
+      if (!hist) {
+        return;
+      }
+      if (direction === 'undo' && hist.past.length) {
+        hist.past.pop();
+        hist.future.push({ doc: currentDoc, meta: { at: Date.now() } });
+        if (hist.future.length > DOC_HISTORY_LIMIT) {
+          hist.future.shift();
+        }
+      } else if (direction === 'redo' && hist.future.length) {
+        hist.future.pop();
+        hist.past.push({ doc: currentDoc, meta: { at: Date.now() } });
+        if (hist.past.length > DOC_HISTORY_LIMIT) {
+          hist.past.shift();
+        }
+      }
+    },
+    workflowDocHistoryCleared: (state, action) => {
+      delete state.docHistory[action.payload.pathname];
     },
     workflowRunStarted: (state, action) => {
       const { pathname } = action.payload;
@@ -133,6 +188,9 @@ export const {
   workflowsListed,
   workflowOpened,
   workflowClosed,
+  workflowDocHistoryRecorded,
+  workflowDocHistoryStepped,
+  workflowDocHistoryCleared,
   workflowRunStarted,
   workflowRunStepStarted,
   workflowRunStepFinished,
@@ -185,6 +243,8 @@ export const refreshWorkflow = (pathname) => async (dispatch, getState) => {
     pathname
   });
   dispatch(workflowOpened({ pathname, doc, drift }));
+  // An external re-read invalidates the undo snapshots.
+  dispatch(workflowDocHistoryCleared({ pathname }));
 };
 
 export const openWorkflow = (pathname) => async (dispatch, getState) => {
@@ -199,6 +259,7 @@ export const openWorkflow = (pathname) => async (dispatch, getState) => {
     pathname
   });
   dispatch(workflowOpened({ pathname, doc, drift }));
+  dispatch(workflowDocHistoryCleared({ pathname }));
 
   const tabUid = `workflow:${pathname}`;
   const existingTab = state.tabs.tabs.find((tab) => tab.uid === tabUid);
@@ -243,19 +304,54 @@ export const deleteWorkflow = (pathname) => async (dispatch, getState) => {
   await dispatch(loadWorkflows());
 };
 
-export const saveWorkflowDoc = (pathname, doc) => async (dispatch, getState) => {
+// Every workflow mutation funnels through here (one write per mutation), so
+// this is also where undo history is recorded. Pass { skipHistory: true } when
+// applying an undo/redo so restoring a snapshot doesn't record a new entry.
+export const saveWorkflowDoc = (pathname, doc, options = {}) => async (dispatch, getState) => {
   const workspace = getActiveWorkspace(getState());
   if (!workspace?.pathname) {
     return;
   }
 
+  const prevDoc = getState().workflows.open[pathname]?.doc || null;
   const result = await window.ipcRenderer.invoke('renderer:workflow-save', {
     workspacePath: workspace.pathname,
     pathname,
     doc
   });
+  if (!options.skipHistory && prevDoc) {
+    const change = describeDocChange(prevDoc, result.doc);
+    const isNoop = change.positionOnly && !change.movedIds.length;
+    if (!isNoop) {
+      dispatch(workflowDocHistoryRecorded({ pathname, prevDoc, meta: { ...change, at: Date.now() } }));
+    }
+  }
   dispatch(workflowOpened({ pathname, doc: result.doc, drift: result.drift }));
   await dispatch(loadWorkflows());
+};
+
+export const undoWorkflowDoc = (pathname) => async (dispatch, getState) => {
+  const workflowsState = getState().workflows;
+  const hist = workflowsState.docHistory[pathname];
+  const currentDoc = workflowsState.open[pathname]?.doc;
+  if (!hist?.past?.length || !currentDoc) {
+    return;
+  }
+  const target = hist.past[hist.past.length - 1].doc;
+  dispatch(workflowDocHistoryStepped({ pathname, direction: 'undo', currentDoc }));
+  await dispatch(saveWorkflowDoc(pathname, cloneDeep(target), { skipHistory: true }));
+};
+
+export const redoWorkflowDoc = (pathname) => async (dispatch, getState) => {
+  const workflowsState = getState().workflows;
+  const hist = workflowsState.docHistory[pathname];
+  const currentDoc = workflowsState.open[pathname]?.doc;
+  if (!hist?.future?.length || !currentDoc) {
+    return;
+  }
+  const target = hist.future[hist.future.length - 1].doc;
+  dispatch(workflowDocHistoryStepped({ pathname, direction: 'redo', currentDoc }));
+  await dispatch(saveWorkflowDoc(pathname, cloneDeep(target), { skipHistory: true }));
 };
 
 // Add a request node from a picked request (absolute paths). Returns the new
@@ -378,19 +474,30 @@ export const quickAddNode = (pathname, { nodeType, picked, position, wireFrom, i
   return newId;
 };
 
-// Persist a node's canvas position (called on drag stop).
-export const updateWorkflowNodePosition = (pathname, nodeId, position) => async (dispatch, getState) => {
+// Persist canvas positions for a batch of nodes in one write (called on drag
+// stop — a group drag moves every selected node).
+export const updateWorkflowNodePositions = (pathname, moves) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
-  if (!openWorkflowState) {
+  if (!openWorkflowState || !moves?.length) {
     return;
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const node = findNode(doc, nodeId);
-  if (!node) {
+  let changed = false;
+  for (const move of moves) {
+    const node = findNode(doc, move.id);
+    if (!node || !move.position) {
+      continue;
+    }
+    const next = { x: Math.round(move.position.x), y: Math.round(move.position.y) };
+    if (node.position?.x !== next.x || node.position?.y !== next.y) {
+      node.position = next;
+      changed = true;
+    }
+  }
+  if (!changed) {
     return;
   }
-  node.position = { x: Math.round(position.x), y: Math.round(position.y) };
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
@@ -450,31 +557,84 @@ export const layoutWorkflowNodes = (pathname) => async (dispatch, getState) => {
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
-export const removeWorkflowNode = (pathname, nodeId) => async (dispatch, getState) => {
+// Remove a batch of nodes (the Start node is permanent and always filtered
+// out) plus any explicitly deleted connections, in ONE doc write. Their
+// incident connections are dropped too.
+export const removeWorkflowNodes = (pathname, nodeIds, connectionIds = []) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
   if (!openWorkflowState) {
     return;
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const node = findNode(doc, nodeId);
-  if (!node || node.type === 'start') {
-    return; // the Start node is permanent
+  const removeIds = new Set(
+    (nodeIds || []).filter((id) => {
+      const node = findNode(doc, id);
+      return node && node.type !== 'start';
+    })
+  );
+  const removeConnIds = new Set(connectionIds || []);
+  if (!removeIds.size && !removeConnIds.size) {
+    return;
   }
 
-  // Heal a simple in/out: if the node has one incoming and a single 'main'
-  // output, reconnect the predecessor to the successor.
-  const incoming = incomingConnections(doc, nodeId);
-  const mainOut = outgoingConnection(doc, nodeId, 'main');
-  if (incoming.length === 1 && mainOut) {
-    setConnection(doc, incoming[0].source, incoming[0].sourcePort, mainOut.target);
+  // Heal a simple in/out when removing a single node: if it has one incoming
+  // and a single 'main' output, reconnect the predecessor to the successor.
+  if (removeIds.size === 1) {
+    const [nodeId] = removeIds;
+    const incoming = incomingConnections(doc, nodeId);
+    const mainOut = outgoingConnection(doc, nodeId, 'main');
+    if (incoming.length === 1 && mainOut && mainOut.target !== nodeId) {
+      setConnection(doc, incoming[0].source, incoming[0].sourcePort, mainOut.target);
+    }
   }
 
-  doc.nodes = doc.nodes.filter((candidate) => candidate.id !== nodeId);
+  doc.nodes = doc.nodes.filter((candidate) => !removeIds.has(candidate.id));
   doc.connections = (doc.connections || []).filter(
-    (conn) => conn.source !== nodeId && conn.target !== nodeId
+    (conn) => !removeIds.has(conn.source) && !removeIds.has(conn.target) && !removeConnIds.has(conn.id)
   );
   await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
+export const removeWorkflowNode = (pathname, nodeId) => removeWorkflowNodes(pathname, [nodeId]);
+
+// Paste a clipboard payload ({ nodes, connections }) into the doc: fresh uids
+// for every node, internal connections remapped, positions offset so repeat
+// pastes don't stack. One doc write. Returns the new node ids.
+export const pasteWorkflowNodes = (pathname, clipboard, offsetStep = 1) => async (dispatch, getState) => {
+  const openWorkflowState = getState().workflows.open[pathname];
+  if (!openWorkflowState || !clipboard?.nodes?.length) {
+    return [];
+  }
+
+  const doc = cloneDeep(openWorkflowState.doc);
+  const fragment = buildPasteFragment({
+    nodes: clipboard.nodes,
+    connections: clipboard.connections,
+    offset: { x: PASTE_OFFSET * offsetStep, y: PASTE_OFFSET * offsetStep },
+    generateId: uuid
+  });
+  if (!fragment.nodes.length) {
+    return [];
+  }
+  doc.nodes.push(...fragment.nodes);
+  doc.connections = [...(doc.connections || []), ...fragment.connections];
+  await dispatch(saveWorkflowDoc(pathname, doc));
+  return fragment.nodes.map((node) => node.id);
+};
+
+// Duplicate a selection in one step (copy + paste without touching the
+// clipboard). Returns the new node ids.
+export const duplicateWorkflowNodes = (pathname, nodeIds) => async (dispatch, getState) => {
+  const openWorkflowState = getState().workflows.open[pathname];
+  if (!openWorkflowState) {
+    return [];
+  }
+  const clipboard = collectClipboardPayload(openWorkflowState.doc, nodeIds);
+  if (!clipboard.nodes.length) {
+    return [];
+  }
+  return dispatch(pasteWorkflowNodes(pathname, clipboard, 1));
 };
 
 export const connectWorkflowNodes = (pathname, { source, sourcePort = 'main', target }) => async (dispatch, getState) => {
@@ -522,7 +682,11 @@ export const disconnectWorkflowConnection = (pathname, connectionId) => async (d
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
+  const before = (doc.connections || []).length;
   doc.connections = (doc.connections || []).filter((conn) => conn.id !== connectionId);
+  if (doc.connections.length === before) {
+    return; // already gone (e.g. removed together with its node) — skip the write
+  }
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 

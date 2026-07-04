@@ -558,6 +558,7 @@ const StyledWrapper = styled.div`
   }
 
   .wf-canvas {
+    position: relative;
     flex: 1;
     height: 480px;
     border: 1px solid ${(props) => props.theme.input.border};
@@ -567,6 +568,27 @@ const StyledWrapper = styled.div`
     &.wf-canvas-drop-active {
       border-color: ${(props) => props.theme.colors.text.green};
       box-shadow: inset 0 0 0 1px ${(props) => props.theme.colors.text.green};
+    }
+
+    /* Shown while the workflow only has its Start node. */
+    .wf-canvas-empty-hint {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 0 32px;
+      font-size: 13px;
+      color: ${(props) => props.theme.sidebar.color};
+      opacity: 0.5;
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    .react-flow__controls-button:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
     }
 
     .wf-node-label {
