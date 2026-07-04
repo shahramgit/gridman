@@ -103,8 +103,7 @@ const REQUEST_UID_PATHS = [
   'assertions',
   'body.formUrlEncoded',
   'body.multipartForm',
-  'body.file',
-  'body.ws'
+  'body.file'
 ];
 
 const ROOT_UID_PATHS = ['request.headers', 'request.vars.req', 'request.vars.res'];
@@ -2744,12 +2743,14 @@ export const collectionsSlice = createSlice({
         item.draft = cloneDeep(item);
       }
       item.draft.request.vars = item.draft.request.vars || {};
-      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false }) => ({
+      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false, datatype, annotations }) => ({
         uid: uid || uuid(),
         name,
         value,
         description,
         enabled,
+        ...(datatype ? { datatype } : {}),
+        ...(annotations?.length ? { annotations } : {}),
         ...(type === 'response' ? { local } : {})
       }));
       if (type === 'request') {
@@ -3099,12 +3100,14 @@ export const collectionsSlice = createSlice({
       if (!folder.draft) {
         folder.draft = cloneDeep(folder.root);
       }
-      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false }) => ({
+      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false, datatype, annotations }) => ({
         uid: uid || uuid(),
         name,
         value,
         description,
         enabled,
+        ...(datatype ? { datatype } : {}),
+        ...(annotations?.length ? { annotations } : {}),
         ...(type === 'response' ? { local } : {})
       }));
       if (type === 'request') {
@@ -3338,12 +3341,14 @@ export const collectionsSlice = createSlice({
           root: cloneDeep(collection.root)
         };
       }
-      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false }) => ({
+      const mappedVars = map(vars, ({ uid, name = '', value = '', description = '', enabled = true, local = false, datatype, annotations }) => ({
         uid: uid || uuid(),
         name,
         value,
         description,
         enabled,
+        ...(datatype ? { datatype } : {}),
+        ...(annotations?.length ? { annotations } : {}),
         ...(type === 'response' ? { local } : {})
       }));
       if (type === 'request') {
@@ -3727,6 +3732,7 @@ export const collectionsSlice = createSlice({
           existingEnv.name = environment.name;
           existingEnv.variables = environment.variables;
           existingEnv.color = environment.color;
+          existingEnv.externalSecrets = environment.externalSecrets;
           /*
            Apply temporary (ephemeral) values only to variables that actually exist in the file. This prevents deleted temporaries from “popping back” after a save. If a variable is present in the file, we temporarily override the UI value while also remembering the on-disk value in persistedValue for future saves.
           */
@@ -3863,6 +3869,22 @@ export const collectionsSlice = createSlice({
             }
           }
 
+          if (type === 'scripted-request') {
+            const { phase, source, scope, timestamp, data } = action.payload;
+            if (!collection.timeline) collection.timeline = [];
+            collection.timeline.push({
+              type: 'scripted-request',
+              collectionUid,
+              itemUid,
+              requestUid,
+              phase,
+              source,
+              scope: scope || null,
+              timestamp,
+              data
+            });
+          }
+
           if (type === 'assertion-results') {
             const { results } = action.payload;
             item.assertionResults = results;
@@ -3987,6 +4009,35 @@ export const collectionsSlice = createSlice({
           item.preRequestScriptErrorContext = action.payload.errorContext || null;
           item.preRequestScriptErrorCategory = action.payload.errorCategory || null;
         }
+
+        if (type === 'scripted-request') {
+          const { phase, source, scope, timestamp, data } = action.payload;
+          const runnerItem = collection.runnerResult.items.findLast((i) => i.uid === request.uid);
+          if (runnerItem) {
+            if (!runnerItem.scriptedRequestEntries) runnerItem.scriptedRequestEntries = [];
+            runnerItem.scriptedRequestEntries.push({
+              phase,
+              source,
+              scope: scope || null,
+              timestamp,
+              data
+            });
+          }
+        }
+
+        if (type === 'oauth2-debug') {
+          const { url, credentialsId, debugInfo } = action.payload;
+          const runnerItem = collection.runnerResult.items.findLast((i) => i.uid === request.uid);
+          if (runnerItem) {
+            if (!runnerItem.oauth2DebugEntries) runnerItem.oauth2DebugEntries = [];
+            runnerItem.oauth2DebugEntries.push({
+              url,
+              credentialsId,
+              debugInfo: debugInfo?.data || debugInfo,
+              timestamp: Date.now()
+            });
+          }
+        }
       }
     },
     resetCollectionRunner: (state, action) => {
@@ -4051,7 +4102,7 @@ export const collectionsSlice = createSlice({
       }
     },
     collectionAddOauth2CredentialsByUrl: (state, action) => {
-      const { collectionUid, folderUid, itemUid, url, credentials, credentialsId, debugInfo } = action.payload;
+      const { collectionUid, folderUid, itemUid, url, credentials, credentialsId, debugInfo, executionMode } = action.payload;
       const collection = findCollectionByUid(state.collections, collectionUid);
       if (!collection) return;
 
@@ -4080,6 +4131,10 @@ export const collectionsSlice = createSlice({
       });
 
       collection.oauth2Credentials = filteredOauth2Credentials;
+
+      // Runner runs snapshot oauth onto the runner item via 'oauth2-debug';
+      // skip the shared timeline push so it doesn't leak into the standalone view.
+      if (executionMode === 'runner') return;
 
       if (!collection.timeline) {
         collection.timeline = [];

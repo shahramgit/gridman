@@ -263,7 +263,7 @@ const mapPairListToKeyValPairsMultipart = (pairList = [], parseEnabled = true) =
     if (pair.value.startsWith('@file(') && pair.value.endsWith(')')) {
       let filestr = pair.value.replace(/^@file\(/, '').replace(/\)$/, '');
       pair.type = 'file';
-      pair.value = filestr.split('|');
+      pair.value = filestr.split('|').filter(Boolean);
     }
 
     return pair;
@@ -1159,12 +1159,10 @@ const sem = grammar.createSemantics().addAttribute('ast', {
     const namePair = _.find(pairs, { name: 'name' });
     const contentPair = _.find(pairs, { name: 'content' });
     const typePair = _.find(pairs, { name: 'type' });
-    const selectedPair = _.find(pairs, { name: 'selected' });
 
     const messageName = namePair ? namePair.value : '';
     const messageContent = contentPair ? contentPair.value : '';
     const messageTypeContent = typePair ? typePair.value : '';
-    const messageSelected = selectedPair ? selectedPair.value === 'true' : false;
 
     return {
       body: {
@@ -1173,8 +1171,7 @@ const sem = grammar.createSemantics().addAttribute('ast', {
           {
             name: messageName,
             type: messageTypeContent,
-            content: messageContent,
-            selected: messageSelected
+            content: messageContent
           }
         ]
       }

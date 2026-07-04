@@ -18,8 +18,22 @@ const environmentVariablesSchema = Yup.object({
     )
     .nullable(),
   type: Yup.string().oneOf(['text']).required('type is required'),
+  datatype: Yup.string().oneOf(['string', 'number', 'boolean', 'object']).nullable(),
   enabled: Yup.boolean().defined(),
   secret: Yup.boolean()
+})
+  .noUnknown(true)
+  .strict();
+
+// External secret variables carry `name` plus a provider-specific reference key
+// (path / vaultName / secretName / ...), so unknown keys are allowed through.
+const externalSecretVariableSchema = Yup.object({
+  name: Yup.string().nullable()
+}).strict();
+
+const externalSecretsSchema = Yup.object({
+  type: Yup.string().nullable(),
+  variables: Yup.array().of(externalSecretVariableSchema)
 })
   .noUnknown(true)
   .strict();
@@ -28,7 +42,9 @@ const environmentSchema = Yup.object({
   uid: uidSchema,
   name: Yup.string().min(1).required('name is required'),
   variables: Yup.array().of(environmentVariablesSchema).required('variables are required'),
-  color: Yup.string().nullable().optional()
+  externalSecrets: externalSecretsSchema.nullable().optional(),
+  color: Yup.string().nullable().optional(),
+  pathname: Yup.string().nullable()
 })
   .noUnknown(true)
   .strict();
@@ -95,6 +111,7 @@ const varsSchema = Yup.object({
   name: Yup.string().nullable(),
   value: Yup.string().nullable(),
   description: Yup.string().nullable(),
+  datatype: Yup.string().oneOf(['string', 'number', 'boolean', 'object']).nullable(),
   // Optional annotations on variables
   annotations: Yup.array()
     .of(
@@ -620,7 +637,7 @@ const itemSchema = Yup.object({
   type: Yup.string().oneOf(['http-request', 'graphql-request', 'folder', 'js', 'grpc-request', 'ws-request']).required('type is required'),
   seq: Yup.number().min(1),
   name: Yup.string().min(1, 'name must be at least 1 character').required('name is required'),
-  tags: Yup.array().of(Yup.string().matches(/^[\p{L}\p{N}_-](?:[\p{L}\p{N}_\s-]*[\p{L}\p{N}_-])?$/u, 'tag must contain only letters, numbers, spaces, hyphens, or underscores')),
+  tags: Yup.array().of(Yup.string().min(1, 'tag must not be empty')),
   request: Yup.mixed().when('type', {
     is: (type) => type === 'grpc-request',
     then: grpcRequestSchema.required('request is required when item-type is grpc-request'),

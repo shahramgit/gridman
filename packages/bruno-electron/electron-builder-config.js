@@ -108,6 +108,7 @@ const config = {
     publisherName: 'Gridman'
   },
   nsis: {
+    include: 'resources/installer.nsh',
     oneClick: false,
     allowToChangeInstallationDirectory: true,
     allowElevation: true,

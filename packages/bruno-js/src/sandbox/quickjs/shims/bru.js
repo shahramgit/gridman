@@ -344,10 +344,20 @@ const addBruShimToContext = (vm, bru) => {
   });
   sendRequestHandle.consume((handle) => vm.setProp(bruObject, '_sendRequest', handle));
 
+  // On vm.global, not bru, to stay off user-facing autocomplete.
+  let setScopeHandle = vm.newFunction('__bruSetScope', (scopeArg) => {
+    bru._currentScope = vm.dump(scopeArg) || null;
+  });
+  setScopeHandle.consume((handle) => vm.setProp(vm.global, '__bruSetScope', handle));
+
   const sleep = vm.newFunction('sleep', (timer) => {
     const t = vm.getString(timer);
     const promise = vm.newPromise();
     setTimeout(() => {
+      // The VM may have been disposed while this native timer was pending
+      // (e.g. a setTimeout/sleep whose promise the script never awaited).
+      // Touching the VM after teardown throws QuickJSUseAfterFree, so bail out.
+      if (!vm.alive) return;
       promise.resolve(vm.newString('slept'));
     }, t);
     promise.settled.then(vm.runtime.executePendingJobs);

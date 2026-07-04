@@ -8,7 +8,7 @@ const { isLegacyDefaultLocation, resolveDefaultLocation } = require('../utils/de
 const onboardUser = require('../app/onboarding');
 const LastOpenedCollections = require('../store/last-opened-collections');
 const WindowStateStore = require('../store/window-state');
-const { clearAgentCache } = require('@usebruno/requests');
+const { clearAgentCache, clearPacCache } = require('@usebruno/requests');
 
 const registerPreferencesIpc = (mainWindow) => {
   const lastOpenedCollections = new LastOpenedCollections();
@@ -71,6 +71,15 @@ const registerPreferencesIpc = (mainWindow) => {
     }
   });
 
+  ipcMain.handle('renderer:refresh-pac-cache', async () => {
+    try {
+      clearPacCache();
+      clearAgentCache();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
+
   ipcMain.on('renderer:theme-change', (event, theme, themeBg) => {
     nativeTheme.themeSource = theme;
     const windowStateStore = new WindowStateStore();
@@ -85,7 +94,10 @@ const registerPreferencesIpc = (mainWindow) => {
   });
 
   ipcMain.handle('renderer:refresh-system-proxy', async () => {
-    return await fetchSystemProxy({ refresh: true });
+    const variables = await fetchSystemProxy({ refresh: true });
+    clearPacCache();
+    clearAgentCache();
+    return variables;
   });
 };
 
