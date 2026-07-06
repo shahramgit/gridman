@@ -250,6 +250,11 @@ const StyledWrapper = styled.div`
     border: 1px solid ${(props) => props.theme.colors.text.yellow};
     color: ${(props) => props.theme.colors.text.yellow};
 
+    /* keep the action buttons clustered on the right */
+    > span:first-child {
+      margin-right: auto;
+    }
+
     button {
       border: none;
       background: transparent;
@@ -346,6 +351,54 @@ const StyledWrapper = styled.div`
     &.status-detached {
       color: ${(props) => props.theme.colors.text.danger};
       border-color: ${(props) => props.theme.colors.text.danger};
+    }
+  }
+
+  /* Drifted chip as a button ("view changes") — same look as the span chip. */
+  button.step-status-button {
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  /* Rows in the "Changed requests" node picker (drift banner, several nodes). */
+  .drift-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .drift-picker-row {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+
+    &:hover {
+      background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
+    }
+
+    .drift-picker-name {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .drift-picker-ref {
+      font-size: 11px;
+      opacity: 0.55;
     }
   }
 

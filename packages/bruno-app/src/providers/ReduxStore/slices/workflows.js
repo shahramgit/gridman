@@ -842,6 +842,23 @@ export const toggleWorkflowNodeOutputPin = (pathname, nodeId) => async (dispatch
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
+// Fetch the field-level diff between a request node's stored snapshot and the
+// live request file (powers the "View changes" modal shown before syncing).
+// Read-only: nothing lands in redux — callers keep the result in local state.
+// Resolves to { status, entries: [{ path, kind, before, after }], ... }.
+export const fetchWorkflowNodeDriftDiff = (pathname, nodeId) => async (dispatch, getState) => {
+  const workspace = getActiveWorkspace(getState());
+  if (!workspace?.pathname) {
+    throw new Error('No active workspace');
+  }
+
+  return window.ipcRenderer.invoke('renderer:workflow-node-drift-diff', {
+    workspacePath: workspace.pathname,
+    pathname,
+    nodeId
+  });
+};
+
 // Refresh request-node snapshots from their referenced request files.
 export const syncWorkflowNodes = (pathname, nodeIds) => async (dispatch, getState) => {
   const state = getState();

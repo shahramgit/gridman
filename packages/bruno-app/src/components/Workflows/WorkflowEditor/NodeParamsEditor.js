@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useDispatch } from 'react-redux';
 import toast from 'react-hot-toast';
 import { IconPin, IconPinned, IconRefresh, IconTarget, IconTrash } from '@tabler/icons';
@@ -8,6 +9,7 @@ import {
   togglePinWorkflowNode
 } from 'providers/ReduxStore/slices/workflows';
 import ActionIcon from 'ui/ActionIcon';
+import DriftDiffModal from './DriftDiffModal';
 import { DroppableInput } from './nodeIo';
 
 // The per-node-type parameter editors, shared by the editor's right-hand side
@@ -142,14 +144,29 @@ const LoopNodeEditor = ({ node, onChange }) => (
 // its snapshot actions (reveal / sync / pin) instead.
 const RequestNodeSection = ({ pathname, node, drift }) => {
   const dispatch = useDispatch();
+  const [diffOpen, setDiffOpen] = useState(false);
+  const showDiffChip = drift?.status === 'drifted' && !node.pinned;
   return (
     <div className="panel-section">
+      {diffOpen && <DriftDiffModal pathname={pathname} node={node} onClose={() => setDiffOpen(false)} />}
       <div className="step-ref">{node.ref.collection}/{node.ref.request}</div>
-      {drift && (
+      {drift && (showDiffChip ? (
+        // Drifted: the chip is clickable and opens the field-level diff.
+        <button
+          type="button"
+          className="step-status status-drifted step-status-button"
+          style={{ alignSelf: 'flex-start' }}
+          title="View changes"
+          data-testid="workflow-drift-chip"
+          onClick={() => setDiffOpen(true)}
+        >
+          {STATUS_LABELS.drifted} · view changes
+        </button>
+      ) : (
         <div className={`step-status status-${drift.status}`} style={{ alignSelf: 'flex-start' }}>
           {node.pinned ? 'pinned' : STATUS_LABELS[drift.status] || drift.status}
         </div>
-      )}
+      ))}
       <div className="panel-actions">
         <button
           type="button"

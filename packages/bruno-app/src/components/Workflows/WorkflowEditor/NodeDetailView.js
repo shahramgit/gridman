@@ -26,6 +26,7 @@ import {
   updateWorkflowNode
 } from 'providers/ReduxStore/slices/workflows';
 import ActionIcon from 'ui/ActionIcon';
+import DriftDiffModal from './DriftDiffModal';
 import NodeParamsEditor from './NodeParamsEditor';
 import { blurOnEnter, formatDuration, InputFieldTree, prettyJson } from './nodeIo';
 
@@ -103,6 +104,7 @@ const StatusChip = ({ result }) => {
 const NodeDetailView = ({ pathname, node, drift, workflowInputs, onClose, onNavigate, prevNodeId, nextNodeId }) => {
   const dispatch = useDispatch();
   const [inputView, setInputView] = useState('fields');
+  const [driftDiffOpen, setDriftDiffOpen] = useState(false);
   const [cols, setCols] = useState(loadStoredCols);
   const bodyRef = useRef(null);
   const run = useSelector((state) => state.workflows.runs[pathname]);
@@ -121,6 +123,11 @@ const NodeDetailView = ({ pathname, node, drift, workflowInputs, onClose, onNavi
   // Alt+Left / Alt+Right step to the previous/next node (except while typing).
   useEffect(() => {
     const onKeyDown = (event) => {
+      // While the drift-diff modal is open it owns Escape (and the rest of
+      // the keyboard) — don't also close the NDV underneath it.
+      if (driftDiffOpen) {
+        return;
+      }
       if (event.key === 'Escape') {
         onClose();
         return;
@@ -138,7 +145,7 @@ const NodeDetailView = ({ pathname, node, drift, workflowInputs, onClose, onNavi
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose, onNavigate, prevNodeId, nextNodeId]);
+  }, [onClose, onNavigate, prevNodeId, nextNodeId, driftDiffOpen]);
 
   // Drag a divider between two columns; widths are % of the body with a
   // 200px-per-column floor. Double-click resets to the default split.
@@ -300,6 +307,17 @@ const NodeDetailView = ({ pathname, node, drift, workflowInputs, onClose, onNavi
             />
           )}
           <StatusChip result={result} />
+          {node.type === 'request' && drift?.status === 'drifted' && !node.pinned && (
+            <button
+              type="button"
+              className="step-status status-drifted step-status-button"
+              title="The linked request changed since last sync — view changes"
+              data-testid="ndv-drift-chip"
+              onClick={() => setDriftDiffOpen(true)}
+            >
+              changed · view changes
+            </button>
+          )}
           {outputPinned && (
             <span className="ndv-pin-badge" title="Output pinned — runs reuse this output instead of executing" data-testid="ndv-pin-badge">
               <IconPinned size={12} stroke={1.8} />
@@ -399,6 +417,11 @@ const NodeDetailView = ({ pathname, node, drift, workflowInputs, onClose, onNavi
             <div className="ndv-col-body">{renderOutputColumn()}</div>
           </div>
         </div>
+
+        {/* Rendered inside .ndv so it stacks above the NDV backdrop. */}
+        {driftDiffOpen && (
+          <DriftDiffModal pathname={pathname} node={node} onClose={() => setDriftDiffOpen(false)} />
+        )}
       </div>
     </>
   );

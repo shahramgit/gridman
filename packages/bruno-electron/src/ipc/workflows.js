@@ -2,6 +2,7 @@ const path = require('path');
 const { ipcMain, dialog } = require('electron');
 const {
   snapshotRequestForWorkflow,
+  computeWorkflowNodeDriftDiff,
   listWorkflows,
   readWorkflowWithDrift,
   writeWorkflowFile,
@@ -22,6 +23,12 @@ const registerWorkflowsIpc = (mainWindow) => {
 
   ipcMain.handle('renderer:workflow-read', async (event, { workspacePath, pathname }) => {
     return readWorkflowWithDrift(workspacePath, pathname);
+  });
+
+  // Field-level diff between a request node's stored snapshot and the live
+  // request file — powers the "View changes" modal shown before syncing.
+  ipcMain.handle('renderer:workflow-node-drift-diff', async (event, { workspacePath, pathname, nodeId }) => {
+    return computeWorkflowNodeDriftDiff(workspacePath, pathname, nodeId);
   });
 
   ipcMain.handle('renderer:workflow-save', async (event, { workspacePath, pathname, doc }) => {

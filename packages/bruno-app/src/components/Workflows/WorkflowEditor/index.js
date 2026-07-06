@@ -56,6 +56,7 @@ import {
 import Modal from 'components/Modal';
 import ActionIcon from 'ui/ActionIcon';
 import MenuDropdown from 'ui/MenuDropdown';
+import DriftDiffModal from './DriftDiffModal';
 import RequestPickerModal from './RequestPickerModal';
 import WorkflowCanvas from './WorkflowCanvas';
 import NodeDetailView from './NodeDetailView';
@@ -302,6 +303,10 @@ const WorkflowEditor = ({ pathname }) => {
   const dispatch = useDispatch();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [syncPromptOpen, setSyncPromptOpen] = useState(false);
+  // Drift diff: node whose snapshot-vs-live diff is shown (null = closed), and
+  // the picker listing drifted nodes when the banner covers more than one.
+  const [diffNodeId, setDiffNodeId] = useState(null);
+  const [driftPickerOpen, setDriftPickerOpen] = useState(false);
   const [inputsOpen, setInputsOpen] = useState(false);
   // n8n-style quick add: context for the "+" menu opened from a node output or
   // a connection. Holds where to wire and where to place the new node.
@@ -772,8 +777,52 @@ const WorkflowEditor = ({ pathname }) => {
       {driftedUnpinned.length > 0 && (
         <div className="drift-banner">
           <span>{driftedUnpinned.length} request{driftedUnpinned.length === 1 ? '' : 's'} changed since last sync.</span>
+          <button
+            type="button"
+            data-testid="workflow-drift-view-changes"
+            onClick={() => (driftedUnpinned.length === 1 ? setDiffNodeId(driftedUnpinned[0]) : setDriftPickerOpen(true))}
+          >
+            View changes
+          </button>
           <button type="button" onClick={() => dispatch(syncWorkflowNodes(pathname, driftedUnpinned)).catch((e) => toast.error(e?.message || 'Unable to sync'))}>Sync all</button>
         </div>
+      )}
+
+      {driftPickerOpen && (
+        <Modal
+          size="sm"
+          title="Changed requests"
+          hideFooter
+          handleCancel={() => setDriftPickerOpen(false)}
+          dataTestId="workflow-drift-picker"
+        >
+          <div className="drift-picker-list">
+            {driftedUnpinned.map((nodeId) => {
+              const node = graph.nodesById[nodeId];
+              if (!node) {
+                return null;
+              }
+              return (
+                <button
+                  key={nodeId}
+                  type="button"
+                  className="drift-picker-row"
+                  onClick={() => {
+                    setDriftPickerOpen(false);
+                    setDiffNodeId(nodeId);
+                  }}
+                >
+                  <span className="drift-picker-name">{node.name}</span>
+                  <span className="drift-picker-ref">{node.ref?.collection}/{node.ref?.request}</span>
+                </button>
+              );
+            })}
+          </div>
+        </Modal>
+      )}
+
+      {diffNodeId && graph.nodesById[diffNodeId] && (
+        <DriftDiffModal pathname={pathname} node={graph.nodesById[diffNodeId]} onClose={() => setDiffNodeId(null)} />
       )}
 
       {view === 'canvas' ? (
