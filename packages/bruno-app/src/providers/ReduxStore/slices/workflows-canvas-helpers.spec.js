@@ -1,5 +1,6 @@
 import {
   buildPasteFragment,
+  caretIndexFromOffset,
   collectClipboardPayload,
   describeDocChange,
   shouldCoalesceHistoryEntry
@@ -133,6 +134,50 @@ describe('describeDocChange', () => {
     const added = makeDoc();
     added.nodes.push({ id: 'd1', type: 'delay', name: 'Delay', position: { x: 0, y: 0 }, durationMs: 1 });
     expect(describeDocChange(makeDoc(), added).positionOnly).toBe(false);
+  });
+});
+
+describe('caretIndexFromOffset', () => {
+  // Monotonic mock: every character is exactly 10px wide.
+  const measure = (s) => s.length * 10;
+
+  it('clamps to 0 at or before the left edge', () => {
+    expect(caretIndexFromOffset('hello', 0, measure)).toBe(0);
+    expect(caretIndexFromOffset('hello', -25, measure)).toBe(0);
+  });
+
+  it('clamps to the text length past the right edge', () => {
+    expect(caretIndexFromOffset('hello', 50, measure)).toBe(5);
+    expect(caretIndexFromOffset('hello', 9999, measure)).toBe(5);
+  });
+
+  it('snaps to the nearest character boundary (midpoint rule)', () => {
+    // char 1 spans 0..10 -> boundary flips at 5
+    expect(caretIndexFromOffset('hello', 4.9, measure)).toBe(0);
+    expect(caretIndexFromOffset('hello', 5, measure)).toBe(1);
+    // char 3 spans 20..30 -> boundary flips at 25
+    expect(caretIndexFromOffset('hello', 24, measure)).toBe(2);
+    expect(caretIndexFromOffset('hello', 26, measure)).toBe(3);
+  });
+
+  it('works with a non-uniform monotonic width function', () => {
+    // widths: 'a'=4, 'ab'=20, 'abc'=22
+    const widths = new Map([['', 0], ['a', 4], ['ab', 20], ['abc', 22]]);
+    const uneven = (s) => widths.get(s);
+    expect(caretIndexFromOffset('abc', 1, uneven)).toBe(0); // < 2 (mid of 0..4)
+    expect(caretIndexFromOffset('abc', 3, uneven)).toBe(1); // > 2, < 12 (mid of 4..20)
+    expect(caretIndexFromOffset('abc', 15, uneven)).toBe(2); // > 12, < 21 (mid of 20..22)
+    expect(caretIndexFromOffset('abc', 21.5, uneven)).toBe(3);
+  });
+
+  it('handles empty and nullish text', () => {
+    expect(caretIndexFromOffset('', 25, measure)).toBe(0);
+    expect(caretIndexFromOffset(null, 25, measure)).toBe(0);
+    expect(caretIndexFromOffset(undefined, 25, measure)).toBe(0);
+  });
+
+  it('ignores a missing drop offset', () => {
+    expect(caretIndexFromOffset('hello', NaN, measure)).toBe(0);
   });
 });
 

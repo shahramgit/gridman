@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useCallback, useRef } from 'react';
+import { useEffect, useMemo, useCallback, useRef, useState } from 'react';
 import { useDrop } from 'react-dnd';
 import {
   ReactFlow,
@@ -10,6 +10,7 @@ import {
   EdgeLabelRenderer,
   MiniMap,
   Handle,
+  NodeResizer,
   NodeToolbar,
   Position,
   SelectionMode,
@@ -25,10 +26,13 @@ import {
   IconClock,
   IconCopy,
   IconLayoutGridAdd,
+  IconNote,
+  IconPinned,
   IconPlayerPause,
   IconPlayerPlay,
   IconPlus,
   IconRepeat,
+  IconSearch,
   IconTarget,
   IconTrash,
   IconWand,
@@ -48,13 +52,23 @@ const DRIFT_COLORS = {
   detached: '#ef4444'
 };
 
+// Sticky-note background tints (same pattern as STATUS_COLORS: a small fixed
+// map that reads on both light and dark themes via low-alpha rgba).
+const NOTE_TINTS = {
+  yellow: { bg: 'rgba(234, 179, 8, 0.14)', border: 'rgba(234, 179, 8, 0.55)' },
+  green: { bg: 'rgba(34, 197, 94, 0.14)', border: 'rgba(34, 197, 94, 0.55)' },
+  blue: { bg: 'rgba(59, 130, 246, 0.14)', border: 'rgba(59, 130, 246, 0.55)' },
+  pink: { bg: 'rgba(236, 72, 153, 0.14)', border: 'rgba(236, 72, 153, 0.55)' }
+};
+
 const TYPE_ICONS = {
   start: IconPlayerPlay,
   request: IconWorld,
   map: IconWand,
   condition: IconArrowsSplit,
   delay: IconClock,
-  loop: IconRepeat
+  loop: IconRepeat,
+  note: IconNote
 };
 
 // Renderer-local clipboard shared by all workflow canvases (NOT the OS
@@ -112,9 +126,88 @@ const nodeSubtitle = (node) => {
   }
 };
 
+// Sticky note: a colored panel rendered BEHIND flow nodes (low zIndex, set on
+// the React Flow node). No ports, never executed. Double-click edits the text
+// in place (it does NOT open the NDV).
+const NoteNode = ({ data, selected }) => {
+  const { node } = data;
+  const [editing, setEditing] = useState(false);
+  const tint = NOTE_TINTS[node.tint] || NOTE_TINTS.yellow;
+  const width = node.size?.width || 200;
+  const height = node.size?.height || 120;
+
+  return (
+    <div
+      className={`wf-note ${selected ? 'wf-note-selected' : ''}`}
+      style={{ width, height, background: tint.bg, borderColor: tint.border }}
+      onDoubleClick={(event) => {
+        event.stopPropagation(); // keep the canvas from opening the NDV
+        setEditing(true);
+      }}
+      data-testid="workflow-note"
+    >
+      <NodeResizer
+        isVisible={selected}
+        minWidth={120}
+        minHeight={80}
+        onResizeEnd={(event, params) => data.onPatchNode(node.id, {
+          size: { width: Math.round(params.width), height: Math.round(params.height) },
+          position: { x: Math.round(params.x), y: Math.round(params.y) }
+        })}
+      />
+      <NodeToolbar isVisible={selected} position={Position.Top} className="wf-node-toolbar">
+        {Object.keys(NOTE_TINTS).map((tintName) => (
+          <button
+            key={tintName}
+            type="button"
+            className={`wf-note-swatch ${node.tint === tintName ? 'active' : ''}`}
+            style={{ background: NOTE_TINTS[tintName].border }}
+            title={`${tintName} note`}
+            onClick={() => data.onPatchNode(node.id, { tint: tintName })}
+          />
+        ))}
+        <button type="button" title="Duplicate note (Ctrl/Cmd+D)" onClick={() => data.onDuplicate(node.id)}>
+          <IconCopy size={14} stroke={1.6} />
+        </button>
+        <button type="button" title="Delete note" onClick={() => data.onDelete(node.id)}>
+          <IconTrash size={14} stroke={1.6} />
+        </button>
+      </NodeToolbar>
+      {editing ? (
+        <textarea
+          className="wf-note-text nodrag nowheel"
+          autoFocus
+          defaultValue={node.content}
+          placeholder="Write a note..."
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.stopPropagation();
+              event.currentTarget.blur();
+            }
+          }}
+          onBlur={(event) => {
+            setEditing(false);
+            if (event.target.value !== node.content) {
+              data.onPatchNode(node.id, { content: event.target.value });
+            }
+          }}
+        />
+      ) : (
+        <div className={`wf-note-content ${node.content ? '' : 'wf-note-placeholder'}`}>
+          {node.content || 'Double-click to edit'}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const GridmanNode = ({ data, selected }) => {
   const { node, drift, result } = data;
   const Icon = TYPE_ICONS[node.type] || IconWorld;
+
+  if (node.type === 'note') {
+    return <NoteNode data={data} selected={selected} />;
+  }
 
   const borderColor = result && STATUS_COLORS[result.status]
     ? STATUS_COLORS[result.status]
@@ -171,6 +264,11 @@ const GridmanNode = ({ data, selected }) => {
       <div className="wf-node-head">
         <Icon size={14} stroke={1.7} className="wf-node-icon" />
         <span className="wf-node-title">{nodeTitle(node)}</span>
+        {node.pinnedOutput !== undefined && (
+          <span className="wf-node-pin" title="Output pinned — runs reuse this output instead of executing">
+            <IconPinned size={12} stroke={1.8} />
+          </span>
+        )}
       </div>
       {nodeSubtitle(node) ? <div className="wf-node-sub">{nodeSubtitle(node)}</div> : null}
       {result && (
@@ -178,6 +276,7 @@ const GridmanNode = ({ data, selected }) => {
           {result.httpStatus ? `${result.httpStatus} ` : ''}
           {typeof result.iterations === 'number' ? `${result.iterations}x ` : ''}
           {result.status}
+          {result.pinned ? ' (pinned)' : ''}
         </div>
       )}
 
@@ -268,12 +367,24 @@ const QuickAddEdge = ({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
 
 const edgeTypes = { quickadd: QuickAddEdge };
 
+// Fold-insensitive contains-match over a node's name, type and request ref.
+const nodeMatchesQuery = (node, query) => {
+  const haystack = `${node.name || ''} ${node.type || ''} ${node.ref ? `${node.ref.collection}/${node.ref.request}` : ''}`.toLowerCase();
+  return haystack.includes(query);
+};
+
 const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo, canRedo, shortcutsDisabled }) => {
-  const { screenToFlowPosition, fitView } = useReactFlow();
+  const { screenToFlowPosition, fitView, setCenter, getZoom } = useReactFlow();
   const wrapperRef = useRef(null);
   // Node ids to select once they appear in the doc (set after paste/duplicate,
   // consumed by the layout sync effect below).
   const pendingSelectionRef = useRef(null);
+  // Node search (Ctrl/Cmd+F): matches live-filter as the query changes;
+  // Enter/arrows cycle; Escape closes the box before it deselects anything.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchIndex, setSearchIndex] = useState(0);
+  const [searchHitId, setSearchHitId] = useState(null);
 
   const onTidy = useCallback(async () => {
     await handlers.onTidy();
@@ -294,6 +405,9 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
     type: 'gridman',
     position: node.position || { x: 0, y: 0 },
     deletable: node.type !== 'start', // the Start node is permanent
+    // Sticky notes sit behind the flow nodes.
+    zIndex: node.type === 'note' ? -10 : undefined,
+    className: node.id === searchHitId ? 'wf-search-hit' : undefined,
     data: {
       node,
       drift: drift?.[node.id]?.status,
@@ -302,9 +416,10 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
       onReveal: handlers.onRevealNode,
       onToggleDisabled: handlers.onToggleDisabled,
       onQuickAddOutput: handlers.onQuickAddOutput,
+      onPatchNode: handlers.onPatchNode,
       onDuplicate: (id) => duplicateNodes([id])
     }
-  })), [doc.nodes, drift, stepResults, handlers, duplicateNodes]);
+  })), [doc.nodes, drift, stepResults, handlers, duplicateNodes, searchHitId]);
 
   const layoutEdges = useMemo(() => (doc.connections || []).map((conn) => ({
     id: conn.id,
@@ -386,11 +501,13 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
 
   // Double-click opens the fullscreen Node Detail View for the node (it also
   // becomes the single selection, so the side panel matches once the NDV
-  // closes).
+  // closes). Sticky notes are edited in place instead — no NDV.
   const onNodeDoubleClick = useCallback((event, node) => {
     setNodes((prev) => prev.map((n) => (n.selected === (n.id === node.id) ? n : { ...n, selected: n.id === node.id })));
     onSelectNodes([node.id]);
-    handlers.onOpenNodeDetail?.(node.id);
+    if (node.data?.node?.type !== 'note') {
+      handlers.onOpenNodeDetail?.(node.id);
+    }
   }, [setNodes, onSelectNodes, handlers]);
 
   const clearSelection = useCallback(() => {
@@ -429,29 +546,113 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
     }
   }, [nodes, duplicateNodes]);
 
-  // Canvas shortcuts: Escape deselect, Ctrl/Cmd C/V/D copy/paste/duplicate,
-  // Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z / Ctrl/Cmd+Y redo. Guarded so they
-  // never fire while typing, only while this canvas is visible, and never
-  // while the Node Detail View is open (Escape must close only the NDV).
+  // ---- Node search (Ctrl/Cmd+F) ----
+
+  const searchMatches = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!searchOpen || !query) {
+      return [];
+    }
+    return doc.nodes.filter((node) => nodeMatchesQuery(node, query)).map((node) => node.id);
+  }, [doc.nodes, searchOpen, searchQuery]);
+
+  // Select + center + ring a match.
+  const focusSearchMatch = useCallback((index) => {
+    const id = searchMatches[index];
+    if (!id) {
+      return;
+    }
+    setSearchIndex(index);
+    setSearchHitId(id);
+    setNodes((prev) => prev.map((n) => (n.selected === (n.id === id) ? n : { ...n, selected: n.id === id })));
+    onSelectNodes([id]);
+    const node = doc.nodes.find((n) => n.id === id);
+    if (node?.position) {
+      // Center on the node's approximate middle at the current zoom.
+      const width = node.type === 'note' ? (node.size?.width || 200) : 210;
+      const height = node.type === 'note' ? (node.size?.height || 120) : 70;
+      setCenter(node.position.x + width / 2, node.position.y + height / 2, { duration: 250, zoom: getZoom() });
+    }
+  }, [searchMatches, setNodes, onSelectNodes, doc.nodes, setCenter, getZoom]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery('');
+    setSearchIndex(0);
+    setSearchHitId(null);
+  }, []);
+
+  // Live filter: whenever the query (or the doc under it) changes, jump to the
+  // first match.
+  useEffect(() => {
+    if (!searchOpen) {
+      return;
+    }
+    if (!searchMatches.length) {
+      setSearchIndex(0);
+      setSearchHitId(null);
+      return;
+    }
+    focusSearchMatch(0);
+    // (deliberately keyed on the match LIST, not focusSearchMatch, so cycling
+    // through matches doesn't snap back to the first one)
+  }, [searchOpen, searchMatches.join('|')]);
+
+  const cycleSearch = useCallback((step) => {
+    if (!searchMatches.length) {
+      return;
+    }
+    focusSearchMatch((searchIndex + step + searchMatches.length) % searchMatches.length);
+  }, [searchMatches, searchIndex, focusSearchMatch]);
+
+  const onSearchInputKeyDown = useCallback((event) => {
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      closeSearch();
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      cycleSearch(event.shiftKey ? -1 : 1);
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      cycleSearch(1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      cycleSearch(-1);
+    }
+  }, [closeSearch, cycleSearch]);
+
+  // Canvas shortcuts: Escape close-search/deselect, Ctrl/Cmd C/V/D
+  // copy/paste/duplicate, Ctrl/Cmd+F search, Ctrl/Cmd+Z undo,
+  // Ctrl/Cmd+Shift+Z / Ctrl/Cmd+Y redo. Guarded so they never fire while
+  // typing, only while this canvas is visible. While the Node Detail View is
+  // open it owns the keyboard — EXCEPT undo/redo, which stay available (the
+  // NDV re-renders from the doc and closes itself if its node vanishes).
   useEffect(() => {
     const onKeyDown = (event) => {
-      if (shortcutsDisabled) {
-        return; // the NDV owns the keyboard while it's open
-      }
       if (!wrapperRef.current || !wrapperRef.current.offsetParent) {
         return; // canvas hidden (e.g. another view) — don't hijack keys
       }
       if (isEditableTarget(event.target) || isEditableTarget(document.activeElement)) {
         return;
       }
-      if (event.key === 'Escape') {
-        clearSelection();
-        return;
-      }
-      if (!(event.metaKey || event.ctrlKey)) {
-        return;
-      }
+      const meta = event.metaKey || event.ctrlKey;
       const key = String(event.key).toLowerCase();
+      const isUndoRedo = meta && (key === 'z' || key === 'y');
+      if (shortcutsDisabled && !isUndoRedo) {
+        return; // the NDV owns the keyboard while it's open (except undo/redo)
+      }
+      if (event.key === 'Escape') {
+        // First Escape closes the search box; the next one deselects.
+        if (searchOpen) {
+          closeSearch();
+        } else {
+          clearSelection();
+        }
+        return;
+      }
+      if (!meta) {
+        return;
+      }
       if (key === 'c') {
         copySelection();
       } else if (key === 'v') {
@@ -460,6 +661,9 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
       } else if (key === 'd') {
         event.preventDefault();
         duplicateSelection();
+      } else if (key === 'f') {
+        event.preventDefault();
+        setSearchOpen(true);
       } else if (key === 'z') {
         event.preventDefault();
         if (event.shiftKey) {
@@ -474,7 +678,7 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [clearSelection, copySelection, pasteClipboard, duplicateSelection, handlers, shortcutsDisabled]);
+  }, [clearSelection, copySelection, pasteClipboard, duplicateSelection, handlers, shortcutsDisabled, searchOpen, closeSearch]);
 
   const [{ isOver }, dropRef] = useDrop({
     accept: ['collection-item', 'workflow-node-template'],
@@ -547,6 +751,22 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
         </Controls>
         <MiniMap pannable zoomable nodeStrokeWidth={2} />
       </ReactFlow>
+      {searchOpen && (
+        <div className="wf-search" data-testid="workflow-search">
+          <IconSearch size={13} stroke={1.8} />
+          <input
+            type="text"
+            autoFocus
+            placeholder="Search nodes..."
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            onKeyDown={onSearchInputKeyDown}
+          />
+          <span className="wf-search-count">
+            {searchQuery.trim() ? `${searchMatches.length ? searchIndex + 1 : 0}/${searchMatches.length}` : ''}
+          </span>
+        </div>
+      )}
       {isEmpty && (
         <div className="wf-canvas-empty-hint">
           Drag a request from the sidebar, or drag a node from the palette

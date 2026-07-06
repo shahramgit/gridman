@@ -92,6 +92,27 @@ export const describeDocChange = (prevDoc, nextDoc) => {
   return { positionOnly, movedIds };
 };
 
+// Map a horizontal offset inside a text input's content box to a caret index,
+// using a text-measuring function (canvas measureText in the app, a mock in
+// tests). Walks substring widths and snaps to the nearest character boundary
+// (midpoint rule), clamped to [0, text.length]. Used by DroppableInput to
+// insert a dragged field reference at the drop position.
+export const caretIndexFromOffset = (text, offsetX, measure) => {
+  const value = String(text ?? '');
+  if (!value.length || !Number.isFinite(offsetX) || offsetX <= 0) {
+    return 0;
+  }
+  let prevWidth = 0;
+  for (let i = 1; i <= value.length; i++) {
+    const width = measure(value.slice(0, i));
+    if (offsetX < (prevWidth + width) / 2) {
+      return i - 1;
+    }
+    prevWidth = width;
+  }
+  return value.length;
+};
+
 // Should a new history entry be folded into the previous one? Only when both
 // are position-only changes of the same node set, close together in time.
 export const shouldCoalesceHistoryEntry = (topMeta, nextMeta, windowMs = DOC_HISTORY_COALESCE_MS) => {

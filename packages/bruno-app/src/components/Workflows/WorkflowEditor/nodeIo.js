@@ -1,4 +1,6 @@
+import { useCallback, useRef } from 'react';
 import { useDrag, useDrop } from 'react-dnd';
+import { caretIndexFromOffset } from 'providers/ReduxStore/slices/workflows-canvas-helpers';
 
 // Shared node input/output helpers used by BOTH the editor's right-hand side
 // panel (index.js) and the fullscreen Node Detail View (NodeDetailView.js).
@@ -111,25 +113,102 @@ export const InputFieldTree = ({ input }) => {
   );
 };
 
+// Shared canvas context for measuring substring widths when mapping a drop
+// position to a caret index (created lazily, reused across drops).
+let measureCanvasContext = null;
+const getMeasureContext = () => {
+  if (!measureCanvasContext) {
+    measureCanvasContext = document.createElement('canvas').getContext('2d');
+  }
+  return measureCanvasContext;
+};
+
+// Translate a drop's clientX into a caret index inside `input`, accounting for
+// the input's border, padding and horizontal scroll. The index math itself is
+// the pure caretIndexFromOffset helper (unit-tested with a mocked measureText).
+export const caretIndexFromDropPoint = (input, clientX) => {
+  const text = input.value ?? '';
+  if (typeof clientX !== 'number' || !Number.isFinite(clientX)) {
+    return text.length;
+  }
+  try {
+    const style = window.getComputedStyle(input);
+    const context = getMeasureContext();
+    context.font = style.font
+      || `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`.trim();
+    const rect = input.getBoundingClientRect();
+    const contentLeft = rect.left
+      + (parseFloat(style.borderLeftWidth) || 0)
+      + (parseFloat(style.paddingLeft) || 0)
+      - (input.scrollLeft || 0);
+    return caretIndexFromOffset(text, clientX - contentLeft, (s) => context.measureText(s).width);
+  } catch (error) {
+    return text.length; // measuring failed — append rather than replace
+  }
+};
+
 // Text input that also accepts a dragged input field. `getRef` maps the dropped
 // field to the reference string appropriate for this parameter. Keyed by value
-// so a drop re-seeds the uncommitted (uncontrolled) input.
+// so a commit re-seeds the uncommitted (uncontrolled) input. A drop INSERTS the
+// reference at the drop position within the live (possibly uncommitted) text —
+// it never replaces the whole value.
 export const DroppableInput = ({ value, placeholder, onCommit, getRef, type = 'text', style, className = '' }) => {
+  const inputRef = useRef(null);
+  // Value committed by the drop handler; lets the blur triggered right after a
+  // drop skip its (duplicate) commit so a drop is exactly one doc write.
+  const dropCommittedValueRef = useRef(null);
+
   const [{ isOver, canDrop }, drop] = useDrop({
     accept: WORKFLOW_FIELD_DND,
-    drop: (field) => onCommit(getRef(field)),
+    drop: (field, monitor) => {
+      const refText = getRef(field);
+      const input = inputRef.current;
+      if (!input) {
+        onCommit(refText);
+        return;
+      }
+      const current = input.value ?? '';
+      const index = caretIndexFromDropPoint(input, monitor.getClientOffset()?.x);
+      const combined = `${current.slice(0, index)}${refText}${current.slice(index)}`;
+      // Reflect the insert immediately in the uncontrolled input and park the
+      // caret right after the inserted reference.
+      input.value = combined;
+      try {
+        input.setSelectionRange(index + refText.length, index + refText.length);
+      } catch (error) {
+        // some input types don't support selection — non-critical
+      }
+      dropCommittedValueRef.current = combined;
+      onCommit(combined);
+      // Blur so an immediate Ctrl/Cmd+Z on the canvas isn't swallowed by the
+      // editable-target shortcut guard (the drop is one undoable doc write).
+      input.blur();
+    },
     collect: (monitor) => ({ isOver: monitor.isOver(), canDrop: monitor.canDrop() })
   });
+
+  const setRefs = useCallback((element) => {
+    inputRef.current = element;
+    drop(element);
+  }, [drop]);
+
   return (
     <input
-      ref={drop}
+      ref={setRefs}
       key={value}
       type={type}
       style={style}
       className={`${className} ${isOver && canDrop ? 'wf-drop-over' : ''}`.trim()}
       placeholder={placeholder}
       defaultValue={value}
-      onBlur={(e) => onCommit(e.target.value)}
+      onBlur={(e) => {
+        if (dropCommittedValueRef.current !== null && e.target.value === dropCommittedValueRef.current) {
+          dropCommittedValueRef.current = null;
+          return; // the drop handler already committed this exact value
+        }
+        dropCommittedValueRef.current = null;
+        onCommit(e.target.value);
+      }}
     />
   );
 };

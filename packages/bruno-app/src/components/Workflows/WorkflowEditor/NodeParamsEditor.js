@@ -176,6 +176,22 @@ const RequestNodeSection = ({ pathname, node, drift }) => {
   );
 };
 
+// Sticky note: plain-text content (also editable in place on the canvas via
+// double-click). Notes never run.
+const NoteNodeEditor = ({ node, onChange }) => (
+  <div className="step-editor">
+    <textarea
+      className="note-content-input"
+      rows={5}
+      placeholder="Write a note..."
+      key={node.content}
+      defaultValue={node.content}
+      onBlur={(e) => onChange({ content: e.target.value })}
+    />
+    <div className="editor-hint">Sticky notes are documentation only — they have no ports and never run.</div>
+  </div>
+);
+
 const NodeParamsEditor = ({ pathname, node, drift, onChange }) => {
   if (node.type === 'request') return <RequestNodeSection pathname={pathname} node={node} drift={drift} />;
   if (node.type === 'map') return <MapNodeEditor node={node} onChange={onChange} />;
@@ -183,6 +199,7 @@ const NodeParamsEditor = ({ pathname, node, drift, onChange }) => {
   if (node.type === 'condition') return <ConditionNodeEditor node={node} onChange={onChange} />;
   if (node.type === 'delay') return <DelayNodeEditor node={node} onChange={onChange} />;
   if (node.type === 'loop') return <LoopNodeEditor node={node} onChange={onChange} />;
+  if (node.type === 'note') return <NoteNodeEditor node={node} onChange={onChange} />;
   return null;
 };
 

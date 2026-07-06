@@ -32,15 +32,35 @@ const initialState = {
   docHistory: {}
 };
 
-// Output ports per node type (mirror of the main-process schema).
+// Output ports per node type (mirror of the main-process schema). Sticky
+// notes are documentation only: no ports, never wired, never executed.
 const NODE_OUTPUT_PORTS = {
   start: ['main'],
   request: ['main'],
   map: ['main'],
+  setvars: ['main'],
   delay: ['main'],
   condition: ['true', 'false'],
-  loop: ['loop', 'done']
+  loop: ['loop', 'done'],
+  note: []
 };
+
+// Defaults for freshly added non-request nodes (shared by the palette drop,
+// the Add Step menu and quick-add).
+const NODE_DEFAULTS = {
+  map: { name: 'Map response', mappings: [{ from: 'body', path: '$.', target: '' }] },
+  setvars: { name: 'Set variables', assignments: [{ name: '', value: '' }] },
+  condition: { name: 'Condition', expression: 'res.status === 200' },
+  delay: { name: 'Delay', durationMs: 1000 },
+  loop: { name: 'For each', source: '', itemVar: 'item', maxIterations: 100 },
+  note: { name: 'Note', content: '', tint: 'yellow', size: { width: 200, height: 120 } }
+};
+
+// Node types whose output can be pinned n8n-style (reused on the next run
+// instead of executing). Condition and loop are excluded: their result decides
+// which port fires, so replaying a stored output would be ambiguous.
+export const PINNABLE_OUTPUT_TYPES = new Set(['request', 'map', 'setvars', 'delay']);
+export const MAX_PINNED_OUTPUT_CHARS = 200000;
 
 const findNode = (doc, nodeId) => (doc.nodes || []).find((node) => node.id === nodeId) || null;
 
@@ -354,6 +374,38 @@ export const redoWorkflowDoc = (pathname) => async (dispatch, getState) => {
   await dispatch(saveWorkflowDoc(pathname, cloneDeep(target), { skipHistory: true }));
 };
 
+// Build (but do not save) a fresh request node from a picked request
+// (absolute paths). Fetches the snapshot over IPC.
+const buildRequestNode = async (workspace, picked, position) => {
+  const { snapshot, hash, collectionRelPath, requestRelPath } = await window.ipcRenderer.invoke(
+    'renderer:workflow-snapshot-request',
+    {
+      workspacePath: workspace.pathname,
+      collectionPathname: picked.collectionPathname,
+      requestPathname: picked.requestPathname
+    }
+  );
+
+  return {
+    id: uuid(),
+    type: 'request',
+    name: picked.name || snapshot.name,
+    position: position || { x: 320, y: 200 },
+    pinned: false,
+    ref: { collection: collectionRelPath, request: requestRelPath },
+    snapshotHash: hash,
+    snapshot
+  };
+};
+
+// Build (but do not save) a fresh non-request node with defaults.
+const buildDefaultNode = (nodeType, position) => {
+  if (!NODE_DEFAULTS[nodeType]) {
+    return null;
+  }
+  return { id: uuid(), type: nodeType, position: position || { x: 320, y: 200 }, ...cloneDeep(NODE_DEFAULTS[nodeType]) };
+};
+
 // Add a request node from a picked request (absolute paths). Returns the new
 // node id so the caller can auto-wire it.
 export const addWorkflowRequestNode = (pathname, picked, position) => async (dispatch, getState) => {
@@ -364,55 +416,30 @@ export const addWorkflowRequestNode = (pathname, picked, position) => async (dis
     return null;
   }
 
-  const { snapshot, hash, collectionRelPath, requestRelPath } = await window.ipcRenderer.invoke(
-    'renderer:workflow-snapshot-request',
-    {
-      workspacePath: workspace.pathname,
-      collectionPathname: picked.collectionPathname,
-      requestPathname: picked.requestPathname
-    }
-  );
-
+  const node = await buildRequestNode(workspace, picked, position);
   const doc = cloneDeep(openWorkflowState.doc);
-  const id = uuid();
-  doc.nodes.push({
-    id,
-    type: 'request',
-    name: picked.name || snapshot.name,
-    position: position || { x: 320, y: 200 },
-    pinned: false,
-    ref: { collection: collectionRelPath, request: requestRelPath },
-    snapshotHash: hash,
-    snapshot
-  });
-
+  doc.nodes.push(node);
   await dispatch(saveWorkflowDoc(pathname, doc));
-  return id;
+  return node.id;
 };
 
-// Add a non-request node (map / condition / delay / loop) with defaults.
+// Add a non-request node (map / setvars / condition / delay / loop / note)
+// with defaults.
 export const addWorkflowNode = (pathname, nodeType, position) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
   if (!openWorkflowState) {
     return null;
   }
 
-  const defaults = {
-    map: { name: 'Map response', mappings: [{ from: 'body', path: '$.', target: '' }] },
-    setvars: { name: 'Set variables', assignments: [{ name: '', value: '' }] },
-    condition: { name: 'Condition', expression: 'res.status === 200' },
-    delay: { name: 'Delay', durationMs: 1000 },
-    loop: { name: 'For each', source: '', itemVar: 'item', maxIterations: 100 }
-  };
-  if (!defaults[nodeType]) {
+  const node = buildDefaultNode(nodeType, position);
+  if (!node) {
     return null;
   }
 
   const doc = cloneDeep(openWorkflowState.doc);
-  const id = uuid();
-  doc.nodes.push({ id, type: nodeType, position: position || { x: 320, y: 200 }, ...defaults[nodeType] });
+  doc.nodes.push(node);
   await dispatch(saveWorkflowDoc(pathname, doc));
-  return id;
+  return node.id;
 };
 
 // Accepts a react-dnd 'collection-item' drag payload (sidebar rows, both
@@ -448,30 +475,48 @@ export const updateWorkflowNode = (pathname, nodeId, patch) => async (dispatch, 
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
-// n8n-style quick add: create a node and wire it up in one step. Either append
-// it to a node's output (wireFrom) or splice it into an existing connection
-// (insertConnectionId), keeping the downstream node connected.
+// n8n-style quick add: create a node and wire it up in ONE doc write (so it is
+// exactly one undo step). Either append it to a node's output (wireFrom) or
+// splice it into an existing connection (insertConnectionId), keeping the
+// downstream node connected.
 export const quickAddNode = (pathname, { nodeType, picked, position, wireFrom, insertConnectionId }) => async (dispatch, getState) => {
-  const connBefore = insertConnectionId
-    ? (getState().workflows.open[pathname]?.doc?.connections || []).find((c) => c.id === insertConnectionId)
-    : null;
-
-  const newId = nodeType === 'request'
-    ? await dispatch(addWorkflowRequestNode(pathname, picked, position))
-    : await dispatch(addWorkflowNode(pathname, nodeType, position));
-  if (!newId) {
+  const state = getState();
+  const workspace = getActiveWorkspace(state);
+  const openWorkflowState = state.workflows.open[pathname];
+  if (!openWorkflowState) {
     return null;
   }
 
-  if (connBefore) {
-    await dispatch(disconnectWorkflowConnection(pathname, insertConnectionId));
-    await dispatch(connectWorkflowNodes(pathname, { source: connBefore.source, sourcePort: connBefore.sourcePort, target: newId }));
-    await dispatch(connectWorkflowNodes(pathname, { source: newId, sourcePort: 'main', target: connBefore.target }));
-  } else if (wireFrom?.source) {
-    await dispatch(connectWorkflowNodes(pathname, { source: wireFrom.source, sourcePort: wireFrom.sourcePort || 'main', target: newId }));
+  const node = nodeType === 'request'
+    ? (workspace?.pathname && picked ? await buildRequestNode(workspace, picked, position) : null)
+    : buildDefaultNode(nodeType, position);
+  if (!node) {
+    return null;
   }
 
-  return newId;
+  // Compose the final doc: node added, spliced connection removed, new
+  // connections in place — then save once.
+  const doc = cloneDeep(getState().workflows.open[pathname]?.doc || openWorkflowState.doc);
+  doc.nodes.push(node);
+
+  const connBefore = insertConnectionId
+    ? (doc.connections || []).find((c) => c.id === insertConnectionId)
+    : null;
+  if (connBefore) {
+    doc.connections = (doc.connections || []).filter((c) => c.id !== insertConnectionId);
+    setConnection(doc, connBefore.source, connBefore.sourcePort, node.id);
+    // Continue downstream from the new node's primary output ('true' for
+    // condition, 'loop' for loop, 'main' otherwise).
+    const continuationPort = (NODE_OUTPUT_PORTS[node.type] || [])[0];
+    if (continuationPort) {
+      setConnection(doc, node.id, continuationPort, connBefore.target);
+    }
+  } else if (wireFrom?.source && findNode(doc, wireFrom.source)) {
+    setConnection(doc, wireFrom.source, wireFrom.sourcePort || 'main', node.id);
+  }
+
+  await dispatch(saveWorkflowDoc(pathname, doc));
+  return node.id;
 };
 
 // Persist canvas positions for a batch of nodes in one write (called on drag
@@ -532,13 +577,14 @@ export const layoutWorkflowNodes = (pathname) => async (dispatch, getState) => {
     }
   }
 
-  // Nodes unreachable from Start get parked in a trailing column.
+  // Nodes unreachable from Start get parked in a trailing column. Sticky
+  // notes keep their positions — they are annotations, not flow steps.
   let maxDepth = 0;
   for (const value of Object.values(depth)) {
     maxDepth = Math.max(maxDepth, value);
   }
   for (const node of nodes) {
-    if (depth[node.id] === undefined) {
+    if (node.type !== 'note' && depth[node.id] === undefined) {
       depth[node.id] = maxDepth + 1;
     }
   }
@@ -548,6 +594,9 @@ export const layoutWorkflowNodes = (pathname) => async (dispatch, getState) => {
   const rowByColumn = {};
   // Keep document order stable within a column for predictable stacking.
   for (const node of nodes) {
+    if (node.type === 'note') {
+      continue;
+    }
     const col = depth[node.id];
     const row = rowByColumn[col] || 0;
     rowByColumn[col] = row + 1;
@@ -645,8 +694,9 @@ export const connectWorkflowNodes = (pathname, { source, sourcePort = 'main', ta
 
   const doc = cloneDeep(openWorkflowState.doc);
   const sourceNode = findNode(doc, source);
-  if (!sourceNode || !findNode(doc, target)) {
-    return;
+  const targetNode = findNode(doc, target);
+  if (!sourceNode || !targetNode || targetNode.type === 'note') {
+    return; // sticky notes have no ports
   }
   if (!(NODE_OUTPUT_PORTS[sourceNode.type] || []).includes(sourcePort)) {
     return;
@@ -664,8 +714,9 @@ export const reconnectWorkflowConnection = (pathname, connectionId, { source, so
 
   const doc = cloneDeep(openWorkflowState.doc);
   const sourceNode = findNode(doc, source);
-  if (!sourceNode || !findNode(doc, target)) {
-    return;
+  const targetNode = findNode(doc, target);
+  if (!sourceNode || !targetNode || targetNode.type === 'note') {
+    return; // sticky notes have no ports
   }
   if (!(NODE_OUTPUT_PORTS[sourceNode.type] || []).includes(sourcePort)) {
     return;
@@ -713,6 +764,46 @@ export const togglePinWorkflowNode = (pathname, nodeId) => async (dispatch, getS
     return;
   }
   node.pinned = !node.pinned;
+  await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
+// n8n-style output pin: store the node's latest output on the node itself so
+// runs reuse it instead of executing the node. Unpin removes the field. One
+// doc write either way (an undoable history entry).
+export const toggleWorkflowNodeOutputPin = (pathname, nodeId) => async (dispatch, getState) => {
+  const state = getState();
+  const openWorkflowState = state.workflows.open[pathname];
+  if (!openWorkflowState) {
+    return;
+  }
+
+  const doc = cloneDeep(openWorkflowState.doc);
+  const node = findNode(doc, nodeId);
+  if (!node || !PINNABLE_OUTPUT_TYPES.has(node.type)) {
+    return;
+  }
+
+  if (node.pinnedOutput !== undefined) {
+    delete node.pinnedOutput;
+  } else {
+    const output = state.workflows.runs[pathname]?.nodeData?.[nodeId]?.output;
+    if (output === undefined) {
+      throw new Error('No output to pin yet — execute the node first');
+    }
+    let serialized;
+    try {
+      serialized = JSON.stringify(output);
+    } catch (error) {
+      throw new Error('This output cannot be pinned');
+    }
+    if (typeof serialized !== 'string') {
+      throw new Error('This output cannot be pinned');
+    }
+    if (serialized.length > MAX_PINNED_OUTPUT_CHARS) {
+      throw new Error('Output is too large to pin (over 200k characters)');
+    }
+    node.pinnedOutput = JSON.parse(serialized);
+  }
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
@@ -964,6 +1055,7 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
   const finishNode = (node, result) => {
     dispatch(workflowRunStepFinished({ pathname, stepId: node.id, result }));
     const bits = [
+      result.pinned ? 'pinned' : '',
       result.httpStatus ? `${result.httpStatus}` : '',
       typeof result.iterations === 'number' ? `${result.iterations}x` : '',
       result.durationMs ? `${Math.round(result.durationMs)}ms` : '',
@@ -978,6 +1070,7 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
       httpStatus: result.httpStatus,
       durationMs: result.durationMs,
       iterations: result.iterations,
+      pinned: result.pinned,
       error: result.error
     });
   };
@@ -994,6 +1087,12 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
     executions += 1;
     const node = nodesById[currentId];
     if (!node) {
+      break;
+    }
+
+    // Sticky notes are documentation only; they can never be wired, but guard
+    // anyway so a malformed doc cannot execute one.
+    if (node.type === 'note') {
       break;
     }
 
@@ -1019,6 +1118,25 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
     const isLoopReentry = node.type === 'loop' && loopState[node.id];
     if (!isLoopReentry) {
       dispatch(workflowRunStepStarted({ pathname, stepId: node.id }));
+    }
+
+    // Pinned output (n8n-style pin data): don't execute the node — replay its
+    // stored output so downstream input flows from it as usual.
+    if (node.pinnedOutput !== undefined && PINNABLE_OUTPUT_TYPES.has(node.type)) {
+      const pinnedOutput = cloneDeep(node.pinnedOutput);
+      if (node.type === 'request') {
+        lastResponseContext = pinnedOutput;
+      } else if ((node.type === 'map' || node.type === 'setvars')
+        && pinnedOutput && typeof pinnedOutput === 'object' && !Array.isArray(pinnedOutput)) {
+        Object.assign(flowVars, pinnedOutput);
+      }
+      recordData(pinnedOutput);
+      finishNode(node, { status: 'passed', pinned: true });
+      if (isSingleNodeRun && currentId === targetNodeId) {
+        break;
+      }
+      currentId = outgoing(node.id, 'main');
+      continue;
     }
 
     let firedPort = 'main';

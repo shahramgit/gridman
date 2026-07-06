@@ -290,6 +290,106 @@ describe('workflows', () => {
     expect(() => evaluateWorkflowExpression('not valid js (', {})).toThrow();
   });
 
+  it('round-trips pinnedOutput on pinnable node types through the yaml file', async () => {
+    const pathname = await createWorkflow(workspacePath, 'Pinned');
+    const { snapshot, hash, collectionRelPath, requestRelPath } = await snapshotRequestForWorkflow({
+      workspacePath,
+      collectionPathname: collectionPath,
+      requestPathname: requestPath
+    });
+
+    const pinnedResponse = {
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'application/json' },
+      body: { token: 'abc', items: [1, 2, 3], nested: { ok: true } }
+    };
+
+    await writeWorkflowFile(pathname, {
+      name: 'Pinned',
+      nodes: [
+        { ...requestNode('req-1', { collection: collectionRelPath, request: requestRelPath }, snapshot, hash), pinnedOutput: pinnedResponse },
+        { id: 'map-1', type: 'map', name: 'Map', position: { x: 0, y: 0 }, mappings: [], pinnedOutput: { token: 'abc' } },
+        { id: 'delay-1', type: 'delay', name: 'Delay', position: { x: 0, y: 0 }, durationMs: 10, pinnedOutput: { delayedMs: 10 } }
+      ],
+      connections: []
+    });
+
+    const { doc } = await readWorkflowWithDrift(workspacePath, pathname);
+    expect(doc.nodes.find((n) => n.id === 'req-1').pinnedOutput).toEqual(pinnedResponse);
+    expect(doc.nodes.find((n) => n.id === 'map-1').pinnedOutput).toEqual({ token: 'abc' });
+    expect(doc.nodes.find((n) => n.id === 'delay-1').pinnedOutput).toEqual({ delayedMs: 10 });
+  });
+
+  it('drops pinnedOutput on non-pinnable types and oversized payloads', () => {
+    const doc = normalizeWorkflowDoc({
+      version: 2,
+      name: 'P',
+      nodes: [
+        { id: 'c', type: 'condition', expression: 'true', pinnedOutput: { result: true } },
+        { id: 'l', type: 'loop', source: 'items', pinnedOutput: { done: true } },
+        { id: 'big', type: 'delay', durationMs: 5, pinnedOutput: { blob: 'x'.repeat(200001) } },
+        { id: 'ok', type: 'delay', durationMs: 5, pinnedOutput: { delayedMs: 5 } }
+      ]
+    });
+
+    expect(doc.nodes.find((n) => n.id === 'c')).not.toHaveProperty('pinnedOutput');
+    expect(doc.nodes.find((n) => n.id === 'l')).not.toHaveProperty('pinnedOutput');
+    expect(doc.nodes.find((n) => n.id === 'big')).not.toHaveProperty('pinnedOutput');
+    expect(doc.nodes.find((n) => n.id === 'ok').pinnedOutput).toEqual({ delayedMs: 5 });
+  });
+
+  it('round-trips sticky notes and never wires them into the graph', async () => {
+    const pathname = await createWorkflow(workspacePath, 'Notes');
+    await writeWorkflowFile(pathname, {
+      name: 'Notes',
+      nodes: [
+        { id: 'n1', type: 'note', name: 'Note', content: 'auth flow starts here', tint: 'blue', position: { x: 10, y: 20 }, size: { width: 300, height: 150 } },
+        { id: 'd1', type: 'delay', name: 'Delay', position: { x: 0, y: 0 }, durationMs: 10 }
+      ],
+      connections: [
+        // both directions are invalid: notes have no ports
+        { id: 'x1', source: 'n1', sourcePort: 'main', target: 'd1' },
+        { id: 'x2', source: 'd1', sourcePort: 'main', target: 'n1' }
+      ]
+    });
+
+    const { doc, drift } = await readWorkflowWithDrift(workspacePath, pathname);
+    const note = doc.nodes.find((n) => n.id === 'n1');
+    expect(note).toEqual(expect.objectContaining({
+      type: 'note',
+      content: 'auth flow starts here',
+      tint: 'blue',
+      position: { x: 10, y: 20 },
+      size: { width: 300, height: 150 }
+    }));
+    // execution follows connections: none may touch a note
+    expect(doc.connections).toEqual([]);
+    // notes carry no run/drift metadata
+    expect(drift).not.toHaveProperty('n1');
+  });
+
+  it('normalizes note defaults, clamps size and rejects unknown tints', () => {
+    const doc = normalizeWorkflowDoc({
+      version: 2,
+      name: 'N',
+      nodes: [
+        { id: 'n1', type: 'note' },
+        { id: 'n2', type: 'note', content: 42, tint: 'magenta', size: { width: 1, height: 999999 } }
+      ]
+    });
+
+    const n1 = doc.nodes.find((n) => n.id === 'n1');
+    expect(n1.content).toBe('');
+    expect(n1.tint).toBe('yellow');
+    expect(n1.size).toEqual({ width: 200, height: 120 });
+
+    const n2 = doc.nodes.find((n) => n.id === 'n2');
+    expect(n2.content).toBe('42');
+    expect(n2.tint).toBe('yellow');
+    expect(n2.size).toEqual({ width: 120, height: 2000 });
+  });
+
   it('rejects paths escaping the workspace', async () => {
     await expect(buildRequestSnapshot({
       workspacePath,

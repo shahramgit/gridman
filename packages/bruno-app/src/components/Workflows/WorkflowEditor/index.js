@@ -11,6 +11,7 @@ import {
   IconHistory,
   IconLayoutList,
   IconLoader2,
+  IconNote,
   IconPin,
   IconPinned,
   IconPlayerPlay,
@@ -102,6 +103,7 @@ const StepResult = ({ result }) => {
         <IconCircleX size={14} />
       )}
       <span>
+        {result.pinned ? 'pinned ' : ''}
         {result.httpStatus ? `${result.httpStatus} ` : ''}
         {typeof result.iterations === 'number' ? `${result.iterations}x ` : ''}
         {formatDuration(result.durationMs)}
@@ -174,7 +176,7 @@ const RunHistory = ({ runs }) => {
   );
 };
 
-const TYPE_ICONS = { request: IconWorld, map: IconWand, setvars: IconVariable, condition: IconArrowsSplit, delay: IconClock, loop: IconRepeat };
+const TYPE_ICONS = { request: IconWorld, map: IconWand, setvars: IconVariable, condition: IconArrowsSplit, delay: IconClock, loop: IconRepeat, note: IconNote };
 const VIEW_STORAGE_KEY = 'gridman.workflow-view';
 
 const PALETTE_ITEMS = [
@@ -182,8 +184,13 @@ const PALETTE_ITEMS = [
   { type: 'setvars', label: 'Set Vars', icon: IconVariable },
   { type: 'condition', label: 'Condition', icon: IconArrowsSplit },
   { type: 'delay', label: 'Delay', icon: IconClock },
-  { type: 'loop', label: 'Loop', icon: IconRepeat }
+  { type: 'loop', label: 'Loop', icon: IconRepeat },
+  { type: 'note', label: 'Note', icon: IconNote }
 ];
+
+// Sticky notes have no ports, so quick-add (which wires the new node in) never
+// offers them.
+const QUICK_ADD_ITEMS = PALETTE_ITEMS.filter((item) => item.type !== 'note');
 
 // A draggable palette chip (react-dnd source) that the canvas accepts as a
 // 'workflow-node-template' drop to add a node at the cursor.
@@ -280,7 +287,9 @@ const analyzeGraph = (doc) => {
   }
 
   // nodes not reached by the linear walk -> graph isn't a single chain
-  const nonStart = doc.nodes.filter((node) => node.type !== 'start');
+  // (sticky notes are annotations, never part of the flow, so they don't
+  // count against linearity)
+  const nonStart = doc.nodes.filter((node) => node.type !== 'start' && node.type !== 'note');
   if (order.length !== nonStart.length) {
     linear = false;
   }
@@ -380,6 +389,8 @@ const WorkflowEditor = ({ pathname }) => {
     onRedo: () => dispatch(redoWorkflowDoc(pathname)).catch((e) => toast.error(e?.message || 'Unable to redo')),
     onRevealNode: (id) => dispatch(revealWorkflowNode(pathname, id)).catch((e) => toast.error(e?.message || 'Unable to locate request')),
     onToggleDisabled: (id, disabled) => dispatch(updateWorkflowNode(pathname, id, { disabled })).catch((e) => toast.error(e?.message || 'Unable to update node')),
+    // Generic node patch (sticky-note content / tint / size edits from the canvas).
+    onPatchNode: (id, patch) => dispatch(updateWorkflowNode(pathname, id, patch)).catch((e) => toast.error(e?.message || 'Unable to update node')),
     onDropRequest: (item, position) => dispatch(addWorkflowRequestNodeFromDragItem(pathname, item, position)).catch((e) => toast.error(e?.message || 'Unable to add request')),
     onDropNode: (nodeType, position) => dispatch(addWorkflowNode(pathname, nodeType, position)).catch((e) => toast.error(e?.message || 'Unable to add node')),
     onTidy: () => dispatch(layoutWorkflowNodes(pathname)).catch((e) => toast.error(e?.message || 'Unable to tidy layout')),
@@ -417,7 +428,7 @@ const WorkflowEditor = ({ pathname }) => {
       return { source: graph.start.id, sourcePort: 'main' };
     }
     for (const node of doc.nodes) {
-      if (node.type === 'start') continue;
+      if (node.type === 'start' || node.type === 'note') continue; // notes have no ports
       const port = PRIMARY_PORT[node.type] || 'main';
       if (port !== 'main') continue;
       const taken = (doc.connections || []).some((c) => c.source === node.id && c.sourcePort === port);
@@ -481,7 +492,8 @@ const WorkflowEditor = ({ pathname }) => {
 
   const handleAddNode = (nodeType) => {
     dispatch(addWorkflowNode(pathname, nodeType, newNodePosition()))
-      .then((newId) => wireNew(newId))
+      // Sticky notes have no ports — add them without wiring.
+      .then((newId) => (nodeType === 'note' ? null : wireNew(newId)))
       .catch((e) => toast.error(e?.message || 'Unable to add node'));
   };
 
@@ -519,11 +531,21 @@ const WorkflowEditor = ({ pathname }) => {
     { id: 'add-setvars', leftSection: IconVariable, label: 'Set variables', onClick: () => handleAddNode('setvars') },
     { id: 'add-condition', leftSection: IconArrowsSplit, label: 'Condition', onClick: () => handleAddNode('condition') },
     { id: 'add-delay', leftSection: IconClock, label: 'Delay', onClick: () => handleAddNode('delay') },
-    { id: 'add-loop', leftSection: IconRepeat, label: 'Loop (for each)', onClick: () => handleAddNode('loop') }
+    { id: 'add-loop', leftSection: IconRepeat, label: 'Loop (for each)', onClick: () => handleAddNode('loop') },
+    { id: 'add-note', leftSection: IconNote, label: 'Sticky note', onClick: () => handleAddNode('note') }
   ];
 
   const selectedNode = selectedNodeId ? graph.nodesById[selectedNodeId] : null;
-  const ndvNode = ndvNodeId ? graph.nodesById[ndvNodeId] : null;
+  // Sticky notes are edited in place — they never open the NDV.
+  const ndvCandidate = ndvNodeId ? graph.nodesById[ndvNodeId] : null;
+  const ndvNode = ndvCandidate && ndvCandidate.type !== 'note' ? ndvCandidate : null;
+
+  // NDV prev/next stepping (header arrows + Alt+Left/Right): doc node order as
+  // a pragmatic execution-ish order, Start included, notes skipped. No wrap.
+  const ndvOrder = doc.nodes.filter((node) => node.type !== 'note').map((node) => node.id);
+  const ndvIndex = ndvNode ? ndvOrder.indexOf(ndvNode.id) : -1;
+  const ndvPrevId = ndvIndex > 0 ? ndvOrder[ndvIndex - 1] : null;
+  const ndvNextId = ndvIndex >= 0 && ndvIndex < ndvOrder.length - 1 ? ndvOrder[ndvIndex + 1] : null;
 
   const renderSelectionPanel = () => {
     if (selectedNodeIds.length > 1) {
@@ -542,6 +564,7 @@ const WorkflowEditor = ({ pathname }) => {
       );
     }
     const selDrift = drift?.[selectedNode.id];
+    const isNote = selectedNode.type === 'note';
     return (
       <div className="canvas-panel" data-testid="workflow-node-panel">
         <div className="panel-title">
@@ -550,11 +573,13 @@ const WorkflowEditor = ({ pathname }) => {
           ) : (
             <input className="step-name-input" type="text" defaultValue={selectedNode.name} onKeyDown={blurOnEnter} onBlur={(e) => handleNodePatch(selectedNode.id)({ name: e.target.value })} />
           )}
-          <ActionIcon label="Open node detail view" data-testid="workflow-node-expand" onClick={() => setNdvNodeId(selectedNode.id)}>
-            <IconArrowsMaximize size={14} stroke={1.6} />
-          </ActionIcon>
+          {!isNote && (
+            <ActionIcon label="Open node detail view" data-testid="workflow-node-expand" onClick={() => setNdvNodeId(selectedNode.id)}>
+              <IconArrowsMaximize size={14} stroke={1.6} />
+            </ActionIcon>
+          )}
         </div>
-        {selectedNode.type !== 'start' && (
+        {selectedNode.type !== 'start' && !isNote && (
           <button
             type="button"
             className="run-button execute-node-button"
@@ -570,7 +595,7 @@ const WorkflowEditor = ({ pathname }) => {
         <NodeParamsEditor pathname={pathname} node={selectedNode} drift={selDrift} onChange={handleNodePatch(selectedNode.id)} />
         <StepResult result={run?.stepResults?.[selectedNode.id]} />
 
-        {(() => {
+        {!isNote && (() => {
           const data = run?.nodeData?.[selectedNode.id];
           const editable = ['map', 'setvars', 'condition', 'loop'].includes(selectedNode.type);
           return (
@@ -777,6 +802,9 @@ const WorkflowEditor = ({ pathname }) => {
           drift={drift?.[ndvNode.id]}
           workflowInputs={doc.inputs}
           onClose={() => setNdvNodeId(null)}
+          onNavigate={setNdvNodeId}
+          prevNodeId={ndvPrevId}
+          nextNodeId={ndvNextId}
         />
       )}
 
@@ -792,7 +820,7 @@ const WorkflowEditor = ({ pathname }) => {
             <button type="button" className="quick-add-item" onClick={() => handleQuickAddType('request')}>
               <IconWorld size={15} stroke={1.6} /><span>Request</span>
             </button>
-            {PALETTE_ITEMS.map((item) => {
+            {QUICK_ADD_ITEMS.map((item) => {
               const Icon = item.icon;
               return (
                 <button key={item.type} type="button" className="quick-add-item" onClick={() => handleQuickAddType(item.type)}>

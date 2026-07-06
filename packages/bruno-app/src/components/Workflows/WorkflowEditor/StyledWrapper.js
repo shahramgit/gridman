@@ -780,6 +780,116 @@ const StyledWrapper = styled.div`
       background: ${(props) => props.theme.colors.text.yellow};
       border: 1px solid ${(props) => props.theme.sidebar.bg};
     }
+
+    /* Output-pinned badge on a node header */
+    .wf-node-pin {
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+      margin-left: auto;
+      color: ${(props) => props.theme.colors.text.yellow};
+    }
+
+    /* Node search (Ctrl/Cmd+F) */
+    .wf-search {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 6;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid ${(props) => props.theme.input.border};
+      background: ${(props) => props.theme.sidebar.bg};
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.22);
+
+      input {
+        width: 180px;
+        border: none;
+        background: transparent;
+        color: inherit;
+        font-size: 12px;
+
+        &:focus {
+          outline: none;
+        }
+      }
+    }
+
+    .wf-search-count {
+      font-size: 11px;
+      opacity: 0.6;
+      min-width: 28px;
+      text-align: right;
+    }
+
+    /* Highlight ring on the current search match */
+    .react-flow__node.wf-search-hit .wf-node,
+    .react-flow__node.wf-search-hit .wf-note {
+      outline: 2px dashed ${(props) => props.theme.colors.text.yellow};
+      outline-offset: 4px;
+    }
+
+    /* Sticky notes: colored panels behind the flow nodes */
+    .wf-note {
+      position: relative;
+      height: 100%;
+      border: 1px solid;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      overflow: hidden;
+    }
+
+    .wf-note-selected {
+      box-shadow: 0 0 0 2px ${(props) => props.theme.colors.text.yellow};
+    }
+
+    .wf-note-content {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: ${(props) => props.theme.sidebar.color};
+    }
+
+    .wf-note-placeholder {
+      opacity: 0.45;
+      font-style: italic;
+    }
+
+    .wf-note-text {
+      width: 100%;
+      height: 100%;
+      resize: none;
+      border: none;
+      background: transparent;
+      color: inherit;
+      font-size: 12px;
+      font-family: inherit;
+
+      &:focus {
+        outline: none;
+      }
+    }
+
+    .wf-node-toolbar button.wf-note-swatch {
+      width: 16px;
+      height: 16px;
+      min-width: 16px;
+      border-radius: 50%;
+      border: 1px solid ${(props) => props.theme.input.border};
+      cursor: pointer;
+      padding: 0;
+
+      &.active {
+        box-shadow: 0 0 0 2px ${(props) => props.theme.colors.text.yellow};
+      }
+    }
   }
 
   .canvas-panel {
@@ -1011,6 +1121,61 @@ const StyledWrapper = styled.div`
     }
   }
 
+  .ndv-nav {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  .ndv-pin-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 9px;
+    color: ${(props) => props.theme.colors.text.yellow};
+    border: 1px solid ${(props) => props.theme.colors.text.yellow};
+  }
+
+  .ndv-col-head-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    .ndv-pin-active {
+      color: ${(props) => props.theme.colors.text.yellow};
+    }
+  }
+
+  .ndv-pinned-note {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: ${(props) => props.theme.colors.text.yellow};
+    border: 1px dashed ${(props) => props.theme.colors.text.yellow};
+    border-radius: 4px;
+    padding: 4px 8px;
+  }
+
+  /* Sticky-note content editor (side panel / list view) */
+  .note-content-input {
+    width: 100%;
+    resize: vertical;
+    background: ${(props) => props.theme.input.bg};
+    border: 1px solid ${(props) => props.theme.input.border};
+    border-radius: 4px;
+    color: inherit;
+    font-size: 12px;
+    font-family: inherit;
+    padding: 6px 8px;
+
+    &:focus {
+      outline: none;
+    }
+  }
+
   .ndv-status {
     display: inline-flex;
     align-items: center;
@@ -1051,22 +1216,33 @@ const StyledWrapper = styled.div`
   .ndv-col {
     display: flex;
     flex-direction: column;
-    min-width: 260px;
+    min-width: 200px;
     min-height: 0;
-    border-right: 1px solid ${(props) => props.theme.input.border};
-
-    &:last-child {
-      border-right: none;
-    }
+    flex-shrink: 1;
   }
 
+  /* Fallback split (inline styles from the resizable columns take precedence) */
   .ndv-col-input,
   .ndv-col-output {
-    flex: 1 1 28%;
+    flex: 28 1 0;
   }
 
   .ndv-col-params {
-    flex: 1 1 44%;
+    flex: 44 1 0;
+  }
+
+  /* Draggable divider between NDV columns (double-click resets the split) */
+  .ndv-divider {
+    flex: 0 0 5px;
+    cursor: col-resize;
+    background: transparent;
+    border-left: 1px solid ${(props) => props.theme.input.border};
+    transition: background 0.12s ease;
+
+    &:hover {
+      background: ${(props) => props.theme.colors.text.yellow};
+      opacity: 0.5;
+    }
   }
 
   .ndv-col-head {
