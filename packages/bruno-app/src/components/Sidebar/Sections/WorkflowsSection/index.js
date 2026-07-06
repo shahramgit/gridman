@@ -1,16 +1,19 @@
 import { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import toast from 'react-hot-toast';
-import { IconPlus, IconRoute, IconTrash } from '@tabler/icons';
+import { IconDots, IconFileExport, IconFileImport, IconPlus, IconRoute, IconTrash } from '@tabler/icons';
 
 import {
   createWorkflow,
   deleteWorkflow,
+  exportWorkflow,
+  importWorkflow,
   loadWorkflows,
   openWorkflow
 } from 'providers/ReduxStore/slices/workflows';
 import Modal from 'components/Modal';
 import ActionIcon from 'ui/ActionIcon';
+import MenuDropdown from 'ui/MenuDropdown';
 import SidebarSection from 'components/Sidebar/SidebarSection';
 import StyledWrapper from './StyledWrapper';
 
@@ -51,14 +54,43 @@ const WorkflowsSection = () => {
       .catch((error) => toast.error(error?.message || 'Unable to delete workflow'));
   };
 
+  const handleExport = (workflow) => {
+    dispatch(exportWorkflow(workflow.pathname))
+      .then((result) => {
+        if (!result?.cancelled) {
+          toast.success(`Exported "${workflow.name}"`);
+        }
+      })
+      .catch((error) => toast.error(error?.message || 'Unable to export workflow'));
+  };
+
+  const handleImport = () => {
+    dispatch(importWorkflow())
+      .then((result) => {
+        if (!result?.cancelled) {
+          toast.success(`Imported "${result?.name || 'workflow'}"`);
+        }
+      })
+      .catch((error) => toast.error(error?.message || 'Unable to import workflow'));
+  };
+
   const sectionActions = (
-    <ActionIcon
-      label="New workflow"
-      data-testid="workflows-add"
-      onClick={() => setCreateModalOpen(true)}
-    >
-      <IconPlus size={14} stroke={1.5} aria-hidden="true" />
-    </ActionIcon>
+    <>
+      <ActionIcon
+        label="Import workflow"
+        data-testid="workflows-import"
+        onClick={handleImport}
+      >
+        <IconFileImport size={14} stroke={1.5} aria-hidden="true" />
+      </ActionIcon>
+      <ActionIcon
+        label="New workflow"
+        data-testid="workflows-add"
+        onClick={() => setCreateModalOpen(true)}
+      >
+        <IconPlus size={14} stroke={1.5} aria-hidden="true" />
+      </ActionIcon>
+    </>
   );
 
   return (
@@ -122,6 +154,26 @@ const WorkflowsSection = () => {
               >
                 <IconRoute size={15} strokeWidth={1.6} className="row-icon" />
                 <span className="workflow-name">{workflow.name}</span>
+                {/* the dropdown popper mounts inside this span (appendTo: parent),
+                    so stopping propagation here keeps menu clicks from opening the row */}
+                <span className="row-menu" onClick={(event) => event.stopPropagation()}>
+                  <MenuDropdown
+                    data-testid="workflow-row-menu"
+                    placement="bottom-start"
+                    items={[
+                      {
+                        id: 'export-workflow',
+                        label: 'Export',
+                        leftSection: IconFileExport,
+                        onClick: () => handleExport(workflow)
+                      }
+                    ]}
+                  >
+                    <ActionIcon label="Workflow actions" className="menu-icon">
+                      <IconDots size={14} stroke={1.5} aria-hidden="true" />
+                    </ActionIcon>
+                  </MenuDropdown>
+                </span>
                 <ActionIcon
                   label="Delete workflow"
                   className="delete-icon"

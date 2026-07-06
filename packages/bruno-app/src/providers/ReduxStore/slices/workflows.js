@@ -310,6 +310,41 @@ export const createWorkflow = (name) => async (dispatch, getState) => {
   return pathname;
 };
 
+// Export a workflow to a user-chosen path. The main process shows the save
+// dialog and strips pinnedOutput (captured responses can contain tokens/PII).
+// Resolves to { cancelled: true } or { filePath }.
+export const exportWorkflow = (pathname) => async (dispatch, getState) => {
+  const workspace = getActiveWorkspace(getState());
+  if (!workspace?.pathname) {
+    throw new Error('No active workspace');
+  }
+
+  return window.ipcRenderer.invoke('renderer:workflow-export', {
+    workspacePath: workspace.pathname,
+    pathname
+  });
+};
+
+// Import a workflow file into the workspace (validated + normalized in the
+// main process, collisions auto-renamed). Resolves to { cancelled: true } or
+// { pathname, name }.
+export const importWorkflow = () => async (dispatch, getState) => {
+  const workspace = getActiveWorkspace(getState());
+  if (!workspace?.pathname) {
+    throw new Error('No active workspace');
+  }
+
+  const result = await window.ipcRenderer.invoke('renderer:workflow-import', {
+    workspacePath: workspace.pathname
+  });
+  if (result?.cancelled) {
+    return result;
+  }
+
+  await dispatch(loadWorkflows());
+  return result;
+};
+
 export const deleteWorkflow = (pathname) => async (dispatch, getState) => {
   const workspace = getActiveWorkspace(getState());
   if (!workspace?.pathname) {

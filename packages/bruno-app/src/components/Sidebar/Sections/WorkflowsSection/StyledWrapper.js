@@ -29,14 +29,21 @@ const StyledWrapper = styled.div`
       white-space: nowrap;
     }
 
-    .delete-icon {
+    .delete-icon,
+    .menu-icon {
       visibility: hidden;
+    }
+
+    /* keep the trigger visible while its dropdown is open */
+    .menu-icon[aria-expanded='true'] {
+      visibility: visible;
     }
 
     &:hover {
       background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
 
-      .delete-icon {
+      .delete-icon,
+      .menu-icon {
         visibility: visible;
       }
     }

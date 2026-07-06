@@ -488,7 +488,7 @@ app.on('ready', async () => {
   registerFilesystemIpc(mainWindow);
   registerSystemMonitorIpc(mainWindow, systemMonitor);
   registerGitIpc(mainWindow);
-  registerWorkflowsIpc();
+  registerWorkflowsIpc(mainWindow);
   registerOpenAPISyncIpc(mainWindow);
 });
 
