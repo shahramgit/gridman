@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
   IconArrowDown,
@@ -26,10 +26,23 @@ import Button from 'ui/Button';
 import Modal from 'components/Modal';
 import Portal from 'components/Portal';
 import StyledWrapper from './StyledWrapper';
+import WorkspaceYmlConflictModal from './WorkspaceYmlConflictModal';
 import { uuid } from 'utils/common';
 
 const DEFAULT_REMOTE = 'origin';
 const DEFAULT_PULL_STRATEGY = '--no-rebase';
+const WORKSPACE_YML_FILENAME = 'workspace.yml';
+
+// Operations backed by a cancellable spawned git process in the main process.
+const CANCELLABLE_GIT_INVOKES = new Set([
+  'renderer:fetch-workspace-git',
+  'renderer:pull-workspace-git',
+  'renderer:push-workspace-git',
+  'renderer:sync-workspace-git'
+]);
+const CANCELLABLE_GUIDED_ACTIONS = new Set(['pull', 'pull-existing', 'push', 'sync', 'sync-full']);
+
+const isCancelledOperationMessage = (message = '') => message.includes('Operation cancelled');
 
 const getIpcErrorMessage = (error, fallback) => {
   const message = error?.message || String(error || '') || fallback;
@@ -258,6 +271,11 @@ const WorkspaceGit = ({ workspace }) => {
   const [gitIdentityEmail, setGitIdentityEmail] = useState('');
   const [guidedCommitAction, setGuidedCommitAction] = useState(null);
   const [guidedCommitMessage, setGuidedCommitMessage] = useState('');
+  const [progress, setProgress] = useState(null);
+  const [cancellableProcessUid, setCancellableProcessUid] = useState(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [workspaceYmlConflictOpen, setWorkspaceYmlConflictOpen] = useState(false);
+  const activeProcessUidRef = useRef(null);
 
   const gitRootPath = gitData?.gitRootPath;
   const currentBranch = gitData?.currentBranch || gitData?.currentGitBranch || gitData?.status?.current || '';
@@ -276,6 +294,8 @@ const WorkspaceGit = ({ workspace }) => {
   const totalChangedFiles = changedFiles.totalFiles || 0;
   const fileCount = useMemo(() => staged.length + unstaged.length + conflicted.length, [staged.length, unstaged.length, conflicted.length]);
   const hasConflicts = gitData?.mergeInProgress || conflicted.length > 0;
+  const workspaceYmlConflicted = conflicted.some((file) => file.path === WORKSPACE_YML_FILENAME);
+  const otherConflictCount = conflicted.filter((file) => file.path !== WORKSPACE_YML_FILENAME).length;
   const orphanCollections = collectionReconciliation?.orphanCollections || [];
   const missingCollections = collectionReconciliation?.missingCollections || [];
   const hasCommits = Boolean(gitData?.hasCommits);
@@ -524,6 +544,51 @@ const WorkspaceGit = ({ workspace }) => {
     refreshSetupDiagnostics({ silent: true });
   }, [refreshSetupDiagnostics]);
 
+  // Streams parsed git --progress output (phase + percent) for the operation
+  // currently running from this panel.
+  useEffect(() => {
+    const unsubscribe = window.ipcRenderer.on('main:git-operation-progress', (payload) => {
+      if (payload?.uid && payload.uid === activeProcessUidRef.current) {
+        setProgress({
+          phase: payload.phase || '',
+          percent: typeof payload.percent === 'number' ? payload.percent : null
+        });
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  const beginTrackedOperation = (processUid, cancellable) => {
+    activeProcessUidRef.current = processUid;
+    setProgress(null);
+    setCancelling(false);
+    setCancellableProcessUid(cancellable ? processUid : null);
+  };
+
+  const endTrackedOperation = () => {
+    activeProcessUidRef.current = null;
+    setProgress(null);
+    setCancelling(false);
+    setCancellableProcessUid(null);
+  };
+
+  const cancelActiveOperation = async () => {
+    if (!cancellableProcessUid || cancelling) return;
+    setCancelling(true);
+    try {
+      const result = await window.ipcRenderer.invoke('renderer:cancel-workspace-git-operation', {
+        processUid: cancellableProcessUid
+      });
+      if (!result?.cancelled) {
+        // The operation already finished; its normal completion path takes over.
+        setCancelling(false);
+      }
+    } catch (error) {
+      setCancelling(false);
+      toast.error(getIpcErrorMessage(error, 'Failed to cancel the operation'));
+    }
+  };
+
   const runGitOperation = async (label, invokeName, payload = {}) => {
     if (!gitRootPath) return;
     if (['Push', 'Sync committed'].includes(label) && !hasCommits) {
@@ -542,6 +607,7 @@ const WorkspaceGit = ({ workspace }) => {
     setOutput('');
     try {
       const processUid = uuid();
+      beginTrackedOperation(processUid, CANCELLABLE_GIT_INVOKES.has(invokeName));
       const result = await window.ipcRenderer.invoke(invokeName, {
         gitRootPath,
         processUid,
@@ -581,10 +647,16 @@ const WorkspaceGit = ({ workspace }) => {
       await refresh();
     } catch (error) {
       const message = getIpcErrorMessage(error, `${label} failed`);
-      setOutput(message);
-      toast.error(message);
+      if (isCancelledOperationMessage(message)) {
+        setOutput('Operation cancelled');
+        toast('Operation cancelled');
+      } else {
+        setOutput(message);
+        toast.error(message);
+      }
       await refresh();
     } finally {
+      endTrackedOperation();
       setOperation(null);
     }
   };
@@ -594,10 +666,12 @@ const WorkspaceGit = ({ workspace }) => {
 
     setOperation(guidedAction?.primaryLabel || 'Git Assistant');
     setOutput('');
+    const guidedProcessUid = uuid();
+    beginTrackedOperation(guidedProcessUid, CANCELLABLE_GUIDED_ACTIONS.has(action));
     try {
       const result = await window.ipcRenderer.invoke('renderer:guided-workspace-git-action', {
         gitRootPath,
-        processUid: uuid(),
+        processUid: guidedProcessUid,
         remote,
         action,
         message,
@@ -619,10 +693,16 @@ const WorkspaceGit = ({ workspace }) => {
       await refresh({ fetchRemote: ['pull', 'pull-existing', 'sync', 'sync-full'].includes(action) });
     } catch (error) {
       const message = getIpcErrorMessage(error, 'Git action failed');
-      setOutput(message);
-      toast.error(message);
+      if (isCancelledOperationMessage(message)) {
+        setOutput('Operation cancelled');
+        toast('Operation cancelled');
+      } else {
+        setOutput(message);
+        toast.error(message);
+      }
       await refresh();
     } finally {
+      endTrackedOperation();
       setOperation(null);
     }
   };
@@ -707,9 +787,11 @@ const WorkspaceGit = ({ workspace }) => {
         message
       });
 
+      const syncProcessUid = uuid();
+      beginTrackedOperation(syncProcessUid, true);
       const result = await window.ipcRenderer.invoke('renderer:sync-workspace-git', {
         gitRootPath,
-        processUid: uuid(),
+        processUid: syncProcessUid,
         remote,
         strategy: DEFAULT_PULL_STRATEGY
       });
@@ -720,10 +802,16 @@ const WorkspaceGit = ({ workspace }) => {
       await refresh();
     } catch (error) {
       const message = getIpcErrorMessage(error, 'Sync Full failed');
-      setOutput(message);
-      toast.error(message);
+      if (isCancelledOperationMessage(message)) {
+        setOutput('Operation cancelled');
+        toast('Operation cancelled');
+      } else {
+        setOutput(message);
+        toast.error(message);
+      }
       await refresh();
     } finally {
+      endTrackedOperation();
       setOperation(null);
     }
   };
@@ -1387,6 +1475,35 @@ const WorkspaceGit = ({ workspace }) => {
                 Local environment files are not included in Git.
               </div>
             )}
+            {operation && (
+              <div className="git-progress mt-3">
+                <div className="git-progress-header">
+                  <span className="git-progress-label">
+                    {operation}
+                    {progress?.phase ? ` — ${progress.phase}` : ''}
+                    {typeof progress?.percent === 'number' ? ` ${progress.percent}%` : ''}
+                    {!progress?.phase && typeof progress?.percent !== 'number' ? '…' : ''}
+                  </span>
+                  {cancellableProcessUid && (
+                    <Button
+                      size="sm"
+                      color="light"
+                      icon={<IconX size={14} />}
+                      loading={cancelling}
+                      onClick={cancelActiveOperation}
+                    >
+                      Cancel
+                    </Button>
+                  )}
+                </div>
+                <div className={`git-progress-bar ${typeof progress?.percent === 'number' ? '' : 'indeterminate'}`}>
+                  <div
+                    className="git-progress-fill"
+                    style={typeof progress?.percent === 'number' ? { width: `${progress.percent}%` } : undefined}
+                  />
+                </div>
+              </div>
+            )}
             {output && <pre className="output-box assistant-output mt-3">{output}</pre>}
           </div>
 
@@ -1505,6 +1622,16 @@ const WorkspaceGit = ({ workspace }) => {
                           <span className="file-status">{file.status || `${file.fileIndex || ''}${file.working_dir || ''}`}</span>
                           <span className="truncate">{file.path}</span>
                           <div className="file-actions">
+                            {file.path === WORKSPACE_YML_FILENAME && (
+                              <Button
+                                size="sm"
+                                color="primary"
+                                onClick={(event) => {
+                                  event.stopPropagation(); setWorkspaceYmlConflictOpen(true);
+                                }}
+                              >Resolve visually
+                              </Button>
+                            )}
                             <Button
                               size="sm"
                               color="light"
@@ -2073,6 +2200,24 @@ const WorkspaceGit = ({ workspace }) => {
             <div className="panel">
               <div className="section-title">Conflicts</div>
               <p className="text-sm text-muted">Choose local or remote for each conflicted file, or edit the files manually, then continue the merge.</p>
+              {workspaceYmlConflicted && (
+                <div className="workspace-warning mt-2">
+                  <div className="font-semibold">workspace.yml has conflicts</div>
+                  <p className="text-sm text-muted mt-1">
+                    Gridman can merge the collection lists from both versions for you instead of leaving raw conflict
+                    markers in the file.
+                  </p>
+                  <Button
+                    size="sm"
+                    color="primary"
+                    className="mt-2"
+                    icon={<IconGitMerge size={14} />}
+                    onClick={() => setWorkspaceYmlConflictOpen(true)}
+                  >
+                    Resolve workspace.yml
+                  </Button>
+                </div>
+              )}
               <textarea
                 className="textbox w-full h-16 mt-2"
                 value={mergeMessage}
@@ -2086,6 +2231,17 @@ const WorkspaceGit = ({ workspace }) => {
           )}
         </div>
       </div>
+      {workspaceYmlConflictOpen && (
+        <WorkspaceYmlConflictModal
+          gitRootPath={gitRootPath}
+          otherConflictCount={otherConflictCount}
+          onClose={() => setWorkspaceYmlConflictOpen(false)}
+          onResolved={async () => {
+            setWorkspaceYmlConflictOpen(false);
+            await refresh();
+          }}
+        />
+      )}
       {connectRemoteModalOpen && (
         <Portal>
           <Modal

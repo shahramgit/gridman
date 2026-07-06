@@ -36,6 +36,58 @@ const StyledWrapper = styled.div`
     border-color: ${(props) => props.theme.colors.text.orange};
   }
 
+  .git-progress {
+    border: 1px solid ${(props) => props.theme.border.border1};
+    border-radius: ${(props) => props.theme.border.radius.sm};
+    padding: 10px 12px;
+  }
+
+  .git-progress-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .git-progress-label {
+    font-size: 13px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .git-progress-bar {
+    margin-top: 8px;
+    height: 6px;
+    border-radius: 3px;
+    background: ${(props) => props.theme.border.border1};
+    overflow: hidden;
+    position: relative;
+  }
+
+  .git-progress-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: ${(props) => props.theme.colors.text.green};
+    transition: width 0.2s ease;
+  }
+
+  .git-progress-bar.indeterminate .git-progress-fill {
+    position: absolute;
+    width: 35%;
+    animation: git-progress-slide 1.2s ease-in-out infinite;
+  }
+
+  @keyframes git-progress-slide {
+    0% {
+      left: -35%;
+    }
+    100% {
+      left: 100%;
+    }
+  }
+
   .assistant-header {
     display: flex;
     align-items: flex-start;

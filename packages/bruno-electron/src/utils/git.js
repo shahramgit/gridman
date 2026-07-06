@@ -6,6 +6,7 @@ const { execFile, spawnSync } = require('child_process');
 const { parseRequest } = require('@usebruno/filestore');
 const { DEFAULT_GITIGNORE } = require('./filesystem');
 const { readWorkspaceConfig, resolveAndFilterWorkspaceCollections, getWorkspaceUid } = require('./workspace-config');
+const { runCancellableGitCommand } = require('./git-progress');
 
 let collectionPathToGitRootPathMap = new Map();
 let gitBinaryPath;
@@ -1680,38 +1681,29 @@ const canPush = async (gitRootPath) => {
 };
 
 const pushGitChanges = async (win, { gitRootPath, processUid, remote = 'origin', remoteBranch }) => {
-  return new Promise(async (resolve, reject) => {
-    const git = getSimpleGitInstanceForPath(gitRootPath);
-    git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true }));
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  const trackingTarget = await getTrackingTarget({ gitRootPath, remote, remoteBranch });
 
-    try {
-      const trackingTarget = await getTrackingTarget({ gitRootPath, remote, remoteBranch });
-      // Check if the local branch is tracking a remote branch
-      git.branch((err, branchSummary) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-
-        const currentBranch = branchSummary.branches[trackingTarget.currentBranch];
-
-        if (!currentBranch) {
-          reject(new Error(`Branch ${trackingTarget.currentBranch} does not exist.`));
-          return;
-        }
-
-        git.push(trackingTarget.remote, trackingTarget.branch, (err, res) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(res);
-          }
-        });
-      });
-    } catch (error) {
-      reject(error);
-    }
+  // Check if the local branch exists before pushing
+  const branchSummary = await new Promise((resolve, reject) => {
+    git.branch((err, summary) => (err ? reject(err) : resolve(summary)));
   });
+
+  if (!branchSummary.branches[trackingTarget.currentBranch]) {
+    throw new Error(`Branch ${trackingTarget.currentBranch} does not exist.`);
+  }
+
+  // Spawned directly (not through simple-git) so the push can stream
+  // --progress output to the renderer and be cancelled by processUid.
+  const result = await runCancellableGitCommand({
+    binary: ensureGitAvailable(),
+    args: ['push', '--progress', trackingTarget.remote, trackingTarget.branch],
+    cwd: gitRootPath,
+    processUid,
+    win
+  });
+
+  return (result.stderr || result.stdout || '').trim();
 };
 
 const pullGitChanges = async (win, data) => {
@@ -1741,24 +1733,25 @@ const pullGitChanges = async (win, data) => {
 
   const trackingTarget = await getTrackingTarget({ gitRootPath, remote, remoteBranch });
 
-  const pull = (git, args) => new Promise((resolve, reject) => {
+  // Spawned directly (not through simple-git) so the pull can stream
+  // --progress output to the renderer and be cancelled by processUid.
+  const pull = async (args) => {
     const command = ['-c', 'core.quotePath=false'];
     if (process.platform === 'win32') {
       command.push('-c', 'core.longpaths=true');
     }
-    command.push('pull', trackingTarget.remote, trackingTarget.branch, ...args);
+    command.push('pull', '--progress', trackingTarget.remote, trackingTarget.branch, ...args);
 
-    git.raw(command, (err, res) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(res);
-      }
+    const result = await runCancellableGitCommand({
+      binary: ensureGitAvailable(),
+      args: command,
+      cwd: gitRootPath,
+      processUid,
+      win
     });
-  });
+    return result.stdout;
+  };
 
-  const git = getSimpleGitInstanceForPath(gitRootPath);
-  git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true }));
   await ensureWindowsGitLongPaths(gitRootPath);
 
   let allowUnrelatedHistories = false;
@@ -1784,7 +1777,7 @@ const pullGitChanges = async (win, data) => {
   for (let attempt = 0; attempt < 8; attempt++) {
     try {
       const args = allowUnrelatedHistories ? [strategy, '--allow-unrelated-histories'] : [strategy];
-      const result = await pull(git, args);
+      const result = await pull(args);
       notifyWorkspaceConfigUpdated(win, gitRootPath);
       return safetyCommitFiles.length || protectedBackupFiles.length || localBackupFiles.length
         ? {
@@ -1800,6 +1793,13 @@ const pullGitChanges = async (win, data) => {
           }
         : result;
     } catch (err) {
+      if (err?.cancelled) {
+        // User-cancelled pull. If git was killed mid-merge, MERGE_HEAD remains
+        // and the next status refresh surfaces the existing conflict
+        // continue/abort flow for recovery.
+        throw err;
+      }
+
       const message = getGitErrorMessage(err);
 
       if (isWindowsLongPathError(message)) {
@@ -1998,19 +1998,20 @@ const getCollectionGitData = async (gitRootPath, collectionPath) => {
 };
 
 const cloneGitRepository = async (win, data) => {
-  return new Promise((resolve, reject) => {
-    const { url, path, processUid } = data;
-    const git = getSimpleGitInstanceForPath(path);
+  const { url, path: clonePath, processUid } = data;
+  const binary = ensureGitAvailable();
 
-    git.outputHandler(handleGitOutput({ win, processUid, sendStdout: true }));
-    git.clone(url, path, ['--progress'], (err, res) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve(res);
-    });
+  // Spawned directly (not through simple-git) so the operation can be
+  // cancelled by processUid and progress can be streamed to the renderer.
+  const result = await runCancellableGitCommand({
+    binary,
+    args: ['clone', '--progress', url, clonePath],
+    cwd: path.dirname(path.resolve(clonePath)),
+    processUid,
+    win
   });
+
+  return result.stdout || result.stderr;
 };
 
 const fetchRemotes = (gitRootPath) => {
@@ -2028,7 +2029,20 @@ const fetchRemotes = (gitRootPath) => {
   });
 };
 
-const fetchChanges = (gitRootPath, remote = 'origin') => {
+const fetchChanges = (gitRootPath, remote = 'origin', { win, processUid } = {}) => {
+  // With a processUid the fetch is spawned directly so it reports progress and
+  // can be cancelled; without one (background status refreshes) it keeps the
+  // original simple-git path.
+  if (processUid) {
+    return runCancellableGitCommand({
+      binary: ensureGitAvailable(),
+      args: ['fetch', '--progress', remote],
+      cwd: gitRootPath,
+      processUid,
+      win
+    });
+  }
+
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
     git.fetch(remote, (err, res) => {
@@ -2460,7 +2474,7 @@ const getWorkspaceGitData = async (input) => {
 };
 
 const syncGitChanges = async (win, { gitRootPath, processUid, remote = 'origin', remoteBranch, strategy = '--no-rebase' }) => {
-  await fetchChanges(gitRootPath, remote);
+  await fetchChanges(gitRootPath, remote, { win, processUid });
   const status = await getGitStatus(gitRootPath);
   const trackingTarget = await getTrackingTarget({ gitRootPath, remote, remoteBranch });
   const branch = trackingTarget.branch;

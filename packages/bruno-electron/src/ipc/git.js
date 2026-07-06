@@ -1,10 +1,14 @@
 const { ipcMain } = require('electron');
+const fs = require('fs');
 const path = require('path');
 const {
   readWorkspaceConfig,
   resolveAndFilterWorkspaceCollections,
-  getWorkspaceUid
+  getWorkspaceUid,
+  writeWorkspaceConfig
 } = require('../utils/workspace-config');
+const { parseWorkspaceYmlConflict, buildMergedWorkspaceYmlConfig } = require('../utils/workspace-conflict');
+const { cancelGitOperation } = require('../utils/git-progress');
 const {
   cloneGitRepository,
   getWorkspaceGitData,
@@ -175,8 +179,17 @@ const registerGitIpc = (mainWindow) => {
     return withWorkspaceGitOperationLock(gitRootPath, 'commit', () => commitChanges(gitRootPath, message));
   });
 
-  ipcMain.handle('renderer:fetch-workspace-git', async (event, { gitRootPath, remote = 'origin' }) => {
-    return withWorkspaceGitOperationLock(gitRootPath, 'fetch', () => fetchChanges(gitRootPath, remote));
+  ipcMain.handle('renderer:fetch-workspace-git', async (event, { gitRootPath, remote = 'origin', processUid }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'fetch', () => fetchChanges(gitRootPath, remote, { win: mainWindow, processUid }));
+  });
+
+  // Kills the running git process for the given operation id (SIGTERM, then
+  // SIGKILL after 3s). Deliberately not routed through the operation lock:
+  // the lock is held by the operation being cancelled, and killing the process
+  // makes that operation reject, which releases the lock and the watcher-pause
+  // state through the existing finally block.
+  ipcMain.handle('renderer:cancel-workspace-git-operation', async (event, { processUid }) => {
+    return { cancelled: cancelGitOperation(processUid) };
   });
 
   ipcMain.handle('renderer:pull-workspace-git', async (event, { gitRootPath, processUid, remote = 'origin', remoteBranch, strategy = '--no-rebase' }) => {
@@ -260,6 +273,39 @@ const registerGitIpc = (mainWindow) => {
 
   ipcMain.handle('renderer:resolve-workspace-git-conflict-file', async (event, { gitRootPath, filePath, side }) => {
     return withWorkspaceGitOperationLock(gitRootPath, 'resolve conflict', () => resolveConflictFile(gitRootPath, filePath, side));
+  });
+
+  // Structured comparison of a conflicted workspace.yml (ours/theirs
+  // collections + scalar conflicts). Returns { ok: false, error } instead of
+  // throwing so the UI can fall back to manual resolution.
+  ipcMain.handle('renderer:get-workspace-yml-conflict', async (event, { gitRootPath }) => {
+    try {
+      const content = fs.readFileSync(path.join(gitRootPath, 'workspace.yml'), 'utf8');
+      return parseWorkspaceYmlConflict(content);
+    } catch (error) {
+      return { ok: false, error: error?.message || 'Failed to read workspace.yml' };
+    }
+  });
+
+  // Writes the merged workspace.yml chosen in the visual conflict resolver
+  // (through the workspace-config writer so normalization/relative-path rules
+  // hold), stages it, and refreshes the renderer's workspace config. The merge
+  // itself is completed later with the existing continue-merge action.
+  ipcMain.handle('renderer:resolve-workspace-yml-conflict', async (event, { gitRootPath, selections = {} }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'resolve conflict', async () => {
+      const workspaceFilePath = path.join(gitRootPath, 'workspace.yml');
+      const content = fs.readFileSync(workspaceFilePath, 'utf8');
+      const summary = parseWorkspaceYmlConflict(content);
+      if (!summary.ok) {
+        throw new Error(summary.error);
+      }
+
+      const mergedConfig = buildMergedWorkspaceYmlConfig(summary, selections);
+      await writeWorkspaceConfig(gitRootPath, mergedConfig);
+      await stageChanges(gitRootPath, [workspaceFilePath]);
+      notifyWorkspaceConfigUpdated(mainWindow, gitRootPath);
+      return { resolved: true };
+    });
   });
 
   ipcMain.handle('renderer:get-workspace-git-diff', async (event, { gitRootPath, filePath, staged }) => {
