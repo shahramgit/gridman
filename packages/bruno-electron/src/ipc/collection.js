@@ -61,7 +61,7 @@ const {
   isCollectionRootBruFile,
   scanForBrunoFiles
 } = require('../utils/filesystem');
-const { openCollectionsByPathname, registerScratchCollectionPath } = require('../app/collections');
+const { openCollectionsByPathname, registerScratchCollectionPath, isScratchCollectionPath } = require('../app/collections');
 const { generateUidBasedOnHash, stringifyJson, safeStringifyJSON, safeParseJSON } = require('../utils/common');
 const { getRequestUid, moveRequestUid, deleteRequestUid, syncExampleUidsCache } = require('../cache/requestUids');
 const { deleteCookiesForDomain, getDomainsWithCookies, addCookieForDomain, modifyCookieForDomain, parseCookieString, createCookieString, deleteCookie } = require('../utils/cookies');
@@ -95,9 +95,11 @@ const environmentSecretsStore = new EnvironmentSecretsStore();
 const collectionSecurityStore = new CollectionSecurityStore();
 const uiStateSnapshotStore = new UiStateSnapshotStore();
 
-// Size and file count limits to determine whether a collection should use the metadata-only indexed loader.
-// Keep the file threshold intentionally low: moderately large nested API collections are where recursive Redux
-// tree mounting and initial watcher events start causing visible sidebar lag.
+// Size and file count limits to determine whether a collection hydrates lazily (metadata index only,
+// requests load on demand) instead of eagerly (index + full initial scan). Every collection is indexed
+// either way (sidebar unification Phase 2). Keep the file threshold intentionally low: moderately large
+// nested API collections are where recursive Redux tree mounting and initial watcher events start
+// causing visible sidebar lag.
 const MAX_COLLECTION_SIZE_IN_MB = 20;
 const MAX_SINGLE_FILE_SIZE_IN_COLLECTION_IN_MB = 5;
 const MAX_COLLECTION_FILES_COUNT = 100;
@@ -403,6 +405,52 @@ const addIndexedCollectionWatcherAfterIdle = (watcher, mainWindow, collectionPat
       skipInitialLoad: true
     });
   }, INDEXED_COLLECTION_WATCHER_ATTACH_DELAY_MS);
+};
+
+// Sidebar unification Phase 2: every collection gets a metadata index (the
+// renderer always renders the indexed sidebar). Collection size only decides
+// HOW the tree hydrates afterwards:
+//   - small collections (eager): once the index is ready, the watcher runs its
+//     classic initial scan — fully parsed addFile/addDir events hydrate the
+//     tree and loadedRequestsByPath, so data-dependent features are instant,
+//     exactly like the classic loader behaved.
+//   - large collections (lazy): the watcher attaches after an idle delay with
+//     the initial scan skipped; requests hydrate on demand (unchanged).
+// Running the eager scan only after index-ready keeps the indexer's
+// uids/parents authoritative; hydration upserts then match nodes by uid.
+const startIndexedCollectionLoad = (watcher, mainWindow, { collectionUid, collectionPathname, brunoConfig, loadSessionId, lazyHydration }) => {
+  const attachEagerWatcher = () => {
+    watcher.addWatcher(mainWindow, collectionPathname, collectionUid, brunoConfig, false, false);
+  };
+
+  startCollectionIndex(mainWindow, {
+    collectionUid,
+    collectionPathname,
+    brunoConfig,
+    loadSessionId,
+    onReady: () => {
+      if (lazyHydration) {
+        addIndexedCollectionWatcherAfterIdle(
+          watcher,
+          mainWindow,
+          collectionPathname,
+          collectionUid,
+          brunoConfig,
+          lazyHydration
+        );
+      } else {
+        attachEagerWatcher();
+      }
+    },
+    onFailed: () => {
+      if (!lazyHydration) {
+        // Indexing failed on a small collection: still load it the classic way
+        // (the renderer falls back to the recursive tree when the index is
+        // marked failed), so the collection is never left empty and unwatched.
+        attachEagerWatcher();
+      }
+    }
+  });
 };
 
 // Get the base directory for transient request files (stored in app data directory)
@@ -2924,33 +2972,22 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
     const shouldLoadCollectionAsync = shouldUseIndexedCollectionLoad({ size, filesCount, maxFileSize });
 
-    if (shouldLoadCollectionAsync) {
-      startCollectionIndex(mainWindow, {
-        collectionUid,
-        collectionPathname,
-        brunoConfig,
-        loadSessionId,
-        onReady: () => {
-          addIndexedCollectionWatcherAfterIdle(
-            watcher,
-            mainWindow,
-            collectionPathname,
-            collectionUid,
-            brunoConfig,
-            shouldLoadCollectionAsync
-          );
-        }
-      });
-    } else {
-      watcher.addWatcher(mainWindow, collectionPathname, collectionUid, brunoConfig, false, shouldLoadCollectionAsync);
-    }
+    // Always index; size only decides eager vs lazy hydration.
+    startIndexedCollectionLoad(watcher, mainWindow, {
+      collectionUid,
+      collectionPathname,
+      brunoConfig,
+      loadSessionId,
+      lazyHydration: shouldLoadCollectionAsync
+    });
 
     // Add watcher for transient directory
     watcher.addTempDirectoryWatcher(mainWindow, tempDirectoryPath, collectionUid, collectionPathname);
 
     return {
       tempDirectoryPath,
-      indexed: shouldLoadCollectionAsync,
+      indexed: true,
+      lazyHydration: shouldLoadCollectionAsync,
       loadSessionId
     };
   });
@@ -3006,31 +3043,28 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     }
 
     try {
+      // Workspace scratch collections stay on the classic non-indexed load
+      // path: they are transient, tiny, and never rendered in the collections
+      // sidebar (their requests open as transient tabs), so building an index
+      // for them adds churn without any renderer benefit.
+      if (isScratchCollectionPath(collectionPath)) {
+        watcher.addWatcher(mainWindow, collectionPath, collectionUid, brunoConfig, false, false);
+        return { success: true };
+      }
+
       const { size, filesCount, maxFileSize } = await getCollectionStats(collectionPath);
 
       const shouldLoadCollectionAsync = shouldUseIndexedCollectionLoad({ size, filesCount, maxFileSize });
+      const loadSessionId = generateUidBasedOnHash(`${collectionUid}:${collectionPath}:${Date.now()}`);
 
-      if (shouldLoadCollectionAsync) {
-        const loadSessionId = generateUidBasedOnHash(`${collectionUid}:${collectionPath}:${Date.now()}`);
-        startCollectionIndex(mainWindow, {
-          collectionUid,
-          collectionPathname: collectionPath,
-          brunoConfig,
-          loadSessionId,
-          onReady: () => {
-            addIndexedCollectionWatcherAfterIdle(
-              watcher,
-              mainWindow,
-              collectionPath,
-              collectionUid,
-              brunoConfig,
-              shouldLoadCollectionAsync
-            );
-          }
-        });
-      } else {
-        watcher.addWatcher(mainWindow, collectionPath, collectionUid, brunoConfig, false, shouldLoadCollectionAsync);
-      }
+      // Always index; size only decides eager vs lazy hydration.
+      startIndexedCollectionLoad(watcher, mainWindow, {
+        collectionUid,
+        collectionPathname: collectionPath,
+        brunoConfig,
+        loadSessionId,
+        lazyHydration: shouldLoadCollectionAsync
+      });
 
       return { success: true };
     } catch (error) {

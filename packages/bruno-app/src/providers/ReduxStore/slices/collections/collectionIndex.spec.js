@@ -1,4 +1,14 @@
+// Some reducer paths (intermediate folder creation in applyCollectionAddFile)
+// call uuid(); jest resolves the hoisted ESM nanoid without customAlphabet,
+// so re-map it to the actual module (same pattern as openapi-spec.spec.js).
+jest.mock('nanoid', () => ({
+  ...jest.requireActual('nanoid')
+}));
+
 import reducer, {
+  createCollection,
+  collectionAddDirectoryEvent,
+  collectionAddFileEvent,
   collectionIndexStarted,
   collectionIndexBatchReceived,
   collectionIndexNodeMoved,
@@ -211,6 +221,54 @@ describe('collection index reducers (uidByPathname invariants)', () => {
     expect(Object.keys(index.uidByPathname)).toHaveLength(1);
   });
 
+  it('re-parents a node the watcher upserted before its index batch arrived', () => {
+    // Sidebar unification Phase 2: watcher file events can interleave with
+    // (re)index batches. A request hydrated before its parent folder is
+    // indexed lands provisionally at the root; the batch must move it under
+    // its real parent without duplicating the row.
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, createCollection({
+      uid: COLLECTION_UID,
+      name: 'api',
+      pathname: '/ws/collections/api',
+      items: [],
+      brunoConfig: { name: 'api' }
+    }));
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+
+    state = reducer(state, collectionAddFileEvent({
+      file: {
+        meta: { collectionUid: COLLECTION_UID, pathname: '/ws/collections/api/users/get-user.bru', name: 'get-user.bru' },
+        data: {
+          uid: 'r1',
+          name: 'get-user',
+          type: 'http-request',
+          seq: 1,
+          request: { method: 'GET', url: 'https://api.example.com/users/1' },
+          settings: {},
+          examples: []
+        },
+        partial: false,
+        loading: false,
+        size: 0.01
+      }
+    }));
+
+    let index = state.collectionIndexes[COLLECTION_UID];
+    expect(index.rootChildUids).toContain('r1');
+
+    state = reducer(
+      state,
+      collectionIndexBatchReceived({ collectionUid: COLLECTION_UID, loadSessionId: 's1', nodes: NODES, totalScanned: NODES.length })
+    );
+    index = state.collectionIndexes[COLLECTION_UID];
+
+    expect(index.nodesByUid.r1.parentUid).toBe('f1');
+    expect(index.rootChildUids).not.toContain('r1');
+    expect((index.childrenByParentUid.f1 || []).filter((uid) => uid === 'r1')).toHaveLength(1);
+    expect(index.uidByPathname['/ws/collections/api/users/get-user.bru']).toBe('r1');
+  });
+
   it('ignores batches from a stale load session', () => {
     let state = buildIndexedState();
     state = reducer(
@@ -224,5 +282,153 @@ describe('collection index reducers (uidByPathname invariants)', () => {
     const index = state.collectionIndexes[COLLECTION_UID];
     expect(index.nodesByUid.x1).toBeUndefined();
     expect(index.uidByPathname['/ws/collections/api/stale.bru']).toBeUndefined();
+  });
+});
+
+describe('eager hydration (small collections: index built + mounted tree)', () => {
+  // Phase 2 flow for small collections: the index is built first, then the
+  // watcher's classic initial scan replays fully parsed addDir/addFile events.
+  // The reducers must hydrate the tree, upsert loadedRequestsByPath (the
+  // request panel's render source), and keep the index consistent — same
+  // uids, same parents, no duplicate child links.
+  const COLLECTION_PATHNAME = '/ws/collections/api';
+
+  const buildParsedFile = ({ pathname, filename, uid, name, seq }) => ({
+    meta: { collectionUid: COLLECTION_UID, pathname, name: filename },
+    data: {
+      uid,
+      name,
+      type: 'http-request',
+      seq,
+      request: {
+        method: 'GET',
+        url: 'https://api.example.com/users',
+        headers: [],
+        params: [],
+        body: { mode: 'none' },
+        auth: { mode: 'none' },
+        vars: { req: [], res: [] },
+        assertions: [],
+        script: { req: '', res: '' },
+        tests: '',
+        docs: ''
+      },
+      settings: {},
+      examples: []
+    },
+    partial: false,
+    loading: false,
+    size: 0.01
+  });
+
+  const buildEagerHydratedState = () => {
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, createCollection({
+      uid: COLLECTION_UID,
+      name: 'api',
+      pathname: COLLECTION_PATHNAME,
+      items: [],
+      brunoConfig: { name: 'api' }
+    }));
+
+    // 1. Index built (main process indexes every collection now).
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+    state = reducer(
+      state,
+      collectionIndexBatchReceived({ collectionUid: COLLECTION_UID, loadSessionId: 's1', nodes: NODES, totalScanned: NODES.length })
+    );
+
+    // 2. Eager hydration: the watcher's initial scan replays the classic
+    // mount flow. The shared main-process uid cache keeps dir/file uids
+    // identical to the index node uids.
+    state = reducer(state, collectionAddDirectoryEvent({
+      dir: { meta: { collectionUid: COLLECTION_UID, pathname: '/ws/collections/api/users', name: 'users', seq: 1, uid: 'f1' } }
+    }));
+    state = reducer(state, collectionAddDirectoryEvent({
+      dir: { meta: { collectionUid: COLLECTION_UID, pathname: '/ws/collections/api/orders', name: 'orders', seq: 2, uid: 'f2' } }
+    }));
+    state = reducer(state, collectionAddFileEvent({
+      file: buildParsedFile({
+        pathname: '/ws/collections/api/users/get-user.bru',
+        filename: 'get-user.bru',
+        uid: 'r1',
+        name: 'get-user',
+        seq: 1
+      })
+    }));
+    state = reducer(state, collectionAddFileEvent({
+      file: buildParsedFile({
+        pathname: '/ws/collections/api/users/list-users.bru',
+        filename: 'list-users.bru',
+        uid: 'r2',
+        name: 'list-users',
+        seq: 2
+      })
+    }));
+    return state;
+  };
+
+  it('hydrates the collection tree with the index node uids', () => {
+    const state = buildEagerHydratedState();
+    const collection = state.collections.find((c) => c.uid === COLLECTION_UID);
+
+    const usersFolder = collection.items.find((item) => item.pathname === '/ws/collections/api/users');
+    expect(usersFolder).toBeDefined();
+    expect(usersFolder.uid).toBe('f1');
+    expect(usersFolder.type).toBe('folder');
+
+    const getUser = usersFolder.items.find((item) => item.pathname === '/ws/collections/api/users/get-user.bru');
+    expect(getUser).toBeDefined();
+    expect(getUser.uid).toBe('r1');
+    expect(getUser.partial).toBe(false);
+    expect(getUser.loading).toBe(false);
+    expect(getUser.request.method).toBe('GET');
+  });
+
+  it('upserts loadedRequestsByPath for every eagerly hydrated request', () => {
+    const state = buildEagerHydratedState();
+    const loaded = state.loadedRequestsByPath[COLLECTION_UID];
+
+    expect(loaded).toBeDefined();
+    const getUser = loaded['/ws/collections/api/users/get-user.bru'];
+    const listUsers = loaded['/ws/collections/api/users/list-users.bru'];
+    expect(getUser?.uid).toBe('r1');
+    expect(getUser?.request?.method).toBe('GET');
+    expect(listUsers?.uid).toBe('r2');
+  });
+
+  it('keeps the index consistent after hydration (no re-keying, no duplicate child links)', () => {
+    const state = buildEagerHydratedState();
+    const index = state.collectionIndexes[COLLECTION_UID];
+
+    // Same uids, same parents as the original index batch.
+    expect(index.nodesByUid.r1.parentUid).toBe('f1');
+    expect(index.nodesByUid.r2.parentUid).toBe('f1');
+    expect(index.uidByPathname['/ws/collections/api/users/get-user.bru']).toBe('r1');
+    expect(index.uidByPathname['/ws/collections/api/users']).toBe('f1');
+
+    // Hydration refreshed node metadata from the full parse.
+    expect(index.nodesByUid.r1.method).toBe('GET');
+
+    // No duplicate child links from the hydration upserts.
+    expect((index.childrenByParentUid.f1 || []).filter((uid) => uid === 'r1')).toHaveLength(1);
+    expect(index.rootChildUids.filter((uid) => uid === 'f1')).toHaveLength(1);
+    expect(index.rootChildUids).not.toContain('r1');
+    expect(index.rootChildUids).not.toContain('r2');
+  });
+
+  it('does not upsert loadedRequestsByPath for partial (lazy) files', () => {
+    let state = buildEagerHydratedState();
+    const partialFile = buildParsedFile({
+      pathname: '/ws/collections/api/orders/create-order.bru',
+      filename: 'create-order.bru',
+      uid: 'r3',
+      name: 'create-order',
+      seq: 1
+    });
+    partialFile.partial = true;
+    state = reducer(state, collectionAddFileEvent({ file: partialFile }));
+
+    expect(state.loadedRequestsByPath[COLLECTION_UID]['/ws/collections/api/orders/create-order.bru']).toBeUndefined();
   });
 });

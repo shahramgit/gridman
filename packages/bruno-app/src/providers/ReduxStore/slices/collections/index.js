@@ -3446,6 +3446,18 @@ export const collectionsSlice = createSlice({
       index.status = 'indexing';
       index.totalScanned = totalScanned || index.totalScanned;
       for (const node of nodes) {
+        // A watcher event may have upserted this node before its index batch
+        // arrived (file events interleave with (re)indexing now that every
+        // collection keeps a live index) — possibly under a different parent
+        // or pathname. Drop the stale links so the batch cannot duplicate the
+        // row or leave a dead uidByPathname key.
+        const existingNode = index.nodesByUid[node.uid];
+        if (existingNode) {
+          if ((existingNode.parentUid || null) !== (node.parentUid || null)) {
+            removeChildUid(index, existingNode.parentUid, node.uid);
+          }
+          rekeyIndexNodePathname(index, node, existingNode.pathname);
+        }
         setIndexNode(index, node);
         appendChildUid(index, node.parentUid, node.uid);
       }

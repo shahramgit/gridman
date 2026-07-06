@@ -16,6 +16,11 @@ const registerScratchCollectionPath = (scratchPath) => {
   scratchCollectionPaths.add(path.normalize(scratchPath));
 };
 
+// Check whether a path is a registered workspace scratch collection
+const isScratchCollectionPath = (collectionPath) => {
+  return scratchCollectionPaths.has(path.normalize(collectionPath));
+};
+
 // todo: bruno.json config schema validation errors must be propagated to the UI
 const configSchema = Yup.object({
   name: Yup.string().max(256, 'name must be 256 characters or less').required('name is required'),
@@ -197,5 +202,6 @@ module.exports = {
   openCollection,
   openCollectionDialog,
   openCollectionsByPathname,
-  registerScratchCollectionPath
+  registerScratchCollectionPath,
+  isScratchCollectionPath
 };

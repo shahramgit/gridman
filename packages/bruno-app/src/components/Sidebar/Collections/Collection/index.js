@@ -72,6 +72,18 @@ import useKeybinding from 'hooks/useKeybinding';
 // This prevents flicker from race condition between loading state and item batch updates
 const EMPTY_STATE_DELAY_MS = 300;
 
+// Temporary escape hatch for sidebar unification Phase 2 (kept for one
+// release): set localStorage 'gridman.classicSidebar' to any truthy value and
+// reload to force the classic recursive sidebar renderer.
+const isClassicSidebarForced = () => {
+  try {
+    return Boolean(window.localStorage?.getItem('gridman.classicSidebar'));
+  } catch (err) {
+    return false;
+  }
+};
+const classicSidebarForced = isClassicSidebarForced();
+
 const Collection = ({ collection, searchText }) => {
   const isOpenAPISyncEnabled = useBetaFeature(BETA_FEATURES.OPENAPI_SYNC);
   const { dropdownContainerRef } = useSidebarAccordion();
@@ -90,6 +102,11 @@ const Collection = ({ collection, searchText }) => {
   const dispatch = useDispatch();
   const isLoading = collection.isLoading;
   const collectionIndex = useSelector((state) => state.collections.collectionIndexes?.[collection.uid]);
+  // The indexed renderer is the default for every collection (the main process
+  // always builds an index now). The classic recursive tree remains only for
+  // the localStorage escape hatch and as a fallback when indexing failed —
+  // small collections are still eagerly hydrated, so the tree has data then.
+  const useIndexedSidebar = !classicSidebarForced && Boolean(collectionIndex) && collectionIndex.status !== 'failed';
   const collectionRef = useRef(null);
   // Only count persisted requests and folders; transients and file items
   // (bruno.json, .js scripts) don't affect empty state
@@ -202,7 +219,7 @@ const Collection = ({ collection, searchText }) => {
     }
 
     // The indexed renderer expands its own node chain and consumes the reveal.
-    if (collectionIndex) {
+    if (useIndexedSidebar) {
       return;
     }
 
@@ -505,7 +522,10 @@ const Collection = ({ collection, searchText }) => {
   }, [itemCount, isLoading, collection.mountStatus]);
 
   if (searchText && searchText.length) {
-    if (collectionIndex) {
+    // The index (always built now) is authoritative for search visibility even
+    // when the classic renderer is forced; fall back to the hydrated tree only
+    // when indexing failed.
+    if (collectionIndex && collectionIndex.status !== 'failed') {
       const normalizedSearchText = searchText.trim().toLowerCase();
       const collectionMatches = collection.name?.toLowerCase?.().includes(normalizedSearchText);
       if (collectionIndex.status === 'indexing' || collectionIndex.status === 'queued') {
@@ -770,7 +790,7 @@ const Collection = ({ collection, searchText }) => {
       <div>
         {!collectionIsCollapsed ? (
           <div>
-            {collectionIndex ? (
+            {useIndexedSidebar ? (
               <IndexedCollectionItems collectionUid={collection.uid} searchText={searchText} multiSelect={multiSelect} />
             ) : (
               <>

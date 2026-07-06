@@ -312,6 +312,9 @@ const runCollectionIndex = async (win, job) => {
       loadSessionId: job.loadSessionId,
       error: err?.message || 'Failed to index collection'
     });
+    if (typeof job.onFailed === 'function') {
+      job.onFailed(err);
+    }
   } finally {
     if (activeJobs.get(job.collectionUid)?.loadSessionId === job.loadSessionId) {
       activeJobs.delete(job.collectionUid);
@@ -339,7 +342,7 @@ const runNextQueuedIndex = () => {
   runCollectionIndex(next.win, next);
 };
 
-const startCollectionIndex = async (win, { collectionUid, collectionPathname, brunoConfig, loadSessionId, onReady }) => {
+const startCollectionIndex = async (win, { collectionUid, collectionPathname, brunoConfig, loadSessionId, onReady, onFailed }) => {
   cancelCollectionIndex(collectionUid);
 
   const job = {
@@ -353,7 +356,8 @@ const startCollectionIndex = async (win, { collectionUid, collectionPathname, br
     totalScanned: 0,
     lastProgressAt: 0,
     cancelled: false,
-    onReady
+    onReady,
+    onFailed
   };
 
   win.webContents.send('main:collection-index-started', {
