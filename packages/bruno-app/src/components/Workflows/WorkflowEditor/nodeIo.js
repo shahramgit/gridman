@@ -1,5 +1,7 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useDrag, useDrop } from 'react-dnd';
+import { useTheme } from 'styled-components';
 import { caretIndexFromOffset } from 'providers/ReduxStore/slices/workflows-canvas-helpers';
 
 // Shared node input/output helpers used by BOTH the editor's right-hand side
@@ -147,19 +149,61 @@ export const caretIndexFromDropPoint = (input, clientX) => {
   }
 };
 
+// Map a caret index back to a viewport pixel — the inverse of
+// caretIndexFromDropPoint, used to draw the insertion indicator while a field
+// hovers over the input. Clamped to the input's visible content box.
+export const caretPixelFromIndex = (input, index) => {
+  const text = input.value ?? '';
+  const clamped = Math.max(0, Math.min(index, text.length));
+  const rect = input.getBoundingClientRect();
+  try {
+    const style = window.getComputedStyle(input);
+    const context = getMeasureContext();
+    context.font = style.font
+      || `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`.trim();
+    const borderLeft = parseFloat(style.borderLeftWidth) || 0;
+    const contentLeft = rect.left + borderLeft + (parseFloat(style.paddingLeft) || 0) - (input.scrollLeft || 0);
+    const x = contentLeft + context.measureText(text.slice(0, clamped)).width;
+    const visibleLeft = rect.left + borderLeft + 1;
+    const visibleRight = rect.right - (parseFloat(style.borderRightWidth) || 0) - 1;
+    return Math.max(visibleLeft, Math.min(x, visibleRight));
+  } catch (error) {
+    return rect.left;
+  }
+};
+
 // Text input that also accepts a dragged input field. `getRef` maps the dropped
 // field to the reference string appropriate for this parameter. Keyed by value
 // so a commit re-seeds the uncommitted (uncontrolled) input. A drop INSERTS the
 // reference at the drop position within the live (possibly uncommitted) text —
-// it never replaces the whole value.
+// it never replaces the whole value. While a field hovers over the input, a
+// caret-style indicator marks exactly where the reference will land.
 export const DroppableInput = ({ value, placeholder, onCommit, getRef, type = 'text', style, className = '' }) => {
+  const theme = useTheme();
   const inputRef = useRef(null);
   // Value committed by the drop handler; lets the blur triggered right after a
   // drop skip its (duplicate) commit so a drop is exactly one doc write.
   const dropCommittedValueRef = useRef(null);
+  // { x, top, height } in viewport coords for the drop-position indicator.
+  const [dropIndicator, setDropIndicator] = useState(null);
 
   const [{ isOver, canDrop }, drop] = useDrop({
     accept: WORKFLOW_FIELD_DND,
+    hover: (field, monitor) => {
+      const input = inputRef.current;
+      const clientX = monitor.getClientOffset()?.x;
+      if (!input || typeof clientX !== 'number') {
+        return;
+      }
+      const index = caretIndexFromDropPoint(input, clientX);
+      const x = caretPixelFromIndex(input, index);
+      const rect = input.getBoundingClientRect();
+      setDropIndicator((previous) => (
+        previous && Math.abs(previous.x - x) < 0.5
+          ? previous
+          : { x, top: rect.top + 3, height: Math.max(8, rect.height - 6) }
+      ));
+    },
     drop: (field, monitor) => {
       const refText = getRef(field);
       const input = inputRef.current;
@@ -192,23 +236,51 @@ export const DroppableInput = ({ value, placeholder, onCommit, getRef, type = 't
     drop(element);
   }, [drop]);
 
+  // Drop the stale indicator once the drag leaves (the render gate already
+  // hides it; this just clears the state).
+  useEffect(() => {
+    if (!isOver && dropIndicator) {
+      setDropIndicator(null);
+    }
+  }, [isOver, dropIndicator]);
+
   return (
-    <input
-      ref={setRefs}
-      key={value}
-      type={type}
-      style={style}
-      className={`${className} ${isOver && canDrop ? 'wf-drop-over' : ''}`.trim()}
-      placeholder={placeholder}
-      defaultValue={value}
-      onBlur={(e) => {
-        if (dropCommittedValueRef.current !== null && e.target.value === dropCommittedValueRef.current) {
+    <>
+      <input
+        ref={setRefs}
+        key={value}
+        type={type}
+        style={style}
+        className={`${className} ${isOver && canDrop ? 'wf-drop-over' : ''}`.trim()}
+        placeholder={placeholder}
+        defaultValue={value}
+        onBlur={(e) => {
+          if (dropCommittedValueRef.current !== null && e.target.value === dropCommittedValueRef.current) {
+            dropCommittedValueRef.current = null;
+            return; // the drop handler already committed this exact value
+          }
           dropCommittedValueRef.current = null;
-          return; // the drop handler already committed this exact value
-        }
-        dropCommittedValueRef.current = null;
-        onCommit(e.target.value);
-      }}
-    />
+          onCommit(e.target.value);
+        }}
+      />
+      {isOver && canDrop && dropIndicator
+        ? createPortal(
+            <div
+              style={{
+                position: 'fixed',
+                left: dropIndicator.x - 1,
+                top: dropIndicator.top,
+                width: 2,
+                height: dropIndicator.height,
+                background: theme?.textLink || theme?.colors?.text?.yellow || 'currentColor',
+                borderRadius: 1,
+                pointerEvents: 'none',
+                zIndex: 60
+              }}
+            />,
+            document.body
+          )
+        : null}
+    </>
   );
 };
