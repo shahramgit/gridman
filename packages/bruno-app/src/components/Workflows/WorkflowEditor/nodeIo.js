@@ -172,6 +172,71 @@ export const caretPixelFromIndex = (input, index) => {
   }
 };
 
+// Textarea variant of DroppableInput for multiline parameters (script code).
+// A dropped field inserts its reference at the textarea's caret when it is
+// focused, otherwise appends at the end. No per-pixel drop indicator: mapping
+// a point to a caret in wrapped multiline text isn't worth the complexity
+// here — the single-line caret math in DroppableInput doesn't transfer.
+export const DroppableTextarea = ({ value, placeholder, onCommit, getRef, rows = 10, style, className = '' }) => {
+  const inputRef = useRef(null);
+  const dropCommittedValueRef = useRef(null);
+
+  const [{ isOver, canDrop }, drop] = useDrop({
+    accept: WORKFLOW_FIELD_DND,
+    drop: (field) => {
+      const refText = getRef(field);
+      const input = inputRef.current;
+      if (!input) {
+        onCommit(refText);
+        return;
+      }
+      const current = input.value ?? '';
+      // While dragging the textarea is not focused, so selectionStart is
+      // usually stale/0 — only honor it when the textarea has focus.
+      const index = document.activeElement === input && Number.isInteger(input.selectionStart)
+        ? input.selectionStart
+        : current.length;
+      const combined = `${current.slice(0, index)}${refText}${current.slice(index)}`;
+      input.value = combined;
+      try {
+        input.setSelectionRange(index + refText.length, index + refText.length);
+      } catch (error) {
+        // non-critical
+      }
+      dropCommittedValueRef.current = combined;
+      onCommit(combined);
+      input.blur();
+    },
+    collect: (monitor) => ({ isOver: monitor.isOver(), canDrop: monitor.canDrop() })
+  });
+
+  const setRefs = useCallback((element) => {
+    inputRef.current = element;
+    drop(element);
+  }, [drop]);
+
+  return (
+    <textarea
+      ref={setRefs}
+      key={value}
+      rows={rows}
+      style={style}
+      spellCheck={false}
+      className={`${className} ${isOver && canDrop ? 'wf-drop-over' : ''}`.trim()}
+      placeholder={placeholder}
+      defaultValue={value}
+      onBlur={(e) => {
+        if (dropCommittedValueRef.current !== null && e.target.value === dropCommittedValueRef.current) {
+          dropCommittedValueRef.current = null;
+          return; // the drop handler already committed this exact value
+        }
+        dropCommittedValueRef.current = null;
+        onCommit(e.target.value);
+      }}
+    />
+  );
+};
+
 // Text input that also accepts a dragged input field. `getRef` maps the dropped
 // field to the reference string appropriate for this parameter. Keyed by value
 // so a commit re-seeds the uncommitted (uncontrolled) input. A drop INSERTS the

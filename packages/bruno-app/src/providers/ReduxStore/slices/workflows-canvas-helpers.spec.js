@@ -1,8 +1,14 @@
 import {
   buildPasteFragment,
+  buildRunSeedVars,
   caretIndexFromOffset,
   collectClipboardPayload,
   describeDocChange,
+  interpolateTemplate,
+  isSuccessHttpStatus,
+  resolveLoopPlan,
+  resolveRequestOutcomePort,
+  resolveScriptVars,
   shouldCoalesceHistoryEntry
 } from './workflows-canvas-helpers';
 
@@ -207,5 +213,115 @@ describe('shouldCoalesceHistoryEntry', () => {
   it('respects a custom window', () => {
     expect(shouldCoalesceHistoryEntry(moveMeta(1000), moveMeta(1400), 300)).toBe(false);
     expect(shouldCoalesceHistoryEntry(moveMeta(1000), moveMeta(1200), 300)).toBe(true);
+  });
+});
+
+// --- Postman-Flows-inspired batch: run-time decision logic ---
+
+describe('buildRunSeedVars (scenario seeding)', () => {
+  it('seeds from doc.inputs when no scenario is active', () => {
+    const doc = { inputs: [{ name: 'env', value: 'dev' }, { name: 'n', value: '1' }] };
+    expect(buildRunSeedVars(doc)).toEqual({ env: 'dev', n: '1' });
+  });
+
+  it('layers the active scenario over the inputs (scenario wins per key)', () => {
+    const doc = {
+      inputs: [{ name: 'env', value: 'dev' }, { name: 'keep', value: 'yes' }],
+      scenarios: [{ name: 'prod', values: { env: 'prod', extra: 'x' } }],
+      activeScenario: 'prod'
+    };
+    expect(buildRunSeedVars(doc)).toEqual({ env: 'prod', keep: 'yes', extra: 'x' });
+  });
+
+  it('ignores an active scenario that does not exist', () => {
+    const doc = { inputs: [{ name: 'env', value: 'dev' }], scenarios: [], activeScenario: 'ghost' };
+    expect(buildRunSeedVars(doc)).toEqual({ env: 'dev' });
+  });
+
+  it('returns an empty object for an empty doc', () => {
+    expect(buildRunSeedVars(undefined)).toEqual({});
+    expect(buildRunSeedVars({})).toEqual({});
+  });
+});
+
+describe('resolveRequestOutcomePort (failure port routing)', () => {
+  it('routes a success out the main port', () => {
+    expect(resolveRequestOutcomePort({ ok: true, hasErrorConnection: true }))
+      .toEqual({ port: 'main', stepStatus: 'passed', handled: false, halt: false });
+  });
+
+  it('routes a failure out the error port when wired (handled, no halt)', () => {
+    expect(resolveRequestOutcomePort({ ok: false, hasErrorConnection: true }))
+      .toEqual({ port: 'error', stepStatus: 'failed', handled: true, halt: false });
+  });
+
+  it('halts the run on a failure with no error wiring (legacy behavior)', () => {
+    expect(resolveRequestOutcomePort({ ok: false, hasErrorConnection: false }))
+      .toEqual({ port: null, stepStatus: 'failed', handled: false, halt: true });
+  });
+});
+
+describe('isSuccessHttpStatus', () => {
+  it('treats 2xx/3xx as success and everything else as failure', () => {
+    expect([200, 201, 299, 300, 302, 399].map(isSuccessHttpStatus)).toEqual([true, true, true, true, true, true]);
+    expect([100, 199, 400, 404, 500].map(isSuccessHttpStatus)).toEqual([false, false, false, false, false]);
+  });
+});
+
+describe('resolveScriptVars', () => {
+  it('merges a plain object result into flow vars', () => {
+    expect(resolveScriptVars({ a: 1, b: 2 }, 'ignored')).toEqual({ a: 1, b: 2 });
+  });
+
+  it('stores a primitive under assignTo when set', () => {
+    expect(resolveScriptVars('sig', 'signature')).toEqual({ signature: 'sig' });
+    expect(resolveScriptVars(42, 'n')).toEqual({ n: 42 });
+  });
+
+  it('stores an array under assignTo (arrays are not plain-object merges)', () => {
+    expect(resolveScriptVars([1, 2], 'list')).toEqual({ list: [1, 2] });
+  });
+
+  it('writes nothing for a primitive without assignTo, or for null/undefined', () => {
+    expect(resolveScriptVars('x', '')).toEqual({});
+    expect(resolveScriptVars(null, 'a')).toEqual({});
+    expect(resolveScriptVars(undefined, 'a')).toEqual({});
+  });
+});
+
+describe('interpolateTemplate', () => {
+  it('resolves {{var}} placeholders and blanks missing ones', () => {
+    expect(interpolateTemplate('{{a}}/{{b}}', { a: 'x', b: 'y' })).toBe('x/y');
+    expect(interpolateTemplate('{{missing}}!', {})).toBe('!');
+    expect(interpolateTemplate('n={{n}}', { n: 3 })).toBe('n=3');
+  });
+});
+
+describe('resolveLoopPlan', () => {
+  it('plans a count loop from a literal count', () => {
+    expect(resolveLoopPlan({ mode: 'count', count: '3' }, {})).toEqual({ total: 3, items: null });
+  });
+
+  it('interpolates a {{template}} count against vars', () => {
+    expect(resolveLoopPlan({ mode: 'count', count: '{{times}}' }, { times: 4 })).toEqual({ total: 4, items: null });
+  });
+
+  it('caps a count loop at maxIterations', () => {
+    expect(resolveLoopPlan({ mode: 'count', count: '999', maxIterations: 10 }, {})).toEqual({ total: 10, items: null });
+  });
+
+  it('errors on a non-integer / negative count', () => {
+    expect(resolveLoopPlan({ mode: 'count', count: 'abc' }, {}).error).toMatch(/not a non-negative integer/);
+    expect(resolveLoopPlan({ mode: 'count', count: '-1' }, {}).error).toBeTruthy();
+  });
+
+  it('plans a list loop from an array flow var and caps it', () => {
+    expect(resolveLoopPlan({ mode: 'list', source: 'xs' }, { xs: ['a', 'b'] })).toEqual({ total: 2, items: ['a', 'b'] });
+    expect(resolveLoopPlan({ mode: 'list', source: 'xs', maxIterations: 1 }, { xs: ['a', 'b'] }))
+      .toEqual({ total: 1, items: ['a', 'b'] });
+  });
+
+  it('errors when the list source is not an array', () => {
+    expect(resolveLoopPlan({ mode: 'list', source: 'xs' }, { xs: 'nope' }).error).toMatch(/not an array/);
   });
 });

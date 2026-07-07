@@ -6,6 +6,7 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconClock,
+  IconCode,
   IconLoader2,
   IconNote,
   IconPin,
@@ -43,6 +44,7 @@ const TYPE_ICONS = {
   condition: IconArrowsSplit,
   delay: IconClock,
   loop: IconRepeat,
+  script: IconCode,
   note: IconNote
 };
 
@@ -54,6 +56,7 @@ const TYPE_LABELS = {
   condition: 'Condition',
   delay: 'Delay',
   loop: 'Loop',
+  script: 'Script',
   note: 'Note'
 };
 
@@ -88,11 +91,14 @@ const StatusChip = ({ result }) => {
   if (!result) {
     return null;
   }
+  // Failed-but-handled (request error port fired): warning styling, not red.
+  const handled = result.status === 'failed' && result.handled;
   return (
-    <span className={`ndv-status ndv-status-${result.status}`} data-testid="ndv-status">
+    <span className={`ndv-status ndv-status-${result.status}${handled ? ' ndv-status-handled' : ''}`} data-testid="ndv-status">
       {result.status === 'running' && <IconLoader2 size={12} className="animate-spin" />}
       <span>
         {result.status}
+        {handled ? ' · handled' : ''}
         {result.httpStatus ? ` · ${result.httpStatus}` : ''}
         {typeof result.iterations === 'number' ? ` · ${result.iterations}x` : ''}
         {formatDuration(result.durationMs) ? ` · ${formatDuration(result.durationMs)}` : ''}
@@ -113,7 +119,7 @@ const NodeDetailView = ({ pathname, node, drift, workflowInputs, onClose, onNavi
   const isStart = node.type === 'start';
   const result = run?.stepResults?.[node.id];
   const data = run?.nodeData?.[node.id];
-  const hasDropTargets = ['map', 'setvars', 'condition', 'loop'].includes(node.type);
+  const hasDropTargets = ['map', 'setvars', 'condition', 'loop', 'script'].includes(node.type);
   const canPinOutput = PINNABLE_OUTPUT_TYPES.has(node.type);
   const outputPinned = node.pinnedOutput !== undefined;
   const Icon = TYPE_ICONS[node.type] || IconWorld;

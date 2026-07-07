@@ -10,7 +10,7 @@ import {
 } from 'providers/ReduxStore/slices/workflows';
 import ActionIcon from 'ui/ActionIcon';
 import DriftDiffModal from './DriftDiffModal';
-import { DroppableInput } from './nodeIo';
+import { DroppableInput, DroppableTextarea } from './nodeIo';
 
 // The per-node-type parameter editors, shared by the editor's right-hand side
 // panel, the list view and the fullscreen Node Detail View — one
@@ -118,24 +118,93 @@ const DelayNodeEditor = ({ node, onChange }) => (
   </div>
 );
 
-const LoopNodeEditor = ({ node, onChange }) => (
+const LoopNodeEditor = ({ node, onChange }) => {
+  const mode = node.mode === 'count' ? 'count' : 'list';
+  const itemVar = node.itemVar || 'item';
+  return (
+    <div className="step-editor">
+      <div className="editor-row">
+        <select value={mode} onChange={(e) => onChange({ mode: e.target.value })} data-testid="workflow-loop-mode">
+          <option value="list">For each item</option>
+          <option value="count">Repeat N times</option>
+        </select>
+        <span className="editor-arrow">as</span>
+        <input type="text" placeholder="item" style={{ width: 80 }} defaultValue={node.itemVar} onBlur={(e) => onChange({ itemVar: e.target.value || 'item' })} />
+        {mode === 'list' ? (
+          <>
+            <span className="editor-arrow">in vars.</span>
+            <DroppableInput
+              placeholder="arrayVariable"
+              value={node.source}
+              onCommit={(val) => onChange({ source: val })}
+              getRef={(field) => field.varName || field.expr}
+            />
+          </>
+        ) : (
+          <>
+            <span className="editor-arrow">count</span>
+            <DroppableInput
+              placeholder="3 or {{n}}"
+              style={{ width: 100 }}
+              value={node.count}
+              onCommit={(val) => onChange({ count: val })}
+              getRef={(field) => field.template || field.expr}
+            />
+          </>
+        )}
+        <span className="editor-arrow">max</span>
+        <input type="number" min="1" style={{ width: 80 }} defaultValue={node.maxIterations} onBlur={(e) => onChange({ maxIterations: Number(e.target.value) || 100 })} />
+      </div>
+      <div className="editor-row">
+        <span className="editor-arrow">break if</span>
+        <DroppableInput
+          className="expression-input"
+          placeholder="optional — e.g. vars.done === true"
+          value={node.breakExpr}
+          onCommit={(val) => onChange({ breakExpr: val })}
+          getRef={(field) => field.expr}
+        />
+      </div>
+      <div className="editor-hint">
+        Wire the <strong>loop</strong> output through the body and back into this node; <strong>done</strong> continues after the loop.
+        {mode === 'count'
+          ? <> Runs the body N times (count resolves {'{{var}}'} templates); vars.{itemVar} is the iteration index.</>
+          : <> Exposes vars.{itemVar} and vars.{itemVar}Index.</>}
+        {' '}The break expression (res/vars in scope) is checked after each iteration and exits to <strong>done</strong> when true.
+      </div>
+    </div>
+  );
+};
+
+// Script node: plain JS with `res` (previous response) and `vars` in scope.
+// A returned plain object merges into flow vars; anything else lands in
+// vars[assignTo] when set. Plain textarea, not CodeMirror — the app's
+// CodeMirror wrapper is a heavyweight controlled component tuned for request
+// bodies; a monospace textarea matches the rest of these editors.
+const ScriptNodeEditor = ({ node, onChange }) => (
   <div className="step-editor">
+    <DroppableTextarea
+      className="script-code-input"
+      rows={10}
+      placeholder={'// res and vars are in scope\n// return { token: res.body.token }'}
+      value={node.code}
+      onCommit={(val) => onChange({ code: val })}
+      getRef={(field) => field.expr}
+    />
     <div className="editor-row">
-      <span className="editor-arrow">for each</span>
-      <input type="text" placeholder="item" style={{ width: 80 }} defaultValue={node.itemVar} onBlur={(e) => onChange({ itemVar: e.target.value || 'item' })} />
-      <span className="editor-arrow">in vars.</span>
-      <DroppableInput
-        placeholder="arrayVariable"
-        value={node.source}
-        onCommit={(val) => onChange({ source: val })}
-        getRef={(field) => field.varName || field.expr}
+      <span className="editor-arrow">assign result to vars.</span>
+      <input
+        type="text"
+        placeholder="(optional)"
+        style={{ width: 140 }}
+        defaultValue={node.assignTo}
+        onBlur={(e) => onChange({ assignTo: e.target.value.trim() })}
       />
-      <span className="editor-arrow">max</span>
-      <input type="number" min="1" style={{ width: 80 }} defaultValue={node.maxIterations} onBlur={(e) => onChange({ maxIterations: Number(e.target.value) || 100 })} />
     </div>
     <div className="editor-hint">
-      Wire the <strong>loop</strong> output through the body and back into this node; <strong>done</strong> continues after the loop.
-      Exposes vars.{node.itemVar || 'item'} and vars.{node.itemVar || 'item'}Index.
+      Runs JavaScript with <strong>res</strong> and <strong>vars</strong> in scope (5s limit).
+      Return a plain object to merge it into the flow variables; any other value is stored in
+      vars.{node.assignTo || '…'} when set. Errors fail the node.
     </div>
   </div>
 );
@@ -189,6 +258,10 @@ const RequestNodeSection = ({ pathname, node, drift }) => {
           <span>{node.pinned ? 'Unpin' : 'Pin'}</span>
         </button>
       </div>
+      <div className="editor-hint">
+        Wire the <strong>error</strong> output to handle non-2xx/3xx responses (or network errors) without failing
+        the run; when unwired, a failure stops the run.
+      </div>
     </div>
   );
 };
@@ -216,6 +289,7 @@ const NodeParamsEditor = ({ pathname, node, drift, onChange }) => {
   if (node.type === 'condition') return <ConditionNodeEditor node={node} onChange={onChange} />;
   if (node.type === 'delay') return <DelayNodeEditor node={node} onChange={onChange} />;
   if (node.type === 'loop') return <LoopNodeEditor node={node} onChange={onChange} />;
+  if (node.type === 'script') return <ScriptNodeEditor node={node} onChange={onChange} />;
   if (node.type === 'note') return <NoteNodeEditor node={node} onChange={onChange} />;
   return null;
 };

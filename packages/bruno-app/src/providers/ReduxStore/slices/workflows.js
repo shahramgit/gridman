@@ -12,9 +12,16 @@ import { openMultipleCollections } from 'providers/ReduxStore/slices/collections
 import {
   DOC_HISTORY_LIMIT,
   buildPasteFragment,
+  buildRunSeedVars,
   collectClipboardPayload,
   describeDocChange,
+  findActiveScenario,
+  interpolateTemplate,
+  isSuccessHttpStatus,
   PASTE_OFFSET,
+  resolveLoopPlan,
+  resolveRequestOutcomePort,
+  resolveScriptVars,
   shouldCoalesceHistoryEntry
 } from './workflows-canvas-helpers';
 
@@ -36,12 +43,13 @@ const initialState = {
 // notes are documentation only: no ports, never wired, never executed.
 const NODE_OUTPUT_PORTS = {
   start: ['main'],
-  request: ['main'],
+  request: ['main', 'error'],
   map: ['main'],
   setvars: ['main'],
   delay: ['main'],
   condition: ['true', 'false'],
   loop: ['loop', 'done'],
+  script: ['main'],
   note: []
 };
 
@@ -52,7 +60,8 @@ const NODE_DEFAULTS = {
   setvars: { name: 'Set variables', assignments: [{ name: '', value: '' }] },
   condition: { name: 'Condition', expression: 'res.status === 200' },
   delay: { name: 'Delay', durationMs: 1000 },
-  loop: { name: 'For each', source: '', itemVar: 'item', maxIterations: 100 },
+  loop: { name: 'For each', mode: 'list', source: '', itemVar: 'item', count: '3', breakExpr: '', maxIterations: 100 },
+  script: { name: 'Script', code: '', assignTo: '' },
   note: { name: 'Note', content: '', tint: 'yellow', size: { width: 200, height: 120 } }
 };
 
@@ -189,12 +198,13 @@ export const workflowsSlice = createSlice({
       }
     },
     workflowRunFinished: (state, action) => {
-      const { pathname, status, flowVars } = action.payload;
+      const { pathname, status, flowVars, scenario } = action.payload;
       const run = state.runs[pathname];
       if (run) {
         run.status = status;
         run.finishedAt = Date.now();
         run.flowVars = flowVars || {};
+        run.scenario = scenario || null;
       }
     },
     workflowHistoryLoaded: (state, action) => {
@@ -787,6 +797,45 @@ export const updateWorkflowInputs = (pathname, inputs) => async (dispatch, getSt
   await dispatch(saveWorkflowDoc(pathname, doc));
 };
 
+// Select the scenario runs seed their vars from (null/'' = Default, i.e.
+// plain doc.inputs). A doc write, so it persists and is undoable.
+export const setWorkflowActiveScenario = (pathname, scenarioName) => async (dispatch, getState) => {
+  const openWorkflowState = getState().workflows.open[pathname];
+  if (!openWorkflowState) {
+    return;
+  }
+
+  const doc = cloneDeep(openWorkflowState.doc);
+  if (scenarioName) {
+    doc.activeScenario = scenarioName;
+  } else {
+    delete doc.activeScenario;
+  }
+  await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
+// Replace the scenario list (add/rename/duplicate/delete/edit values from the
+// manage modal) in one undoable doc write. `activeScenario` follows renames
+// and deletes: pass the new name (or null to clear); leave undefined to keep
+// the current selection (normalization drops it if its scenario is gone).
+export const updateWorkflowScenarios = (pathname, scenarios, activeScenario) => async (dispatch, getState) => {
+  const openWorkflowState = getState().workflows.open[pathname];
+  if (!openWorkflowState) {
+    return;
+  }
+
+  const doc = cloneDeep(openWorkflowState.doc);
+  doc.scenarios = scenarios;
+  if (activeScenario !== undefined) {
+    if (activeScenario) {
+      doc.activeScenario = activeScenario;
+    } else {
+      delete doc.activeScenario;
+    }
+  }
+  await dispatch(saveWorkflowDoc(pathname, doc));
+};
+
 export const togglePinWorkflowNode = (pathname, nodeId) => async (dispatch, getState) => {
   const openWorkflowState = getState().workflows.open[pathname];
   if (!openWorkflowState) {
@@ -1090,13 +1139,13 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
   const outgoing = (nodeId, port) =>
     (doc.connections || []).find((conn) => conn.source === nodeId && conn.sourcePort === port)?.target || null;
 
-  // flow vars: seeded by workflow inputs, written by map nodes, read by
-  // condition nodes and {{var}} interpolation in request nodes
-  const flowVars = {};
-  for (const input of doc.inputs || []) {
-    if (input.name) {
-      flowVars[input.name] = input.value;
-    }
+  // flow vars: seeded by workflow inputs overlaid with the active scenario's
+  // values (scenario wins per key); written by map/setvars/script nodes, read
+  // by condition nodes and {{var}} interpolation in request nodes
+  const activeScenario = findActiveScenario(doc);
+  const flowVars = buildRunSeedVars(doc);
+  if (activeScenario) {
+    log('info', `Scenario: ${activeScenario.name}`);
   }
 
   let lastResponseContext = null;
@@ -1108,17 +1157,22 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
     dispatch(workflowRunStepFinished({ pathname, stepId: node.id, result }));
     const bits = [
       result.pinned ? 'pinned' : '',
+      result.handled ? 'handled via error port' : '',
       result.httpStatus ? `${result.httpStatus}` : '',
       typeof result.iterations === 'number' ? `${result.iterations}x` : '',
       result.durationMs ? `${Math.round(result.durationMs)}ms` : '',
       result.error || ''
     ].filter(Boolean).join(' ');
-    log(result.status === 'failed' ? 'error' : 'info', `${node.name}: ${result.status}${bits ? ` (${bits})` : ''}`);
+    // Handled failures (routed out the request's error port) log as warnings;
+    // only halting failures are errors.
+    const level = result.status === 'failed' ? (result.handled ? 'warn' : 'error') : 'info';
+    log(level, `${node.name}: ${result.status}${bits ? ` (${bits})` : ''}`);
     recordedNodes.push({
       id: node.id,
       name: node.name,
       type: node.type,
       status: result.status,
+      handled: result.handled,
       httpStatus: result.httpStatus,
       durationMs: result.durationMs,
       iterations: result.iterations,
@@ -1215,13 +1269,7 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
         if (!assignment.name) {
           continue;
         }
-        setVars[assignment.name] = String(assignment.value || '').replace(
-          /\{\{\s*([\w.-]+)\s*\}\}/g,
-          (_match, key) => {
-            const val = flowVars[key];
-            return val === undefined || val === null ? '' : String(val);
-          }
-        );
+        setVars[assignment.name] = interpolateTemplate(assignment.value || '', flowVars);
       }
       Object.assign(flowVars, setVars);
       recordData(setVars);
@@ -1244,22 +1292,41 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
     } else if (node.type === 'loop') {
       let stateForLoop = loopState[node.id];
       if (!stateForLoop) {
-        const source = flowVars[node.source];
-        if (!Array.isArray(source)) {
-          finishNode(node, { status: 'failed', error: `Loop source "${node.source}" is not an array flow variable` });
+        // First entry: plan the iterations (list mode iterates an array flow
+        // variable; count mode fires the loop port N times with the index as
+        // the item var).
+        const plan = resolveLoopPlan(node, flowVars);
+        if (plan.error) {
+          finishNode(node, { status: 'failed', error: plan.error });
           runStatus = 'failed';
           break;
         }
-        stateForLoop = { items: source, index: 0, startedAt: Date.now() };
+        stateForLoop = { items: plan.items, total: plan.total, index: 0, startedAt: Date.now() };
         loopState[node.id] = stateForLoop;
       } else {
         stateForLoop.index += 1;
+        // Optional early exit, evaluated after each completed iteration.
+        if (node.breakExpr) {
+          try {
+            const shouldBreak = await window.ipcRenderer.invoke('renderer:workflow-evaluate-expression', {
+              expression: node.breakExpr,
+              res: lastResponseContext,
+              vars: flowVars
+            });
+            if (shouldBreak) {
+              stateForLoop.total = stateForLoop.index; // exit to 'done' below
+            }
+          } catch (error) {
+            finishNode(node, { status: 'failed', error: error?.message || 'Invalid break expression' });
+            runStatus = 'failed';
+            break;
+          }
+        }
       }
 
-      const limit = Math.min(stateForLoop.items.length, node.maxIterations || 100);
-      if (stateForLoop.index < limit) {
+      if (stateForLoop.index < stateForLoop.total) {
         const itemVar = node.itemVar || 'item';
-        flowVars[itemVar] = stateForLoop.items[stateForLoop.index];
+        flowVars[itemVar] = stateForLoop.items ? stateForLoop.items[stateForLoop.index] : stateForLoop.index;
         flowVars[`${itemVar}Index`] = stateForLoop.index;
         firedPort = 'loop';
       } else {
@@ -1270,6 +1337,26 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
         });
         delete loopState[node.id];
         firedPort = 'done';
+      }
+    } else if (node.type === 'script') {
+      // Plain JS evaluated in the main-process vm sandbox (same as condition
+      // expressions) with `res` and `vars` in scope. A plain-object result
+      // merges into flow vars; other values land in vars[assignTo] when set.
+      const startedAt = Date.now();
+      try {
+        const value = await window.ipcRenderer.invoke('renderer:workflow-evaluate-script', {
+          code: node.code || '',
+          res: lastResponseContext,
+          vars: flowVars
+        });
+        const scriptVars = resolveScriptVars(value, node.assignTo);
+        Object.assign(flowVars, scriptVars);
+        recordData(value);
+        finishNode(node, { status: 'passed', durationMs: Date.now() - startedAt, mappedVars: scriptVars });
+      } catch (error) {
+        finishNode(node, { status: 'failed', error: error?.message || 'Script failed', durationMs: Date.now() - startedAt });
+        runStatus = 'failed';
+        break;
       }
     } else if (node.type === 'request') {
       if (!node.snapshot?.request) {
@@ -1293,30 +1380,57 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
       };
       const { collection, environment, runtimeVariables } = buildRunContextForNode(getState(), workspace, node);
       const startedAt = Date.now();
+      // A wired 'error' port turns failures into failed-but-handled steps
+      // that continue via that port instead of halting the run.
+      const hasErrorConnection = Boolean(outgoing(node.id, 'error'));
 
       try {
         const mergedRuntimeVariables = { ...(runtimeVariables || {}), ...flowVars };
         const response = await sendNetworkRequest(item, collection, environment, mergedRuntimeVariables);
         const httpStatus = Number(response?.status) || 0;
-        const failed = httpStatus >= 400;
+        // The redirect-followed final status decides: 2xx/3xx leaves via
+        // 'main', anything else is a failure.
+        const outcome = resolveRequestOutcomePort({ ok: isSuccessHttpStatus(httpStatus), hasErrorConnection });
         lastResponseContext = buildResponseContext(response);
 
         finishNode(node, {
-          status: failed ? 'failed' : 'passed',
+          status: outcome.stepStatus,
+          handled: outcome.handled || undefined,
           httpStatus,
           statusText: response?.statusText || '',
           durationMs: response?.duration ?? (Date.now() - startedAt),
           size: response?.size
         });
         recordData(lastResponseContext);
-        if (failed) {
+        if (outcome.halt) {
           runStatus = 'failed';
           break;
         }
+        firedPort = outcome.port;
       } catch (error) {
-        finishNode(node, { status: 'failed', error: error?.message || 'Request failed', durationMs: Date.now() - startedAt });
-        runStatus = 'failed';
-        break;
+        const outcome = resolveRequestOutcomePort({ ok: false, hasErrorConnection });
+        if (outcome.halt) {
+          finishNode(node, { status: 'failed', error: error?.message || 'Request failed', durationMs: Date.now() - startedAt });
+          runStatus = 'failed';
+          break;
+        }
+        // Network error routed out the error port: downstream still sees a
+        // response-shaped `res` carrying the error message.
+        lastResponseContext = {
+          status: 0,
+          statusText: '',
+          headers: {},
+          body: null,
+          error: error?.message || 'Request failed'
+        };
+        finishNode(node, {
+          status: 'failed',
+          handled: true,
+          error: error?.message || 'Request failed',
+          durationMs: Date.now() - startedAt
+        });
+        recordData(lastResponseContext);
+        firedPort = outcome.port;
       }
     } else {
       // unknown / start node mid-graph: just follow main
@@ -1340,7 +1454,7 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
   runCancellation.delete(pathname);
   log(runStatus === 'failed' ? 'error' : runStatus === 'cancelled' ? 'warn' : 'info',
     isSingleNodeRun ? `Node run ${runStatus}` : `Run ${runStatus}`);
-  dispatch(workflowRunFinished({ pathname, status: runStatus, flowVars }));
+  dispatch(workflowRunFinished({ pathname, status: runStatus, flowVars, scenario: activeScenario?.name || null }));
   if (runStatus === 'failed') {
     toast.error(isSingleNodeRun ? 'Node run failed' : 'Workflow run failed');
   }
@@ -1358,6 +1472,7 @@ export const runWorkflow = (pathname, options = {}) => async (dispatch, getState
         startedAt: runStartedAt,
         finishedAt: Date.now(),
         status: runStatus,
+        scenario: activeScenario?.name || null,
         steps: recordedNodes,
         flowVars: JSON.parse(JSON.stringify(flowVars))
       }

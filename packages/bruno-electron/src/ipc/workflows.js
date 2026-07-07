@@ -10,7 +10,8 @@ const {
   deleteWorkflow,
   exportWorkflowToPath,
   importWorkflowFromPath,
-  evaluateWorkflowExpression
+  evaluateWorkflowExpression,
+  evaluateWorkflowScript
 } = require('../workflows');
 const { WorkflowRunsStore } = require('../store/workflow-runs');
 
@@ -78,6 +79,12 @@ const registerWorkflowsIpc = (mainWindow) => {
 
   ipcMain.handle('renderer:workflow-evaluate-expression', async (event, { expression, res, vars }) => {
     return evaluateWorkflowExpression(expression, { res, vars });
+  });
+
+  // Script nodes: run plain JS in the same vm sandbox as condition
+  // expressions and return the (JSON-sanitized) result to the renderer.
+  ipcMain.handle('renderer:workflow-evaluate-script', async (event, { code, res, vars }) => {
+    return evaluateWorkflowScript(code, { res, vars });
   });
 
   ipcMain.handle('renderer:workflow-runs-list', async (event, { pathname }) => {

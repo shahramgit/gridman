@@ -8,6 +8,8 @@ import {
   IconCircleCheck,
   IconCircleX,
   IconClock,
+  IconCode,
+  IconCopy,
   IconHistory,
   IconLayoutList,
   IconLoader2,
@@ -24,6 +26,7 @@ import {
   IconTerminal2,
   IconTrash,
   IconVariable,
+  IconVersions,
   IconWand,
   IconWorld
 } from '@tabler/icons';
@@ -46,12 +49,14 @@ import {
   removeWorkflowNodes,
   revealWorkflowNode,
   runWorkflow,
+  setWorkflowActiveScenario,
   syncWorkflowNodes,
   togglePinWorkflowNode,
   undoWorkflowDoc,
   updateWorkflowInputs,
   updateWorkflowNode,
-  updateWorkflowNodePositions
+  updateWorkflowNodePositions,
+  updateWorkflowScenarios
 } from 'providers/ReduxStore/slices/workflows';
 import Modal from 'components/Modal';
 import ActionIcon from 'ui/ActionIcon';
@@ -66,7 +71,7 @@ import StyledWrapper from './StyledWrapper';
 
 // The single "continuation" output for each node type, used when auto-wiring
 // a freshly added node into a linear chain.
-const PRIMARY_PORT = { start: 'main', request: 'main', map: 'main', delay: 'main', condition: 'true', loop: 'loop' };
+const PRIMARY_PORT = { start: 'main', request: 'main', map: 'main', delay: 'main', condition: 'true', loop: 'loop', script: 'main' };
 
 const formatTime = (ts) => {
   if (!ts) {
@@ -94,8 +99,9 @@ const StepResult = ({ result }) => {
   if (!result) {
     return null;
   }
+  const handled = result.status === 'failed' && result.handled;
   return (
-    <span className={`step-result result-${result.status}`}>
+    <span className={`step-result result-${result.status}${handled ? ' result-handled' : ''}`}>
       {result.status === 'running' ? (
         <IconLoader2 size={14} className="animate-spin" />
       ) : result.status === 'passed' ? (
@@ -105,6 +111,7 @@ const StepResult = ({ result }) => {
       )}
       <span>
         {result.pinned ? 'pinned ' : ''}
+        {handled ? 'handled ' : ''}
         {result.httpStatus ? `${result.httpStatus} ` : ''}
         {typeof result.iterations === 'number' ? `${result.iterations}x ` : ''}
         {formatDuration(result.durationMs)}
@@ -155,6 +162,7 @@ const RunHistory = ({ runs }) => {
               {run.status}
               {run.finishedAt && run.startedAt ? ` in ${formatDuration(run.finishedAt - run.startedAt)}` : ''}
               {` - ${run.steps?.length || 0} step${(run.steps?.length || 0) === 1 ? '' : 's'}`}
+              {run.scenario ? ` - scenario: ${run.scenario}` : ''}
             </span>
           </summary>
           <div className="history-details">
@@ -177,7 +185,7 @@ const RunHistory = ({ runs }) => {
   );
 };
 
-const TYPE_ICONS = { request: IconWorld, map: IconWand, setvars: IconVariable, condition: IconArrowsSplit, delay: IconClock, loop: IconRepeat, note: IconNote };
+const TYPE_ICONS = { request: IconWorld, map: IconWand, setvars: IconVariable, condition: IconArrowsSplit, delay: IconClock, loop: IconRepeat, script: IconCode, note: IconNote };
 const VIEW_STORAGE_KEY = 'gridman.workflow-view';
 
 const PALETTE_ITEMS = [
@@ -186,6 +194,7 @@ const PALETTE_ITEMS = [
   { type: 'condition', label: 'Condition', icon: IconArrowsSplit },
   { type: 'delay', label: 'Delay', icon: IconClock },
   { type: 'loop', label: 'Loop', icon: IconRepeat },
+  { type: 'script', label: 'Script', icon: IconCode },
   { type: 'note', label: 'Note', icon: IconNote }
 ];
 
@@ -537,6 +546,7 @@ const WorkflowEditor = ({ pathname }) => {
     { id: 'add-condition', leftSection: IconArrowsSplit, label: 'Condition', onClick: () => handleAddNode('condition') },
     { id: 'add-delay', leftSection: IconClock, label: 'Delay', onClick: () => handleAddNode('delay') },
     { id: 'add-loop', leftSection: IconRepeat, label: 'Loop (for each)', onClick: () => handleAddNode('loop') },
+    { id: 'add-script', leftSection: IconCode, label: 'Script (JavaScript)', onClick: () => handleAddNode('script') },
     { id: 'add-note', leftSection: IconNote, label: 'Sticky note', onClick: () => handleAddNode('note') }
   ];
 
@@ -602,7 +612,7 @@ const WorkflowEditor = ({ pathname }) => {
 
         {!isNote && (() => {
           const data = run?.nodeData?.[selectedNode.id];
-          const editable = ['map', 'setvars', 'condition', 'loop'].includes(selectedNode.type);
+          const editable = ['map', 'setvars', 'condition', 'loop', 'script'].includes(selectedNode.type);
           return (
             <div className="node-io" data-testid="workflow-node-io">
               <details open>

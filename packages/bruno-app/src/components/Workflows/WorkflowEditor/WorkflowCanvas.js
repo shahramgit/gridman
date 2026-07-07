@@ -24,6 +24,7 @@ import {
   IconArrowForwardUp,
   IconArrowsSplit,
   IconClock,
+  IconCode,
   IconCopy,
   IconLayoutGridAdd,
   IconNote,
@@ -47,6 +48,10 @@ const STATUS_COLORS = {
   running: '#3b82f6'
 };
 
+// Failed-but-handled (routed out a request's error port): warning yellow, not
+// danger red — the run continued.
+const HANDLED_COLOR = '#eab308';
+
 const DRIFT_COLORS = {
   drifted: '#eab308',
   detached: '#ef4444'
@@ -68,7 +73,17 @@ const TYPE_ICONS = {
   condition: IconArrowsSplit,
   delay: IconClock,
   loop: IconRepeat,
+  script: IconCode,
   note: IconNote
+};
+
+// Output ports rendered per node type (mirror of NODE_OUTPUT_PORTS in the
+// workflows slice; notes render separately and never reach this map).
+const OUTPUT_PORTS = {
+  start: ['main'],
+  request: ['main', 'error'],
+  condition: ['true', 'false'],
+  loop: ['loop', 'done']
 };
 
 // Renderer-local clipboard shared by all workflow canvases (NOT the OS
@@ -103,7 +118,9 @@ const nodeTitle = (node) => {
     case 'delay':
       return `Delay ${node.durationMs}ms`;
     case 'loop':
-      return `For each ${node.itemVar || 'item'}`;
+      return node.mode === 'count' ? `Repeat ${node.count || '?'}x` : `For each ${node.itemVar || 'item'}`;
+    case 'script':
+      return node.name || 'Script';
     case 'start':
       return 'Start';
     default:
@@ -118,9 +135,11 @@ const nodeSubtitle = (node) => {
     case 'condition':
       return node.expression || '';
     case 'loop':
-      return `in vars.${node.source || '?'}`;
+      return node.mode === 'count' ? `${node.count || '?'} times` : `in vars.${node.source || '?'}`;
     case 'map':
       return (node.mappings || []).map((m) => m.target).filter(Boolean).join(', ');
+    case 'script':
+      return node.assignTo ? `→ vars.${node.assignTo}` : '';
     default:
       return '';
   }
@@ -209,8 +228,11 @@ const GridmanNode = ({ data, selected }) => {
     return <NoteNode data={data} selected={selected} />;
   }
 
+  // Handled failures (request error port fired) render as warnings, not
+  // run-stopping errors.
+  const isHandledFailure = result?.status === 'failed' && result?.handled;
   const borderColor = result && STATUS_COLORS[result.status]
-    ? STATUS_COLORS[result.status]
+    ? (isHandledFailure ? HANDLED_COLOR : STATUS_COLORS[result.status])
     : (drift && DRIFT_COLORS[drift] ? DRIFT_COLORS[drift] : 'var(--wf-node-border, #8886)');
 
   // Surface a failed node's error on hover without opening the panel.
@@ -218,13 +240,7 @@ const GridmanNode = ({ data, selected }) => {
     ? String(result.error).slice(0, 200)
     : undefined;
 
-  const outputs = node.type === 'condition'
-    ? ['true', 'false']
-    : node.type === 'loop'
-      ? ['loop', 'done']
-      : node.type === 'start'
-        ? ['main']
-        : ['main'];
+  const outputs = OUTPUT_PORTS[node.type] || ['main'];
 
   return (
     <div
@@ -272,10 +288,11 @@ const GridmanNode = ({ data, selected }) => {
       </div>
       {nodeSubtitle(node) ? <div className="wf-node-sub">{nodeSubtitle(node)}</div> : null}
       {result && (
-        <div className={`wf-node-result result-${result.status}`}>
+        <div className={`wf-node-result result-${result.status}${isHandledFailure ? ' result-handled' : ''}`}>
           {result.httpStatus ? `${result.httpStatus} ` : ''}
           {typeof result.iterations === 'number' ? `${result.iterations}x ` : ''}
           {result.status}
+          {isHandledFailure ? ' (handled)' : ''}
           {result.pinned ? ' (pinned)' : ''}
         </div>
       )}

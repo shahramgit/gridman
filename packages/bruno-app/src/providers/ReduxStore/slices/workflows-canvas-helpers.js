@@ -113,6 +113,100 @@ export const caretIndexFromOffset = (text, offsetX, measure) => {
   return value.length;
 };
 
+// --- Run-loop decision helpers ----------------------------------------------
+// Pure functions extracted from the runWorkflow thunk so the routing/seeding
+// semantics are unit-testable without Redux or IPC.
+
+// The scenario the doc's activeScenario points at, or null when unset/stale.
+export const findActiveScenario = (doc) => {
+  if (!doc?.activeScenario) {
+    return null;
+  }
+  return (doc.scenarios || []).find((scenario) => scenario && scenario.name === doc.activeScenario) || null;
+};
+
+// Seed flow vars for a run: doc.inputs are the baseline; the active
+// scenario's values are layered on top (scenario wins per key).
+export const buildRunSeedVars = (doc) => {
+  const vars = {};
+  for (const input of doc?.inputs || []) {
+    if (input?.name) {
+      vars[input.name] = input.value;
+    }
+  }
+  const scenario = findActiveScenario(doc);
+  for (const [key, value] of Object.entries(scenario?.values || {})) {
+    if (key) {
+      vars[key] = value;
+    }
+  }
+  return vars;
+};
+
+// A request outcome is a success when the final (redirect-followed) HTTP
+// status is 2xx/3xx.
+export const isSuccessHttpStatus = (status) => Number(status) >= 200 && Number(status) < 400;
+
+// Where does a request node's outcome leave the node?
+// - success -> 'main'
+// - failure with a wired 'error' port -> 'error' (failed-but-handled: the
+//   step records status 'failed' + handled true, but the run continues and
+//   does not count it as a run failure)
+// - failure with no 'error' wiring -> halt the run (legacy behavior)
+export const resolveRequestOutcomePort = ({ ok, hasErrorConnection }) => {
+  if (ok) {
+    return { port: 'main', stepStatus: 'passed', handled: false, halt: false };
+  }
+  if (hasErrorConnection) {
+    return { port: 'error', stepStatus: 'failed', handled: true, halt: false };
+  }
+  return { port: null, stepStatus: 'failed', handled: false, halt: true };
+};
+
+// Script node result -> flow var updates. A plain object merges into flow
+// vars; any other non-null value is stored under `assignTo` when set (and
+// ignored otherwise). null/undefined results never write anything.
+export const resolveScriptVars = (value, assignTo) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return { ...value };
+  }
+  if (value !== undefined && value !== null && assignTo) {
+    return { [assignTo]: value };
+  }
+  return {};
+};
+
+// Resolve {{var}} placeholders against flow vars (shared by setvars values
+// and the loop node's count template).
+export const interpolateTemplate = (value, vars) =>
+  String(value ?? '').replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (_match, key) => {
+    const val = vars?.[key];
+    return val === undefined || val === null ? '' : String(val);
+  });
+
+// Compute a loop node's iteration plan when it is first entered.
+// - list mode (default): iterate vars[source], which must be an array.
+// - count mode: fire the loop port N times; `items` is null and the item var
+//   is the iteration index. The count is a {{var}}-interpolated template that
+//   must resolve to a non-negative integer.
+// Both modes are capped by maxIterations. Returns { error } on bad input.
+export const resolveLoopPlan = (node, vars) => {
+  const maxIterations = node?.maxIterations || 100;
+  if (node?.mode === 'count') {
+    const raw = interpolateTemplate(node.count ?? '', vars).trim();
+    const count = Number(raw);
+    if (raw === '' || !Number.isInteger(count) || count < 0) {
+      return { error: `Loop count "${raw || node.count || ''}" is not a non-negative integer` };
+    }
+    return { total: Math.min(count, maxIterations), items: null };
+  }
+  const source = vars?.[node?.source];
+  if (!Array.isArray(source)) {
+    return { error: `Loop source "${node?.source}" is not an array flow variable` };
+  }
+  return { total: Math.min(source.length, maxIterations), items: source };
+};
+
 // Should a new history entry be folded into the previous one? Only when both
 // are position-only changes of the same node set, close together in time.
 export const shouldCoalesceHistoryEntry = (topMeta, nextMeta, windowMs = DOC_HISTORY_COALESCE_MS) => {
