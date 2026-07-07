@@ -490,6 +490,28 @@ const upsertCollectionIndexNodeFromItem = (state, collectionUid, item) => {
   const request = item.draft?.request || item.request || {};
 
   if (existingNode?.uid && existingNode.uid !== item.uid) {
+    // The same pathname is being re-indexed under a new uid — e.g. eager
+    // hydration (phase 2) upserts a folder from the renderer tree whose item
+    // uid differs from the indexer's. Migrate the old node's children onto the
+    // new uid instead of deleting the node and STRANDING them: deleteIndexNode
+    // does not touch childrenByParentUid[oldUid], so a folder whose children
+    // were correctly linked by the indexer would otherwise render empty even
+    // though the files are on disk (the "سرویس بیمه opens empty" bug).
+    const strandedChildren = index.childrenByParentUid[existingNode.uid] || [];
+    if (strandedChildren.length) {
+      const target = index.childrenByParentUid[item.uid] || [];
+      for (const childUid of strandedChildren) {
+        const child = index.nodesByUid[childUid];
+        if (child) {
+          child.parentUid = item.uid;
+        }
+        if (!target.includes(childUid)) {
+          target.push(childUid);
+        }
+      }
+      index.childrenByParentUid[item.uid] = target;
+    }
+    delete index.childrenByParentUid[existingNode.uid];
     removeChildUid(index, existingNode.parentUid, existingNode.uid);
     deleteIndexNode(index, existingNode);
   }

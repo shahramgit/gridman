@@ -432,3 +432,57 @@ describe('eager hydration (small collections: index built + mounted tree)', () =
     expect(state.loadedRequestsByPath[COLLECTION_UID]['/ws/collections/api/orders/create-order.bru']).toBeUndefined();
   });
 });
+
+describe('folder is not emptied when a hydration event re-indexes it under a new uid', () => {
+  // Real-world repro (Cesar App / "سرویس بیمه"): the indexer links a folder and
+  // its children correctly, then eager hydration upserts the same folder from
+  // the renderer tree whose item uid differs from the indexer's uid. The old
+  // uid-mismatch branch deleted the indexer folder node and STRANDED
+  // childrenByParentUid[oldUid], so the folder rendered empty even though its
+  // children were on disk. Cloning worked because the clone's fresh path had a
+  // single, consistent identity.
+  it('migrates the folder children to the new uid instead of stranding them', () => {
+    let state = reducer(undefined, { type: '@@INIT' });
+    // The renderer tree already holds the folder under a DIFFERENT uid than the
+    // indexer will assign (the divergence that triggers the bug).
+    state = reducer(state, createCollection({
+      uid: COLLECTION_UID,
+      name: 'api',
+      pathname: '/ws/collections/api',
+      items: [
+        { uid: 'tree-users', name: 'users', type: 'folder', pathname: '/ws/collections/api/users', seq: 1, items: [] }
+      ],
+      brunoConfig: { name: 'api' }
+    }));
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+    // Indexer builds the folder + its two children, correctly linked.
+    state = reducer(state, collectionIndexBatchReceived({
+      collectionUid: COLLECTION_UID,
+      loadSessionId: 's1',
+      nodes: NODES,
+      totalScanned: NODES.length
+    }));
+    expect(state.collectionIndexes[COLLECTION_UID].childrenByParentUid.f1).toEqual(['r1', 'r2']);
+
+    // Eager hydration: a watcher directory event re-indexes the folder from the
+    // renderer tree item, whose uid ('tree-users') differs from the indexer's ('f1').
+    state = reducer(state, collectionAddDirectoryEvent({
+      dir: { meta: { collectionUid: COLLECTION_UID, pathname: '/ws/collections/api/users', name: 'users' } }
+    }));
+
+    const index = state.collectionIndexes[COLLECTION_UID];
+    // Exactly one folder node survives at that pathname...
+    const folderUid = index.uidByPathname['/ws/collections/api/users'];
+    expect(folderUid).toBeTruthy();
+    // ...and it still owns both children (the folder is NOT empty).
+    expect((index.childrenByParentUid[folderUid] || []).slice().sort()).toEqual(['r1', 'r2']);
+    expect(index.nodesByUid.r1.parentUid).toBe(folderUid);
+    expect(index.nodesByUid.r2.parentUid).toBe(folderUid);
+    // No stranded child list under a now-deleted uid.
+    for (const [parentUid, children] of Object.entries(index.childrenByParentUid)) {
+      if (parentUid !== 'root' && !index.nodesByUid[parentUid]) {
+        expect(children).toHaveLength(0);
+      }
+    }
+  });
+});
