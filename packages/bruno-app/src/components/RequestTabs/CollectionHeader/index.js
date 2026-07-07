@@ -14,6 +14,7 @@ import {
   IconCheck,
   IconFolder,
   IconUpload,
+  IconFileExport,
   IconBrandGit
 } from '@tabler/icons';
 import OpenAPISyncIcon from 'components/Icons/OpenAPISync';
@@ -27,6 +28,7 @@ import Dropdown from 'components/Dropdown';
 import MenuDropdown from 'ui/MenuDropdown';
 import CloseWorkspace from 'components/Sidebar/CloseWorkspace';
 import CreateWorkspace from 'components/WorkspaceSidebar/CreateWorkspace';
+import ExportApiCatalog from 'components/WorkspaceSidebar/ExportApiCatalog';
 import EnvironmentSelector from 'components/Environments/EnvironmentSelector';
 import ToolHint from 'components/ToolHint';
 import JsSandboxMode from 'components/SecuritySettings/JsSandboxMode';
@@ -58,6 +60,7 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
   const [workspaceNameInput, setWorkspaceNameInput] = useState('');
   const [workspaceNameError, setWorkspaceNameError] = useState('');
   const [closeWorkspaceModalOpen, setCloseWorkspaceModalOpen] = useState(false);
+  const [exportApiCatalogModalOpen, setExportApiCatalogModalOpen] = useState(false);
   const [createWorkspaceModalOpen, setCreateWorkspaceModalOpen] = useState(false);
 
   const switcherRef = useRef();
@@ -272,6 +275,12 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
       });
   };
 
+  const handleExportApiCatalogClick = () => {
+    workspaceActionsRef.current?.hide();
+    if (!currentWorkspace?.uid) return;
+    setExportApiCatalogModalOpen(true);
+  };
+
   const handleOpenWorkspaceGit = () => {
     if (!currentWorkspace?.scratchCollectionUid) return;
     switcherRef.current?.hide();
@@ -419,6 +428,12 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
         <CloseWorkspace
           workspaceUid={currentWorkspace.uid}
           onClose={() => setCloseWorkspaceModalOpen(false)}
+        />
+      )}
+      {exportApiCatalogModalOpen && currentWorkspace?.uid && (
+        <ExportApiCatalog
+          workspaceUid={currentWorkspace.uid}
+          onClose={() => setExportApiCatalogModalOpen(false)}
         />
       )}
 
@@ -586,6 +601,12 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
                   <IconUpload size={16} strokeWidth={1.5} />
                 </div>
                 <span>Export</span>
+              </div>
+              <div className="dropdown-item" onClick={handleExportApiCatalogClick}>
+                <div className="dropdown-icon">
+                  <IconFileExport size={16} strokeWidth={1.5} />
+                </div>
+                <span>Export API catalog</span>
               </div>
               <div className="dropdown-item" onClick={handleCloseWorkspaceClick}>
                 <div className="dropdown-icon">

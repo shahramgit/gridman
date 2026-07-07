@@ -885,6 +885,32 @@ export const exportWorkspaceAction = (workspaceUid) => {
   };
 };
 
+export const exportWorkspaceCatalogAction = (workspaceUid, format) => {
+  return async (dispatch, getState) => {
+    const { workspaces } = getState().workspaces;
+    const workspace = workspaces.find((w) => w.uid === workspaceUid);
+
+    if (!workspace) {
+      throw new Error('Workspace not found');
+    }
+
+    if (!workspace.pathname) {
+      throw new Error('Workspace path not found');
+    }
+
+    const result = await ipcRenderer.invoke('renderer:export-workspace-catalog', {
+      workspacePath: workspace.pathname,
+      format
+    });
+
+    if (result?.canceled) {
+      return { canceled: true };
+    }
+
+    return result;
+  };
+};
+
 export const importWorkspaceAction = (zipFilePath, extractLocation) => {
   return async (dispatch) => {
     try {

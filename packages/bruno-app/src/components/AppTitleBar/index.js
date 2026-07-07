@@ -14,6 +14,7 @@ import {
   IconPlus,
   IconDownload,
   IconUpload,
+  IconFileExport,
   IconRefresh,
   IconSettings,
   IconMinus,
@@ -39,6 +40,7 @@ import ActionIcon from 'ui/ActionIcon';
 import IconSidebarToggle from 'components/Icons/IconSidebarToggle';
 import CreateWorkspace from 'components/WorkspaceSidebar/CreateWorkspace';
 import ImportWorkspace from 'components/WorkspaceSidebar/ImportWorkspace';
+import ExportApiCatalog from 'components/WorkspaceSidebar/ExportApiCatalog';
 import CloneGitRepository from 'components/Sidebar/CloneGitRespository';
 
 import IconBottombarToggle from 'components/Icons/IconBottombarToggle/index';
@@ -301,6 +303,7 @@ const AppTitleBar = () => {
   const [createWorkspaceModalOpen, setCreateWorkspaceModalOpen] = useState(false);
   const [importWorkspaceModalOpen, setImportWorkspaceModalOpen] = useState(false);
   const [cloneGitWorkspaceModalOpen, setCloneGitWorkspaceModalOpen] = useState(false);
+  const [exportApiCatalogModalOpen, setExportApiCatalogModalOpen] = useState(false);
   const [workspaceGitData, setWorkspaceGitData] = useState(null);
   const [workspaceGitLoading, setWorkspaceGitLoading] = useState(false);
   const [workspaceGitOperation, setWorkspaceGitOperation] = useState(null);
@@ -485,6 +488,14 @@ const AppTitleBar = () => {
       .catch((error) => toast.error(error?.message || 'Failed to export workspace'));
   };
 
+  const handleExportApiCatalog = () => {
+    if (!activeWorkspaceUid) {
+      toast.error('No active workspace to export');
+      return;
+    }
+    setExportApiCatalogModalOpen(true);
+  };
+
   const handleCloneGitWorkspace = () => {
     setCloneGitWorkspaceModalOpen(true);
   };
@@ -569,6 +580,12 @@ const AppTitleBar = () => {
         leftSection: IconUpload,
         label: 'Export workspace',
         onClick: handleExportWorkspace
+      },
+      {
+        id: 'export-api-catalog',
+        leftSection: IconFileExport,
+        label: 'Export API catalog',
+        onClick: handleExportApiCatalog
       },
       {
         id: 'manage-workspaces',
@@ -716,6 +733,12 @@ const AppTitleBar = () => {
       )}
       {importWorkspaceModalOpen && (
         <ImportWorkspace onClose={() => setImportWorkspaceModalOpen(false)} />
+      )}
+      {exportApiCatalogModalOpen && (
+        <ExportApiCatalog
+          workspaceUid={activeWorkspaceUid}
+          onClose={() => setExportApiCatalogModalOpen(false)}
+        />
       )}
       {cloneGitWorkspaceModalOpen && (
         <CloneGitRepository
