@@ -485,4 +485,48 @@ describe('folder is not emptied when a hydration event re-indexes it under a new
       }
     }
   });
+
+  it('survives the real eager-hydration ordering (child addFile before its folder)', () => {
+    // Production trigger on restart: the indexer links the folder + children,
+    // then eager hydration delivers a child's addFile BEFORE the folder event,
+    // so applyCollectionAddFile invents the intermediate folder with a random
+    // uuid (!= the indexer's uid). The folder event then upserts under that
+    // uuid — the exact divergence that used to empty the folder.
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, createCollection({
+      uid: COLLECTION_UID,
+      name: 'api',
+      pathname: '/ws/collections/api',
+      items: [],
+      brunoConfig: { name: 'api' }
+    }));
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+    state = reducer(state, collectionIndexBatchReceived({
+      collectionUid: COLLECTION_UID,
+      loadSessionId: 's1',
+      nodes: NODES,
+      totalScanned: NODES.length
+    }));
+
+    // Child request hydrates first — creates the tree folder under a fresh uuid.
+    state = reducer(state, collectionAddFileEvent({
+      file: {
+        meta: { collectionUid: COLLECTION_UID, pathname: '/ws/collections/api/users/get-user.bru', name: 'get-user.bru' },
+        data: { uid: 'r1', name: 'get-user', type: 'http-request', seq: 1, request: { method: 'GET', url: 'x' }, settings: {}, examples: [] },
+        partial: false,
+        loading: false,
+        size: 0.01
+      }
+    }));
+    // Then the folder's own directory event upserts it under the tree's uuid.
+    state = reducer(state, collectionAddDirectoryEvent({
+      dir: { meta: { collectionUid: COLLECTION_UID, pathname: '/ws/collections/api/users', name: 'users' } }
+    }));
+
+    const index = state.collectionIndexes[COLLECTION_UID];
+    const folderUid = index.uidByPathname['/ws/collections/api/users'];
+    expect((index.childrenByParentUid[folderUid] || []).slice().sort()).toEqual(['r1', 'r2']);
+    expect(index.nodesByUid.r1.parentUid).toBe(folderUid);
+    expect(index.nodesByUid.r2.parentUid).toBe(folderUid);
+  });
 });
