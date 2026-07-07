@@ -58,7 +58,7 @@ import { excludeDescendantItems } from 'utils/collections/multiSelect';
 import { uuid } from 'utils/common';
 import { foldSearchText } from '@usebruno/common';
 import { sortByNameThenSequence } from 'utils/common/index';
-import { scrollToTheActiveTab } from 'utils/tabs';
+import { scrollToTheActiveTab, doesTabMatchRequestNode } from 'utils/tabs';
 import ExampleItem from './CollectionItem/ExampleItem';
 import ExampleIcon from 'components/Icons/ExampleIcon';
 import CreateExampleModal from 'components/ResponseExample/CreateExampleModal';
@@ -282,11 +282,11 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
       return null;
     }
 
-    return state.tabs.tabs.find((tab) => (
-      tab.collectionUid === collectionUid
-      && tab.itemPathname
-      && normalizeForPathCompare(tab.itemPathname) === normalizeForPathCompare(node.pathname)
-    )) || null;
+    return state.tabs.tabs.find((tab) => doesTabMatchRequestNode(tab, {
+      collectionUid,
+      pathname: node.pathname,
+      uid: node.uid
+    })) || null;
   }, isEqual);
   const isTabForItemPresent = Boolean(existingRequestTab);
   const activeTabUid = useSelector((state) => state.tabs.activeTabUid);

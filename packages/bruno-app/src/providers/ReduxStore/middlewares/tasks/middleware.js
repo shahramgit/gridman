@@ -37,6 +37,11 @@ taskMiddleware.startListening({
                 collectionUid: collection.uid,
                 requestPaneTab: getDefaultRequestPaneTab(item),
                 preview: task?.preview ?? true,
+                // Carry the request's identity so the (indexed) sidebar
+                // recognizes this already-open tab instead of opening a
+                // duplicate on the first double-click after creation.
+                itemUid: item.uid,
+                itemPathname: task.itemPathname,
                 ...(item.isTransient ? { isTransient: true } : {})
               })
             );
