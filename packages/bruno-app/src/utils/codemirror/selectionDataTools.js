@@ -1,3 +1,12 @@
+import {
+  escapeJsonString,
+  getEpochDateDetails,
+  getJsonStringLiteral,
+  getSelectionDigests,
+  getUnicodeReport,
+  getUrlBreakdown
+} from './selectionInspectors';
+
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 const JWT_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
 const URL_ENCODED_RE = /%[0-9A-Fa-f]{2}/;
@@ -183,6 +192,10 @@ export const getSelectionDataToolState = (selection) => {
   const decodedBytes = canDecodeBase64 ? decodeBase64Bytes(base64Source) : null;
   const jwt = getSelectionJwtDetails(raw);
   const decodedUrl = decodeUrlSelection(raw);
+  const epochDate = getEpochDateDetails(raw);
+  const jsonStringValue = getJsonStringLiteral(raw);
+  const urlBreakdown = getUrlBreakdown(raw);
+  const unicode = getUnicodeReport(raw);
 
   return {
     raw,
@@ -196,11 +209,18 @@ export const getSelectionDataToolState = (selection) => {
     canEncodeBase64: raw.length > 0,
     byteSize: decodedBytes?.length || 0,
     base64Source,
+    epochDate,
+    urlBreakdown,
+    unicode,
+    canUnescapeJsonString: jsonStringValue !== null,
     decodeJwt: () => jwt?.decodedText || '',
     decodeUrl: () => decodedUrl || '',
     encodeUrl: () => encodeUrlSelection(raw),
     decodeBase64: () => decodeBase64ToText(base64Source),
-    encodeBase64: () => encodeUtf8ToBase64(raw)
+    encodeBase64: () => encodeUtf8ToBase64(raw),
+    escapeJsonString: () => escapeJsonString(raw),
+    unescapeJsonString: () => jsonStringValue ?? '',
+    computeDigests: () => getSelectionDigests(raw)
   };
 };
 
@@ -326,6 +346,9 @@ const getSelectionType = (tools) => {
   if (tools.canDecodeJwt) return 'JWT';
   if (tools.imagePreview && tools.trimmed.match(DATA_IMAGE_RE)) return 'Data URL image';
   if (tools.imagePreview) return 'Base64 image';
+  if (tools.epochDate?.kind === 'epoch') return 'Epoch timestamp';
+  if (tools.epochDate?.kind === 'date') return 'ISO-8601 date';
+  if (tools.urlBreakdown) return 'URL';
   if (tools.canDecodeBase64) return 'Base64';
   if (tools.canDecodeUrl) return 'URL encoded';
   return 'Plain text';
@@ -421,6 +444,228 @@ const createInspectorSection = (title, value, { rows = 4 } = {}) => {
   return { section, actions };
 };
 
+const SECTION_LABEL_CSS = 'font-weight:700;font-size:12px;text-transform:uppercase;color:#777;letter-spacing:.04em;';
+
+const createLabeledSection = (title) => {
+  const section = document.createElement('section');
+  section.style.cssText = 'display:flex;flex-direction:column;gap:7px;';
+
+  const label = document.createElement('div');
+  label.textContent = title;
+  label.style.cssText = SECTION_LABEL_CSS;
+  section.appendChild(label);
+
+  return section;
+};
+
+const createKeyValueGrid = (pairs) => {
+  const grid = document.createElement('div');
+  grid.style.cssText = [
+    'display:grid',
+    'grid-template-columns:repeat(auto-fit, minmax(140px, 1fr))',
+    'gap:8px',
+    'font-size:13px'
+  ].join(';');
+
+  pairs.forEach(([label, value]) => {
+    const item = document.createElement('div');
+    item.style.cssText = 'border:1px solid rgba(0,0,0,0.1);border-radius:8px;padding:9px;background:#fafafa;';
+    item.innerHTML = `<div style="font-size:11px;text-transform:uppercase;color:#777;font-weight:700;margin-bottom:3px;"></div><div style="font-weight:600;word-break:break-all;"></div>`;
+    item.children[0].textContent = label;
+    item.children[1].textContent = value;
+    grid.appendChild(item);
+  });
+
+  return grid;
+};
+
+const createEpochSection = (epochDate) => {
+  const section = createLabeledSection(epochDate.kind === 'epoch' ? 'Epoch to date' : 'Date to epoch');
+
+  epochDate.interpretations.forEach((interpretation) => {
+    const card = document.createElement('div');
+    card.style.cssText = 'border:1px solid rgba(0,0,0,0.1);border-radius:8px;padding:10px;background:#fafafa;display:flex;flex-direction:column;gap:6px;';
+
+    const heading = document.createElement('div');
+    heading.textContent = interpretation.label;
+    heading.style.cssText = 'font-size:11px;text-transform:uppercase;color:#777;font-weight:700;';
+    card.appendChild(heading);
+
+    const rows = epochDate.kind === 'epoch'
+      ? [
+          ['Local', interpretation.local],
+          ['UTC', interpretation.utc],
+          ['ISO', interpretation.iso]
+        ]
+      : [
+          ['Epoch seconds', String(interpretation.epochSeconds)],
+          ['Epoch millis', String(interpretation.epochMillis)],
+          ['Local', interpretation.local],
+          ['UTC', interpretation.utc]
+        ];
+
+    rows.forEach(([label, value]) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:8px;font-size:12px;';
+      row.innerHTML = `<span style="min-width:96px;color:#777;"></span><span style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;word-break:break-all;"></span>`;
+      row.children[0].textContent = label;
+      row.children[1].textContent = value;
+      card.appendChild(row);
+    });
+
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:2px;';
+    if (epochDate.kind === 'epoch') {
+      actions.appendChild(createInspectorButton('Copy ISO', async () => writeClipboard(interpretation.iso), true));
+    } else {
+      actions.appendChild(createInspectorButton('Copy epoch seconds', async () => writeClipboard(String(interpretation.epochSeconds)), true));
+      actions.appendChild(createInspectorButton('Copy epoch millis', async () => writeClipboard(String(interpretation.epochMillis))));
+    }
+    card.appendChild(actions);
+
+    section.appendChild(card);
+  });
+
+  return section;
+};
+
+const createUrlBreakdownSection = (urlBreakdown) => {
+  const section = createLabeledSection('URL breakdown');
+
+  section.appendChild(createKeyValueGrid([
+    ['Scheme', urlBreakdown.scheme],
+    ['Host', urlBreakdown.host],
+    ['Port', urlBreakdown.port ? `${urlBreakdown.port}${urlBreakdown.isDefaultPort ? ' (default)' : ''}` : '-'],
+    ['Path', urlBreakdown.path || '/'],
+    ...(urlBreakdown.hash ? [['Fragment', urlBreakdown.hash]] : [])
+  ]));
+
+  if (urlBreakdown.params.length) {
+    const table = document.createElement('table');
+    table.style.cssText = 'width:100%;border-collapse:collapse;font-size:12px;';
+    const header = document.createElement('tr');
+    ['Query param', 'Decoded value'].forEach((text) => {
+      const th = document.createElement('th');
+      th.textContent = text;
+      th.style.cssText = 'text-align:left;padding:6px 8px;border-bottom:1px solid rgba(0,0,0,0.14);color:#777;font-size:11px;text-transform:uppercase;';
+      header.appendChild(th);
+    });
+    table.appendChild(header);
+
+    urlBreakdown.params.forEach(({ key, value }) => {
+      const row = document.createElement('tr');
+      [key, value].forEach((text) => {
+        const td = document.createElement('td');
+        td.textContent = text;
+        td.style.cssText = 'padding:6px 8px;border-bottom:1px solid rgba(0,0,0,0.06);font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;word-break:break-all;vertical-align:top;';
+        row.appendChild(td);
+      });
+      table.appendChild(row);
+    });
+
+    section.appendChild(table);
+  }
+
+  return section;
+};
+
+const createUnicodeSection = ({ unicode, canReplace, replaceSelection }) => {
+  const section = createLabeledSection('Unicode inspector');
+
+  const invisibleSummary = unicode.hasInvisibles
+    ? unicode.invisibles.map(({ name, count }) => `${name.split(' ')[0]} × ${count}`).join(', ')
+    : 'None';
+
+  section.appendChild(createKeyValueGrid([
+    ['Code points', String(unicode.codePointCount)],
+    ['UTF-16 units', String(unicode.utf16Length)],
+    ['Normalization', unicode.normalizationForm],
+    ['Invisible chars', invisibleSummary]
+  ]));
+
+  if (unicode.hasInvisibles) {
+    const warning = document.createElement('div');
+    warning.style.cssText = 'font-size:12px;color:#c2410c;background:#fff7ed;border:1px solid rgba(194,65,12,0.25);border-radius:8px;padding:8px 10px;';
+    warning.textContent = unicode.invisibles.map(({ name, count }) => `${count}× ${name}`).join(' · ');
+    section.appendChild(warning);
+  }
+
+  if (!unicode.isNFC) {
+    const nfcSection = createInspectorSection('NFC normalized', unicode.nfc, { rows: 3 });
+    section.appendChild(nfcSection.section);
+  }
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+  actions.appendChild(createInspectorButton('Copy NFC normalized', async () => writeClipboard(unicode.nfc), !unicode.isNFC));
+  if (canReplace && !unicode.isNFC) {
+    actions.appendChild(createInspectorButton('Replace with NFC normalized', () => replaceSelection(unicode.nfc)));
+  }
+  section.appendChild(actions);
+
+  return section;
+};
+
+const createDigestsSection = (tools) => {
+  const details = document.createElement('details');
+  details.style.cssText = 'border:1px solid rgba(0,0,0,0.1);border-radius:8px;background:#fafafa;';
+
+  const summary = document.createElement('summary');
+  summary.textContent = 'Hash digests (md5 · sha1 · sha256)';
+  summary.style.cssText = `cursor:pointer;padding:10px;${SECTION_LABEL_CSS}`;
+  details.appendChild(summary);
+
+  const content = document.createElement('div');
+  content.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:2px 10px 10px;';
+  details.appendChild(content);
+
+  let computed = false;
+  details.addEventListener('toggle', async () => {
+    if (!details.open || computed) {
+      return;
+    }
+    computed = true;
+    content.textContent = 'Computing…';
+
+    const digests = await tools.computeDigests();
+    content.innerHTML = '';
+
+    [['md5', digests.md5], ['sha1', digests.sha1], ['sha256', digests.sha256]].forEach(([name, value]) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+
+      const label = document.createElement('span');
+      label.textContent = name;
+      label.style.cssText = 'min-width:52px;font-size:11px;text-transform:uppercase;color:#777;font-weight:700;';
+
+      const output = document.createElement('input');
+      output.type = 'text';
+      output.readOnly = true;
+      output.value = value || 'unavailable (Web Crypto missing)';
+      output.style.cssText = [
+        'flex:1',
+        'min-width:0',
+        'border:1px solid rgba(0,0,0,0.14)',
+        'border-radius:6px',
+        'background:#fff',
+        'padding:6px 8px',
+        'font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        'font-size:12px',
+        'color:#2b2b2b'
+      ].join(';');
+
+      row.appendChild(label);
+      row.appendChild(output);
+      if (value) {
+        row.appendChild(createInspectorButton('Copy', async () => writeClipboard(value)));
+      }
+      content.appendChild(row);
+    });
+  });
+
+  return details;
+};
+
 const showInspectorModal = ({ inspector, tools, canReplace, replaceSelection }) => {
   const body = inspector.querySelector('[data-body]');
   const summary = inspector.querySelector('[data-summary]');
@@ -486,6 +731,7 @@ const showInspectorModal = ({ inspector, tools, canReplace, replaceSelection }) 
   if (canReplace) {
     original.actions.appendChild(createInspectorButton('Replace with Base64', () => replaceSelection(tools.encodeBase64())));
   }
+  original.actions.appendChild(createInspectorButton('Copy as JSON string', async () => writeClipboard(tools.escapeJsonString())));
   body.appendChild(original.section);
 
   if (tools.canDecodeJwt) {
@@ -514,6 +760,29 @@ const showInspectorModal = ({ inspector, tools, canReplace, replaceSelection }) 
     }
     body.appendChild(decoded.section);
   }
+
+  if (tools.epochDate) {
+    body.appendChild(createEpochSection(tools.epochDate));
+  }
+
+  if (tools.canUnescapeJsonString) {
+    const unescapedValue = tools.unescapeJsonString();
+    const unescaped = createInspectorSection('JSON unescaped', unescapedValue, { rows: 4 });
+    if (canReplace) {
+      unescaped.actions.appendChild(createInspectorButton('Replace with unescaped', () => replaceSelection(unescapedValue), true));
+    }
+    body.appendChild(unescaped.section);
+  }
+
+  if (tools.urlBreakdown) {
+    body.appendChild(createUrlBreakdownSection(tools.urlBreakdown));
+  }
+
+  if (tools.unicode?.interesting) {
+    body.appendChild(createUnicodeSection({ unicode: tools.unicode, canReplace, replaceSelection }));
+  }
+
+  body.appendChild(createDigestsSection(tools));
 
   inspector.style.display = 'flex';
 };
@@ -579,6 +848,24 @@ const renderSelectionMenu = ({
     addMenuButton(menu, 'Copy as Base64', async () => writeClipboard(tools.encodeBase64()));
     if (canReplace) {
       addMenuButton(menu, 'Replace with Base64', () => replaceSelection(tools.encodeBase64()));
+    }
+  }
+  if (tools.epochDate?.kind === 'epoch') {
+    addMenuButton(menu, 'Copy as ISO date', async () => writeClipboard(tools.epochDate.interpretations[0].iso));
+  }
+  if (tools.epochDate?.kind === 'date') {
+    addMenuButton(menu, 'Copy as epoch millis', async () => writeClipboard(String(tools.epochDate.interpretations[0].epochMillis)));
+  }
+  if (tools.canUnescapeJsonString) {
+    addMenuButton(menu, 'Copy JSON unescaped', async () => writeClipboard(tools.unescapeJsonString()));
+    if (canReplace) {
+      addMenuButton(menu, 'Replace with JSON unescaped', () => replaceSelection(tools.unescapeJsonString()));
+    }
+  }
+  if (tools.unicode?.interesting && !tools.unicode.isNFC) {
+    addMenuButton(menu, 'Copy NFC normalized', async () => writeClipboard(tools.unicode.nfc));
+    if (canReplace) {
+      addMenuButton(menu, 'Replace with NFC normalized', () => replaceSelection(tools.unicode.nfc));
     }
   }
 
