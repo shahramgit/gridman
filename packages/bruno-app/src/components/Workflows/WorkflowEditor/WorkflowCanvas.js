@@ -746,10 +746,13 @@ const CanvasInner = ({ doc, drift, stepResults, handlers, onSelectNodes, canUndo
         onNodeDragStop={onNodeDragStop}
         onNodeDoubleClick={onNodeDoubleClick}
         onSelectionChange={handleSelectionChange}
-        selectionOnDrag
-        panOnDrag={[1, 2]}
+        // Left-drag pans the canvas (what users expect from a map-like
+        // surface); hold Shift and drag for box selection.
+        panOnDrag
+        selectionOnDrag={false}
+        selectionKeyCode="Shift"
         selectionMode={SelectionMode.Partial}
-        multiSelectionKeyCode={['Meta', 'Control', 'Shift']}
+        multiSelectionKeyCode={['Meta', 'Control']}
         deleteKeyCode={shortcutsDisabled ? null : ['Backspace', 'Delete']}
         fitView
         proOptions={{ hideAttribution: true }}
