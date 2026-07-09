@@ -29,15 +29,17 @@ const createContentType = (mode) => {
  * @returns {Object[]} - An array of enabled headers with normalized names and values.
  */
 const createHeaders = (request, headers) => {
+  // Preserve the user's original header-name casing; generated snippets
+  // should contain headers exactly as the user typed them.
   const enabledHeaders = headers
     .filter((header) => header.enabled)
     .map((header) => ({
-      name: header.name.toLowerCase(),
+      name: header.name,
       value: header.value
     }));
 
   const contentType = createContentType(request.body?.mode);
-  if (contentType !== '' && !enabledHeaders.some((header) => header.name === 'content-type')) {
+  if (contentType !== '' && !enabledHeaders.some((header) => header.name.toLowerCase() === 'content-type')) {
     enabledHeaders.push({ name: 'content-type', value: contentType });
   }
 

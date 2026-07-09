@@ -611,6 +611,7 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
 
 function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, tabIndex, collection, loadedRequestsByPath, dispatch, dropdownContainerRef }) {
   const [showCloneRequestModal, setShowCloneRequestModal] = useState(false);
+  const [showSaveAsModal, setShowSaveAsModal] = useState(false);
   const [showAddNewRequestModal, setShowAddNewRequestModal] = useState(false);
 
   // Returns the tab-label's position for dropdown positioning.
@@ -754,6 +755,14 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
       onClick: () => setShowCloneRequestModal(true)
     },
     {
+      id: 'save-as',
+      label: 'Save As',
+      // Saves the request's current (possibly unsaved) state into a new
+      // request file; the original request and its draft are left untouched.
+      onClick: () => setShowSaveAsModal(true),
+      disabled: !currentTabItem
+    },
+    {
       id: 'revert-changes',
       label: 'Revert Changes',
       onClick: handleRevertChanges,
@@ -817,6 +826,17 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
           item={currentTabItem}
           collectionUid={collection.uid}
           onClose={() => setShowCloneRequestModal(false)}
+        />
+      )}
+
+      {showSaveAsModal && (
+        <CloneCollectionItem
+          item={currentTabItem}
+          collectionUid={findCollectionForTab(currentTab)?.uid || collection.uid}
+          title="Save As"
+          confirmText="Save"
+          successText="Request saved as a new request!"
+          onClose={() => setShowSaveAsModal(false)}
         />
       )}
 

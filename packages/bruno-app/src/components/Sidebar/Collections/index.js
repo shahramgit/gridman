@@ -1,13 +1,16 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { useSelector } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
+import toast from 'react-hot-toast';
+import { IconBox, IconLoader2 } from '@tabler/icons';
 import Collection from './Collection';
 import StyledWrapper from './StyledWrapper';
 import CreateOrOpenCollection from './CreateOrOpenCollection';
 import CollectionSearch from './CollectionSearch/index';
 import InlineCollectionCreator from './InlineCollectionCreator';
 import WorkspaceSearchResults from './WorkspaceSearchResults';
-import { normalizePath } from 'utils/common/path';
+import { openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
 import { isScratchCollection } from 'utils/collections';
+import { buildSidebarEntries, getSidebarEntryName } from 'utils/collections/sidebarEntries';
 
 const SEARCH_OPTIONS_STORAGE_KEY = 'gridman.sidebar-search-options';
 
@@ -36,6 +39,38 @@ const readStoredSearchOptions = () => {
   } catch (error) {
     return DEFAULT_SEARCH_OPTIONS;
   }
+};
+
+// Placeholder row for a collection registered in workspace.yml whose data is
+// not loaded (still opening, or the open failed). Registered collections must
+// never vanish from the sidebar; clicking the row (re)opens the collection.
+const UnloadedCollection = ({ entry, workspacePath }) => {
+  const dispatch = useDispatch();
+  const [isOpening, setIsOpening] = useState(false);
+  const name = getSidebarEntryName(entry);
+  const notFoundLocally = Boolean(entry.workspaceCollection?.notFoundLocally);
+
+  const handleClick = () => {
+    if (isOpening || notFoundLocally) return;
+    setIsOpening(true);
+    dispatch(openMultipleCollections([entry.workspaceCollection.path], { workspacePath }))
+      .catch(() => toast.error(`Unable to open collection "${name}"`))
+      .finally(() => setIsOpening(false));
+  };
+
+  return (
+    <div
+      className="flex items-center py-1 pl-2 pr-2 gap-1 cursor-pointer opacity-60 hover:opacity-100"
+      title={notFoundLocally ? `${entry.workspaceCollection.path} (not found on disk)` : entry.workspaceCollection.path}
+      data-testid="sidebar-unloaded-collection-row"
+      onClick={handleClick}
+    >
+      <IconBox size={16} strokeWidth={1.5} style={{ minWidth: 16 }} />
+      <span className="truncate">{name}</span>
+      {isOpening ? <IconLoader2 className="animate-spin" size={14} strokeWidth={1.5} /> : null}
+      {notFoundLocally ? <span className="text-xs text-muted whitespace-nowrap">not found</span> : null}
+    </div>
+  );
 };
 
 const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismissCreate, onOpenAdvancedCreate }) => {
@@ -72,38 +107,22 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
     }).catch(() => {});
   }, [showSearch, activeWorkspace?.pathname]);
 
-  const loadedByPath = useMemo(() => {
-    const map = new Map();
-    for (const c of collections) {
-      if (isScratchCollection(c, workspaces)) continue;
-      if (c.pathname) map.set(normalizePath(c.pathname), c);
-    }
-    return map;
+  const nonScratchCollections = useMemo(() => {
+    return collections.filter((c) => !isScratchCollection(c, workspaces));
   }, [collections, workspaces]);
 
-  // Build the sidebar list in workspace.yml order by default while keeping Git scoped to the workspace.
+  // Build the sidebar list in workspace.yml order by default while keeping Git
+  // scoped to the workspace. Every registered collection is listed: loaded
+  // ones render the full Collection row, not-yet-loaded ones render a
+  // placeholder that opens the collection on click (see buildSidebarEntries).
   const sidebarEntries = useMemo(() => {
     if (!activeWorkspace?.collections?.length) return [];
-
-    const entries = [];
-    for (const wc of activeWorkspace.collections) {
-      if (!wc.path) continue;
-      const loaded = loadedByPath.get(normalizePath(wc.path));
-      if (loaded) {
-        entries.push({ collection: loaded, key: loaded.uid, type: 'loaded' });
-      }
-    }
-
-    if (collectionSortOrder === 'alphabetical' || collectionSortOrder === 'reverseAlphabetical') {
-      const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-      entries.sort((a, b) => {
-        const result = collator.compare(a.collection?.name || '', b.collection?.name || '');
-        return collectionSortOrder === 'reverseAlphabetical' ? -result : result;
-      });
-    }
-
-    return entries;
-  }, [activeWorkspace, collectionSortOrder, loadedByPath]);
+    return buildSidebarEntries({
+      workspaceCollections: activeWorkspace.collections,
+      loadedCollections: nonScratchCollections,
+      collectionSortOrder
+    });
+  }, [activeWorkspace, collectionSortOrder, nonScratchCollections]);
 
   const hasWorkspaceCollections = activeWorkspace?.collections?.length > 0;
 
@@ -145,7 +164,11 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
           <WorkspaceSearchResults searchText={searchText} searchOptions={searchOptions} activeWorkspace={activeWorkspace} />
         ) : (
           sidebarEntries.map((entry) => (
-            <Collection searchText={searchText} collection={entry.collection} key={entry.key} />
+            entry.type === 'loaded' ? (
+              <Collection searchText={searchText} collection={entry.collection} key={entry.key} />
+            ) : (
+              <UnloadedCollection entry={entry} workspacePath={activeWorkspace?.pathname} key={entry.key} />
+            )
           ))
         )}
       </div>

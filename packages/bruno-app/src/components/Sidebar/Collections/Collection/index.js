@@ -21,7 +21,10 @@ import {
   IconSettings,
   IconTerminal2,
   IconFolder,
-  IconBook
+  IconBook,
+  IconSortAZ,
+  IconSortZA,
+  IconClock
 } from '@tabler/icons';
 import OpenAPISyncIcon from 'components/Icons/OpenAPISync';
 import { toggleCollection, collapseFullCollection, toggleCollectionItem } from 'providers/ReduxStore/slices/collections';
@@ -35,14 +38,14 @@ import {
   saveCollectionSecurityConfig,
   renameCollection
 } from 'providers/ReduxStore/slices/collections/actions';
-import { useDispatch, useSelector } from 'react-redux';
+import { useDispatch, useSelector, useStore } from 'react-redux';
 import { addTab, makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
 import { setFocusedSidebarPath } from 'providers/ReduxStore/slices/app';
 import toast from 'react-hot-toast';
 import NewRequest from 'components/Sidebar/NewRequest';
 import NewFolder from 'components/Sidebar/NewFolder';
 import CollectionItem from './CollectionItem';
-import IndexedCollectionItems from './IndexedCollectionItems';
+import IndexedCollectionItems, { sortIndexedChildren } from './IndexedCollectionItems';
 import ImportIntoFolder from './ImportIntoFolder';
 import SearchHighlight from '../SearchHighlight';
 import RemoveCollection from './RemoveCollection';
@@ -100,6 +103,7 @@ const Collection = ({ collection, searchText }) => {
   const [isKeyboardFocused, setIsKeyboardFocused] = useState(false);
   const [showEmptyState, setShowEmptyState] = useState(false);
   const dispatch = useDispatch();
+  const store = useStore();
   const isLoading = collection.isLoading;
   const collectionIndex = useSelector((state) => state.collections.collectionIndexes?.[collection.uid]);
   // The indexed renderer is the default for every collection (the main process
@@ -379,6 +383,13 @@ const Collection = ({ collection, searchText }) => {
     });
   };
 
+  // Sort the collection's root-level children through the same resequence
+  // path folders use (index parent key 'root' = the collection root).
+  const handleSortCollectionChildren = (mode = 'name-asc') => {
+    ensureCollectionIsMounted();
+    return sortIndexedChildren({ store, dispatch, collectionUid: collection.uid, parentKey: 'root', mode });
+  };
+
   const handlePasteItem = () => {
     dispatch(pasteItem(collection.uid, null))
       .then(() => {
@@ -584,6 +595,16 @@ const Collection = ({ collection, searchText }) => {
         ensureCollectionIsMounted();
         handleRun();
       }
+    },
+    {
+      id: 'sort',
+      leftSection: IconSortAZ,
+      label: 'Sort',
+      submenu: [
+        { id: 'sort-az', leftSection: IconSortAZ, label: 'Name (A→Z)', onClick: () => handleSortCollectionChildren('name-asc') },
+        { id: 'sort-za', leftSection: IconSortZA, label: 'Name (Z→A)', onClick: () => handleSortCollectionChildren('name-desc') },
+        { id: 'sort-created', leftSection: IconClock, label: 'Created (oldest first)', onClick: () => handleSortCollectionChildren('created-asc') }
+      ]
     },
     {
       id: 'clone',

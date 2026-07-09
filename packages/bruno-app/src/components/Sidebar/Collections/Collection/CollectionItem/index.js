@@ -64,7 +64,6 @@ import { calculateDraggedItemNewPathname, getInitialExampleName, findParentItemI
 import { excludeDescendantItems } from 'utils/collections/multiSelect';
 import { sortByNameThenSequence } from 'utils/common/index';
 import { getRevealInFolderLabel } from 'utils/common/platform';
-import CreateExampleModal from 'components/ResponseExample/CreateExampleModal';
 import { openDevtoolsAndSwitchToTerminal } from 'utils/terminal';
 import ActionIcon from 'ui/ActionIcon';
 import MenuDropdown from 'ui/MenuDropdown';
@@ -91,7 +90,6 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText, m
   const [renameItemModalOpen, setRenameItemModalOpen] = useState(false);
   const [cloneItemModalOpen, setCloneItemModalOpen] = useState(false);
   const [deleteItemModalOpen, setDeleteItemModalOpen] = useState(false);
-  const [createExampleModalOpen, setCreateExampleModalOpen] = useState(false);
   const [generateCodeItemModalOpen, setGenerateCodeItemModalOpen] = useState(false);
   const [newRequestModalOpen, setNewRequestModalOpen] = useState(false);
   const [newFolderModalOpen, setNewFolderModalOpen] = useState(false);
@@ -126,6 +124,11 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText, m
 
   useKeybinding('renameItem', () => {
     setRenameItemModalOpen(true);
+    return false;
+  }, { enabled: isKeyboardFocused, deps: [isKeyboardFocused] });
+
+  useKeybinding('deleteItem', () => {
+    setDeleteItemModalOpen(true);
     return false;
   }, { enabled: isKeyboardFocused, deps: [isKeyboardFocused] });
 
@@ -574,7 +577,9 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText, m
         id: 'create-example',
         leftSection: ExampleIcon,
         label: 'Create Example',
-        onClick: () => setCreateExampleModalOpen(true)
+        // Create immediately (Postman-style, no modal); default name is the
+        // request name with a unique suffix, renameable from the example tab.
+        onClick: () => handleCreateExample(getInitialExampleName(item))
       });
     }
 
@@ -700,7 +705,6 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText, m
     }));
 
     toast.success(`Example "${name}" created successfully`);
-    setCreateExampleModalOpen(false);
   };
 
   const folderItems = sortByNameThenSequence(filter(item.items, (i) => isItemAFolder(i) && !i.isTransient));
@@ -812,13 +816,6 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText, m
           onClose={() => setImportIntoFolderModalOpen(false)}
         />
       )}
-      <CreateExampleModal
-        isOpen={createExampleModalOpen}
-        onClose={() => setCreateExampleModalOpen(false)}
-        onSave={handleCreateExample}
-        title="Create Response Example"
-        initialName={getInitialExampleName(item)}
-      />
       <div
         className={itemRowClassName}
         ref={(node) => {

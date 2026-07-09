@@ -10,6 +10,7 @@ import { getDefaultRequestPaneTab, findItemInCollectionByPathname } from 'utils/
 import { normalizePath } from 'utils/common/path';
 import { foldSearchText } from '@usebruno/common';
 import ExampleIcon from 'components/Icons/ExampleIcon';
+import MethodBadge from 'ui/MethodBadge';
 import SearchHighlight from './SearchHighlight';
 
 const SEARCH_DEBOUNCE_MS = 200;
@@ -514,8 +515,8 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
         </span>
 
         {isRequest ? (
-          <span className="text-xs font-semibold text-green-700 text-left mt-1" style={{ width: 42, minWidth: 42 }}>
-            {node.method || ''}
+          <span className="text-left mt-1" style={{ width: 52, minWidth: 52 }}>
+            {node.method ? <MethodBadge method={node.method} /> : null}
           </span>
         ) : (
           <span className="flex items-center justify-center text-muted mt-0.5" style={{ width: 18, minWidth: 18 }}>

@@ -1,18 +1,20 @@
 import React, { useState } from 'react';
-import { IconFileImport, IconBrandGit, IconUnlink, IconX } from '@tabler/icons';
+import { IconFileImport, IconBrandGit, IconUnlink, IconClipboard, IconX } from '@tabler/icons';
 import Modal from 'components/Modal';
 import classnames from 'classnames';
 import StyledWrapper from './StyledWrapper';
 import FileTab from './FileTab';
 import GitHubTab from './GitHubTab';
 import UrlTab from './UrlTab';
+import PasteTab from './PasteTab';
 import FullscreenLoader from './FullscreenLoader/index';
 import { useTheme } from 'providers/Theme';
 
 const IMPORT_TABS = {
   FILE: 'file',
   GITHUB: 'github',
-  URL: 'url'
+  URL: 'url',
+  PASTE: 'paste'
 };
 
 const ImportCollection = ({ onClose, handleSubmit, showGit = true }) => {
@@ -67,6 +69,14 @@ const ImportCollection = ({ onClose, handleSubmit, showGit = true }) => {
               <IconUnlink size={18} strokeWidth={1.5} className="mr-2" />
               URL
             </div>
+            <div
+              className={getTabClassname(IMPORT_TABS.PASTE)}
+              onClick={handleTabSelect(IMPORT_TABS.PASTE)}
+              data-testid="paste-tab"
+            >
+              <IconClipboard size={18} strokeWidth={1.5} className="mr-2" />
+              Paste
+            </div>
           </div>
         </div>
 
@@ -112,6 +122,13 @@ const ImportCollection = ({ onClose, handleSubmit, showGit = true }) => {
         )}
         {tab === IMPORT_TABS.URL && (
           <UrlTab
+            setIsLoading={setIsLoading}
+            handleSubmit={handleSubmit}
+            setErrorMessage={setErrorMessage}
+          />
+        )}
+        {tab === IMPORT_TABS.PASTE && (
+          <PasteTab
             setIsLoading={setIsLoading}
             handleSubmit={handleSubmit}
             setErrorMessage={setErrorMessage}

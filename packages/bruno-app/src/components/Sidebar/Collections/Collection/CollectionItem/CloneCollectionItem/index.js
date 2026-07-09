@@ -16,7 +16,10 @@ import Dropdown from 'components/Dropdown';
 import StyledWrapper from './StyledWrapper';
 import Button from 'ui/Button';
 
-const CloneCollectionItem = ({ collectionUid, item, onClose, onClone }) => {
+// Also powers "Save As" on request tabs: cloneItem persists the item's CURRENT
+// draft state (transformRequestToSaveToFilesystem prefers item.draft) into a new
+// file and leaves the original item — including its unsaved draft — untouched.
+const CloneCollectionItem = ({ collectionUid, item, onClose, onClone, title, confirmText, successText }) => {
   const dispatch = useDispatch();
   const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid));
   const isFolder = isItemAFolder(item);
@@ -57,7 +60,7 @@ const CloneCollectionItem = ({ collectionUid, item, onClose, onClone }) => {
 
       Promise.resolve(cloneOperation)
         .then(() => {
-          toast.success(`${isFolder ? 'Folder' : 'Request'} cloned!`);
+          toast.success(successText || `${isFolder ? 'Folder' : 'Request'} cloned!`);
           onClose();
         })
         .catch((err) => {
@@ -91,7 +94,7 @@ const CloneCollectionItem = ({ collectionUid, item, onClose, onClone }) => {
       <StyledWrapper>
         <Modal
           size="md"
-          title={`Clone ${isFolder ? 'Folder' : 'Request'}`}
+          title={title || `Clone ${isFolder ? 'Folder' : 'Request'}`}
           handleCancel={onClose}
           hideFooter
         >
@@ -208,7 +211,7 @@ const CloneCollectionItem = ({ collectionUid, item, onClose, onClone }) => {
                   Cancel
                 </Button>
                 <Button type="submit" data-testid="clone-item-button">
-                  Clone
+                  {confirmText || 'Clone'}
                 </Button>
               </div>
             </div>

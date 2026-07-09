@@ -282,63 +282,14 @@ const movePathWithWindowsFallback = async (sourcePathname, targetPathname) => {
   }
 };
 
-const REQUEST_FILE_EXTENSION_BY_FORMAT = {
-  bru: '.bru',
-  yml: '.yml'
-};
-
-// Recursively copy a folder while converting request/folder files between
-// collection formats. Returns [sourcePath, targetPath] pairs for request uid
-// remapping.
-const convertFolderBetweenFormats = async ({ sourcePathname, targetPathname, sourceFormat, targetFormat }) => {
-  const sourceExt = REQUEST_FILE_EXTENSION_BY_FORMAT[sourceFormat] || '.bru';
-  const targetExt = REQUEST_FILE_EXTENSION_BY_FORMAT[targetFormat] || '.bru';
-  const movedPairs = [];
-
-  const walk = async (sourceDir, targetDir) => {
-    await fsExtra.ensureDir(targetDir);
-    const entries = await fs.promises.readdir(sourceDir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const sourceEntryPath = path.join(sourceDir, entry.name);
-
-      if (entry.isDirectory()) {
-        await walk(sourceEntryPath, path.join(targetDir, entry.name));
-        continue;
-      }
-
-      if (!entry.isFile()) {
-        continue;
-      }
-
-      const isFolderMeta = entry.name === `folder${sourceExt}`;
-      const isRequestFile = !isFolderMeta && entry.name.endsWith(sourceExt);
-
-      if (isFolderMeta) {
-        const content = await fs.promises.readFile(sourceEntryPath, 'utf8');
-        const parsed = await parseFolder(content, { format: sourceFormat });
-        const stringified = await stringifyFolder(parsed, { format: targetFormat });
-        await writeFile(path.join(targetDir, `folder${targetExt}`), stringified);
-        continue;
-      }
-
-      if (isRequestFile) {
-        const content = await fs.promises.readFile(sourceEntryPath, 'utf8');
-        const parsed = await parseRequest(content, { format: sourceFormat });
-        const targetEntryPath = path.join(targetDir, `${path.basename(entry.name, sourceExt)}${targetExt}`);
-        const stringified = await stringifyRequest(parsed, { format: targetFormat });
-        await writeFile(targetEntryPath, stringified);
-        movedPairs.push([sourceEntryPath, targetEntryPath]);
-        continue;
-      }
-
-      await fsExtra.copy(sourceEntryPath, path.join(targetDir, entry.name));
-    }
-  };
-
-  await walk(sourcePathname, targetPathname);
-  return movedPairs;
-};
+// Disk-level paste/move helpers (extracted for unit testing).
+const {
+  resolveUniqueTargetPathname,
+  applyDisplayNameSuffix,
+  convertFolderBetweenFormats,
+  pasteFolderByPath,
+  pasteRequestByPath
+} = require('./collection-paste-move');
 
 const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollectionPathname, targetCollectionPathname }) => {
   if (!fs.existsSync(winLongPath(sourcePathname))) {
@@ -2141,6 +2092,33 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     }
   });
 
+  // Disk-level paste for copy/paste in the sidebar. The source item is read
+  // straight from disk (never from the renderer's hydrated tree), so
+  // index-only children of lazily hydrated collections paste correctly and
+  // cross-collection pastes convert formats when needed.
+  ipcMain.handle('renderer:paste-item-by-path', async (event, { sourcePathname, sourceCollectionPathname, targetDirname, targetCollectionPathname }) => {
+    try {
+      const sourcePath = assertCollectionItemPath({ collectionPathname: sourceCollectionPathname, itemPathname: sourcePathname });
+      const targetDir = assertPathInside(targetCollectionPathname, targetDirname, 'Target path must stay inside the collection');
+      if (!fs.existsSync(targetDir) || !isDirectory(targetDir)) {
+        throw new Error('Target folder does not exist');
+      }
+
+      const sourceFormat = getCollectionFormat(sourceCollectionPathname);
+      const targetFormat = getCollectionFormat(targetCollectionPathname);
+      const kind = getItemKindFromPath(sourcePath, sourceCollectionPathname);
+
+      const result = kind === 'folder'
+        ? await pasteFolderByPath({ sourcePathname: sourcePath, targetDirname: targetDir, sourceFormat, targetFormat })
+        : await pasteRequestByPath({ sourcePathname: sourcePath, targetDirname: targetDir, sourceFormat, targetFormat });
+
+      assertPathInside(targetCollectionPathname, result.pathname);
+      return result;
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
+
   ipcMain.handle('renderer:new-collection-folder-by-path', async (event, { parentPathname, collectionPathname, folderName, directoryName }) => {
     try {
       const targetPathname = await createFolderByPath({
@@ -2280,7 +2258,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       const targetBasename = sourceKind === 'request' && sourceFormat !== targetFormat
         ? getRequestFilenameForFormat(sourceBasename, targetFormat)
         : sourceBasename;
-      const finalPathname = path.join(targetDirname, targetBasename);
+      let finalPathname = path.join(targetDirname, targetBasename);
       assertPathInside(targetCollectionPathname, finalPathname);
 
       if (path.normalize(finalPathname) === path.normalize(sourcePath)) {
@@ -2291,6 +2269,20 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         };
       }
 
+      // Target already has an entry with this filename: auto-rename the moved
+      // item ("name copy", "name copy 2", ...) instead of failing the move.
+      let renameSuffix = '';
+      if (fs.existsSync(winLongPath(finalPathname))) {
+        const uniqueTarget = resolveUniqueTargetPathname({
+          targetDirname,
+          basename: targetBasename,
+          isFolder: sourceKind === 'folder'
+        });
+        finalPathname = uniqueTarget.pathname;
+        renameSuffix = uniqueTarget.suffix;
+        assertPathInside(targetCollectionPathname, finalPathname);
+      }
+
       await moveItemByPath({
         sourcePathname: sourcePath,
         targetPathname: finalPathname,
@@ -2298,9 +2290,20 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         targetCollectionPathname
       });
 
+      let renamedDisplayName = null;
+      if (renameSuffix) {
+        renamedDisplayName = await applyDisplayNameSuffix({
+          pathname: finalPathname,
+          kind: sourceKind,
+          suffix: renameSuffix,
+          format: targetFormat
+        });
+      }
+
       return {
         pathname: finalPathname,
-        type: sourceKind === 'folder' ? 'folder' : getRequestTypeFromPath(finalPathname, targetCollectionPathname)
+        type: sourceKind === 'folder' ? 'folder' : getRequestTypeFromPath(finalPathname, targetCollectionPathname),
+        ...(renamedDisplayName ? { name: renamedDisplayName } : {})
       };
     } catch (error) {
       return Promise.reject(error);

@@ -40,7 +40,8 @@ import {
   showInFolder,
   updateItemsSequences
 } from 'providers/ReduxStore/slices/collections/actions';
-import { clearSidebarReveal, copyRequest, insertTaskIntoQueue } from 'providers/ReduxStore/slices/app';
+import { clearSidebarReveal, copyRequest, insertTaskIntoQueue, setFocusedSidebarPath } from 'providers/ReduxStore/slices/app';
+import useKeybinding from 'hooks/useKeybinding';
 import SearchHighlight from '../SearchHighlight';
 import CollectionItemIcon from './CollectionItem/CollectionItemIcon';
 import StyledWrapper from './CollectionItem/StyledWrapper';
@@ -61,7 +62,6 @@ import { sortByNameThenSequence } from 'utils/common/index';
 import { scrollToTheActiveTab, doesTabMatchRequestNode } from 'utils/tabs';
 import ExampleItem from './CollectionItem/ExampleItem';
 import ExampleIcon from 'components/Icons/ExampleIcon';
-import CreateExampleModal from 'components/ResponseExample/CreateExampleModal';
 import NetworkError from 'components/ResponsePane/NetworkError/index';
 import { isEqual } from 'lodash';
 import NewRequest from 'components/Sidebar/NewRequest';
@@ -153,6 +153,65 @@ const isSameOrDescendantPath = (targetPathname, sourcePathname) => {
   const target = normalizeForPathCompare(targetPathname);
   const source = normalizeForPathCompare(sourcePathname);
   return target === source || target.startsWith(`${source}/`);
+};
+
+// Sort a parent's children (folders first, then requests) by the chosen mode
+// and persist the new sequence. Shared by the folder context menu (parentKey =
+// folder node uid) and the collection root context menu (parentKey = 'root').
+// Computed from index nodes; 'created' additionally fetches filesystem
+// birthtimes since the format has no created field.
+export const SORT_LABELS = {
+  'name-asc': 'Sorted A→Z',
+  'name-desc': 'Sorted Z→A',
+  'created-asc': 'Sorted by created'
+};
+
+export const sortIndexedChildren = async ({ store, dispatch, collectionUid, parentKey, mode = 'name-asc' }) => {
+  const freshIndex = store.getState().collections.collectionIndexes?.[collectionUid];
+  const childUids = freshIndex?.childrenByParentUid?.[parentKey] || [];
+  const children = childUids.map((uid) => freshIndex.nodesByUid[uid]).filter(Boolean);
+  if (!children.length) {
+    return;
+  }
+
+  const byName = (a, b) => (a.name || '').localeCompare(b.name || '');
+  let comparator;
+  if (mode === 'name-desc') {
+    comparator = (a, b) => byName(b, a);
+  } else if (mode === 'created-asc') {
+    let createdTimes = {};
+    try {
+      createdTimes = await window.ipcRenderer.invoke(
+        'renderer:get-items-created-times',
+        children.map((n) => n.pathname)
+      ) || {};
+    } catch (error) {
+      toast.error(error?.message || 'Unable to read creation times');
+      return;
+    }
+    comparator = (a, b) => (createdTimes[a.pathname] || 0) - (createdTimes[b.pathname] || 0) || byName(a, b);
+  } else {
+    comparator = byName;
+  }
+
+  const ordered = [
+    ...children.filter((n) => n.type === 'folder').sort(comparator),
+    ...children.filter((n) => n.type !== 'folder').sort(comparator)
+  ];
+
+  const itemsToResequence = ordered.map((candidate, position) => ({
+    pathname: candidate.pathname,
+    type: candidate.type === 'folder' ? 'folder' : normalizeRequestType(candidate.type),
+    seq: position + 1
+  }));
+
+  try {
+    dispatch(collectionIndexNodesResequenced({ collectionUid, itemsToResequence }));
+    await dispatch(updateItemsSequences({ itemsToResequence, collectionUid }));
+    toast.success(SORT_LABELS[mode] || 'Sorted');
+  } catch (error) {
+    toast.error(error?.message || 'Unable to sort items');
+  }
 };
 
 const useVisibleRows = ({ index, expandedNodeUids, searchText }) => {
@@ -265,7 +324,6 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
   // During search the filtered tree is always shown fully expanded.
   const isExpanded = (searchText && searchText.trim()) ? true : expandedNodeUids.has(node.uid);
   const [renameItemModalOpen, setRenameItemModalOpen] = useState(false);
-  const [createExampleModalOpen, setCreateExampleModalOpen] = useState(false);
   const [examplesExpanded, setExamplesExpanded] = useState(false);
   const [cloneItemModalOpen, setCloneItemModalOpen] = useState(false);
   const [deleteItemModalOpen, setDeleteItemModalOpen] = useState(false);
@@ -277,6 +335,46 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
   const [exportFolderModalOpen, setExportFolderModalOpen] = useState(false);
   const [importIntoFolderModalOpen, setImportIntoFolderModalOpen] = useState(false);
   const [dropType, setDropType] = useState(null);
+  const [isKeyboardFocused, setIsKeyboardFocused] = useState(false);
+
+  // Sidebar shortcuts — only active while this row has keyboard focus.
+  // Bound per-row (rows are virtualized, so only visible rows hold bindings),
+  // mirroring the classic renderer's CollectionItem.
+  useKeybinding('cloneItem', () => {
+    setCloneItemModalOpen(true);
+    return false;
+  }, { enabled: isKeyboardFocused, deps: [isKeyboardFocused] });
+
+  useKeybinding('copyItem', () => {
+    handleCopyItem();
+    return false;
+  }, { enabled: isKeyboardFocused, deps: [isKeyboardFocused] });
+
+  useKeybinding('pasteItem', () => {
+    handlePasteItem();
+    return false;
+  }, { enabled: isKeyboardFocused, deps: [isKeyboardFocused] });
+
+  useKeybinding('renameItem', () => {
+    setRenameItemModalOpen(true);
+    return false;
+  }, { enabled: isKeyboardFocused, deps: [isKeyboardFocused] });
+
+  useKeybinding('deleteItem', () => {
+    setDeleteItemModalOpen(true);
+    return false;
+  }, { enabled: isKeyboardFocused, deps: [isKeyboardFocused] });
+
+  const handleRowFocus = () => {
+    setIsKeyboardFocused(true);
+    dispatch(setFocusedSidebarPath(node.pathname));
+  };
+
+  const handleRowBlur = () => {
+    setIsKeyboardFocused(false);
+    dispatch(setFocusedSidebarPath(null));
+  };
+
   const existingRequestTab = useSelector((state) => {
     if (!isRequest) {
       return null;
@@ -456,14 +554,17 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
     }
   };
 
-  const openCreateExampleModal = async () => {
+  // Create the example immediately (Postman-style, no modal): the name
+  // defaults to the request name with a unique suffix on collision, and the
+  // example opens in a tab where it can be renamed.
+  const handleCreateExampleClick = async () => {
     try {
       const treeItem = await hydrateRequestItem();
       if (!treeItem) {
         toast.error('Unable to load request');
         return;
       }
-      setCreateExampleModalOpen(true);
+      await handleCreateExample(getInitialExampleName(treeItem));
     } catch (error) {
       toast.error(error?.message || 'Unable to load request');
     }
@@ -513,7 +614,6 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
     }));
 
     toast.success(`Example "${name}" created successfully`);
-    setCreateExampleModalOpen(false);
   };
 
   // The collection runner executes the request objects the renderer sends,
@@ -640,61 +740,9 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
     openModal(true);
   };
 
-  // Sort this folder's children (folders first, then requests) by the chosen
-  // mode and persist the new sequence. Computed from index nodes; 'created'
-  // additionally fetches filesystem birthtimes since the format has no created
-  // field.
-  const SORT_LABELS = {
-    'name-asc': 'Folder sorted A→Z',
-    'name-desc': 'Folder sorted Z→A',
-    'created-asc': 'Folder sorted by created'
-  };
-  const handleSortFolderChildren = async (mode = 'name-asc') => {
-    const freshIndex = store.getState().collections.collectionIndexes?.[collectionUid];
-    const childUids = freshIndex?.childrenByParentUid?.[node.uid] || [];
-    const children = childUids.map((uid) => freshIndex.nodesByUid[uid]).filter(Boolean);
-    if (!children.length) {
-      return;
-    }
-
-    const byName = (a, b) => (a.name || '').localeCompare(b.name || '');
-    let comparator;
-    if (mode === 'name-desc') {
-      comparator = (a, b) => byName(b, a);
-    } else if (mode === 'created-asc') {
-      let createdTimes = {};
-      try {
-        createdTimes = await window.ipcRenderer.invoke(
-          'renderer:get-items-created-times',
-          children.map((n) => n.pathname)
-        ) || {};
-      } catch (error) {
-        toast.error(error?.message || 'Unable to read creation times');
-        return;
-      }
-      comparator = (a, b) => (createdTimes[a.pathname] || 0) - (createdTimes[b.pathname] || 0) || byName(a, b);
-    } else {
-      comparator = byName;
-    }
-
-    const ordered = [
-      ...children.filter((n) => n.type === 'folder').sort(comparator),
-      ...children.filter((n) => n.type !== 'folder').sort(comparator)
-    ];
-
-    const itemsToResequence = ordered.map((candidate, position) => ({
-      pathname: candidate.pathname,
-      type: candidate.type === 'folder' ? 'folder' : normalizeRequestType(candidate.type),
-      seq: position + 1
-    }));
-
-    try {
-      dispatch(collectionIndexNodesResequenced({ collectionUid, itemsToResequence }));
-      await dispatch(updateItemsSequences({ itemsToResequence, collectionUid }));
-      toast.success(SORT_LABELS[mode] || 'Folder sorted');
-    } catch (error) {
-      toast.error(error?.message || 'Unable to sort folder');
-    }
+  // Sort this folder's children via the shared helper (see sortIndexedChildren).
+  const handleSortFolderChildren = (mode = 'name-asc') => {
+    return sortIndexedChildren({ store, dispatch, collectionUid, parentKey: node.uid, mode });
   };
 
   const buildMenuItems = () => {
@@ -804,7 +852,7 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
         id: 'create-example',
         leftSection: ExampleIcon,
         label: 'Create Example',
-        onClick: openCreateExampleModal
+        onClick: handleCreateExampleClick
       });
     }
 
@@ -1193,15 +1241,6 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
           onClose={() => setImportIntoFolderModalOpen(false)}
         />
       )}
-      {!isFolder && createExampleModalOpen && (
-        <CreateExampleModal
-          isOpen={createExampleModalOpen}
-          onClose={() => setCreateExampleModalOpen(false)}
-          onSave={handleCreateExample}
-          title="Create Response Example"
-          initialName={getInitialExampleName(item || displayItem)}
-        />
-      )}
       <div
         ref={(element) => {
           rowRef.current = element;
@@ -1211,6 +1250,7 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
           'cursor-pointer': true,
           'opacity-50': isDragging,
           'item-focused-in-tab': isActiveTabRow,
+          'item-keyboard-focused': isKeyboardFocused,
           'item-multi-selected': Boolean(multiSelect?.selectedItemUids?.has(node.uid)),
           'reveal-flash': revealFlash,
           'item-hovered': isOver && canDrop && dropType,
@@ -1219,6 +1259,9 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
         })}
         style={{ height: ROW_HEIGHT }}
         title={node.pathname}
+        tabIndex={0}
+        onFocus={handleRowFocus}
+        onBlur={handleRowBlur}
         onContextMenu={handleContextMenu}
       >
         <div className="flex items-center h-full w-full">

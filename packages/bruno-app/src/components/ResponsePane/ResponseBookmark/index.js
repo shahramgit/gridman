@@ -1,11 +1,10 @@
-import React, { useState, useMemo, forwardRef, useImperativeHandle, useRef } from 'react';
+import React, { forwardRef, useImperativeHandle, useRef } from 'react';
 import { useDispatch } from 'react-redux';
 import { IconBookmark } from '@tabler/icons';
 import { addResponseExample } from 'providers/ReduxStore/slices/collections';
 import { saveRequest } from 'providers/ReduxStore/slices/collections/actions';
 import { uuid, formatResponse } from 'utils/common';
 import toast from 'react-hot-toast';
-import CreateExampleModal from 'components/ResponseExample/CreateExampleModal';
 import { getBodyType } from 'utils/responseBodyProcessor';
 import { getInitialExampleName } from 'utils/collections/index';
 import classnames from 'classnames';
@@ -26,7 +25,6 @@ const getTitleText = ({ isResponseTooLarge, isStreamingResponse }) => {
 
 const ResponseBookmark = forwardRef(({ item, collection, responseSize, children }, ref) => {
   const dispatch = useDispatch();
-  const [showSaveResponseExampleModal, setShowSaveResponseExampleModal] = useState(false);
   const response = item.response || {};
   const elementRef = useRef(null);
 
@@ -65,7 +63,10 @@ const ResponseBookmark = forwardRef(({ item, collection, responseSize, children 
       return;
     }
 
-    setShowSaveResponseExampleModal(true);
+    // One click saves immediately (Postman-style): the example name defaults
+    // to the request name (with a unique suffix on collision) and can be
+    // renamed afterwards from the sidebar or the example tab.
+    saveAsExample(getInitialExampleName(item));
   };
 
   const saveAsExample = async (name, description = '') => {
@@ -111,7 +112,6 @@ const ResponseBookmark = forwardRef(({ item, collection, responseSize, children 
 
     // Save the example in place (like Postman) — do not open it in a new tab.
 
-    setShowSaveResponseExampleModal(false);
     toast.success(`Example "${name}" created successfully`);
   };
 
@@ -141,14 +141,6 @@ const ResponseBookmark = forwardRef(({ item, collection, responseSize, children 
           </StyledWrapper>
         )}
       </div>
-
-      <CreateExampleModal
-        isOpen={showSaveResponseExampleModal}
-        onClose={() => setShowSaveResponseExampleModal(false)}
-        onSave={saveAsExample}
-        title="Save Response as Example"
-        initialName={getInitialExampleName(item)}
-      />
     </>
   );
 });

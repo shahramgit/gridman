@@ -1,13 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { IconFileImport } from '@tabler/icons';
 import { toastError } from 'utils/common/error';
 import jsyaml from 'js-yaml';
-import { isPostmanCollection } from 'utils/importers/postman-collection';
-import { isInsomniaCollection } from 'utils/importers/insomnia-collection';
-import { isOpenApiSpec } from 'utils/importers/openapi-collection';
-import { isWSDLCollection } from 'utils/importers/wsdl-collection';
-import { isBrunoCollection } from 'utils/importers/bruno-collection';
-import { isOpenCollection } from 'utils/importers/opencollection';
+import { detectCollectionFormat } from 'utils/importers/detect';
 import { useTheme } from 'providers/Theme';
 
 const convertFileToObject = async (file) => {
@@ -40,6 +35,8 @@ const FileTab = ({
 }) => {
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef(null);
+  const dropZoneRef = useRef(null);
+  const processFilesRef = useRef(null);
   const { theme } = useTheme();
 
   const acceptedFileTypes = [
@@ -68,7 +65,11 @@ const FileTab = ({
     if (e.type === 'dragenter' || e.type === 'dragover') {
       setDragActive(true);
     } else if (e.type === 'dragleave') {
-      setDragActive(false);
+      // Ignore dragleave events fired when moving over the dropzone's own
+      // children — only deactivate when the pointer actually leaves the zone.
+      if (!e.currentTarget.contains(e.relatedTarget)) {
+        setDragActive(false);
+      }
     }
   };
 
@@ -103,20 +104,7 @@ const FileTab = ({
           const data = await convertFileToObject(file);
 
           // Determine type for each file
-          let type = null;
-          if (isOpenApiSpec(data)) {
-            type = 'openapi';
-          } else if (isWSDLCollection(data)) {
-            type = 'wsdl';
-          } else if (isPostmanCollection(data)) {
-            type = 'postman';
-          } else if (isInsomniaCollection(data)) {
-            type = 'insomnia';
-          } else if (isOpenCollection(data)) {
-            type = 'opencollection';
-          } else if (isBrunoCollection(data)) {
-            type = 'bruno';
-          }
+          const type = detectCollectionFormat(data);
 
           if (type) {
             filesData.push({ file, data, type });
@@ -148,21 +136,8 @@ const FileTab = ({
         throw new Error('Failed to parse file content');
       }
 
-      let type = null;
-
-      if (isOpenApiSpec(data)) {
-        type = 'openapi';
-      } else if (isWSDLCollection(data)) {
-        type = 'wsdl';
-      } else if (isPostmanCollection(data)) {
-        type = 'postman';
-      } else if (isInsomniaCollection(data)) {
-        type = 'insomnia';
-      } else if (isOpenCollection(data)) {
-        type = 'opencollection';
-      } else if (isBrunoCollection(data)) {
-        type = 'bruno';
-      } else {
+      const type = detectCollectionFormat(data);
+      if (!type) {
         throw new Error('Unsupported collection format');
       }
 
@@ -220,6 +195,54 @@ const FileTab = ({
     }
   };
 
+  // Keep the latest processFiles reachable from the document-level listeners
+  // without re-registering them on every render.
+  processFilesRef.current = processFiles;
+
+  // Document-level fallback: accept a file dropped anywhere on the dialog
+  // while the File tab is open. React's delegated onDrop on the dropzone can
+  // be starved by other drag layers (e.g. react-dnd's window listeners), and
+  // dropping a few pixels outside the dashed zone previously did nothing.
+  // Native document-level listeners are immune to both.
+  useEffect(() => {
+    const isFileDrag = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+    const onDragOver = (e) => {
+      if (!isFileDrag(e)) {
+        return;
+      }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      setDragActive(true);
+    };
+    const onDrop = (e) => {
+      e.preventDefault();
+      setDragActive(false);
+      // The dropzone's own handler takes care of drops inside it (and stops
+      // propagation); this fallback only handles drops outside the zone.
+      if (dropZoneRef.current && dropZoneRef.current.contains(e.target)) {
+        return;
+      }
+      if (e.dataTransfer?.files?.length) {
+        processFilesRef.current?.(e.dataTransfer.files);
+      }
+    };
+    const onDragLeaveWindow = (e) => {
+      // Pointer left the window entirely
+      if (!e.relatedTarget) {
+        setDragActive(false);
+      }
+    };
+
+    document.addEventListener('dragover', onDragOver);
+    document.addEventListener('drop', onDrop);
+    document.addEventListener('dragleave', onDragLeaveWindow);
+    return () => {
+      document.removeEventListener('dragover', onDragOver);
+      document.removeEventListener('drop', onDrop);
+      document.removeEventListener('dragleave', onDragLeaveWindow);
+    };
+  }, []);
+
   const handleBrowseFiles = () => {
     setErrorMessage('');
     fileInputRef.current.click();
@@ -235,6 +258,7 @@ const FileTab = ({
   return (
     <div className="mb-4">
       <div
+        ref={dropZoneRef}
         onDragEnter={handleDrag}
         onDragOver={handleDrag}
         onDragLeave={handleDrag}

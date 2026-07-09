@@ -20,7 +20,7 @@ import {
 import OpenAPISyncIcon from 'components/Icons/OpenAPISync';
 import { switchWorkspace, renameWorkspaceAction, exportWorkspaceAction, confirmWorkspaceCreation, cancelWorkspaceCreation } from 'providers/ReduxStore/slices/workspaces/actions';
 import { updateWorkspace } from 'providers/ReduxStore/slices/workspaces';
-import { showInFolder } from 'providers/ReduxStore/slices/collections/actions';
+import { showInFolder, renameCollection } from 'providers/ReduxStore/slices/collections/actions';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import { uuid } from 'utils/common';
 import toast from 'react-hot-toast';
@@ -60,6 +60,10 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
   const [workspaceNameInput, setWorkspaceNameInput] = useState('');
   const [workspaceNameError, setWorkspaceNameError] = useState('');
   const [closeWorkspaceModalOpen, setCloseWorkspaceModalOpen] = useState(false);
+
+  // Collection rename state (click-to-rename on the header name, Postman-style)
+  const [isRenamingCollection, setIsRenamingCollection] = useState(false);
+  const [collectionNameInput, setCollectionNameInput] = useState('');
   const [exportApiCatalogModalOpen, setExportApiCatalogModalOpen] = useState(false);
   const [createWorkspaceModalOpen, setCreateWorkspaceModalOpen] = useState(false);
 
@@ -185,6 +189,46 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
           type: 'collection-settings'
         })
       );
+    }
+  };
+
+  // Collection rename handlers (regular collections only; the scratch
+  // collection's header shows the workspace name which has its own rename)
+  const startCollectionRename = () => {
+    if (isScratchCollection) return;
+    setCollectionNameInput(collection.name || '');
+    setIsRenamingCollection(true);
+  };
+
+  const cancelCollectionRename = () => {
+    setIsRenamingCollection(false);
+    setCollectionNameInput('');
+  };
+
+  const commitCollectionRename = () => {
+    if (!isRenamingCollection) return;
+    const newName = (collectionNameInput || '').trim();
+    if (!newName || newName === collection.name) {
+      cancelCollectionRename();
+      return;
+    }
+    dispatch(renameCollection(newName, collection.uid))
+      .then(() => {
+        toast.success('Collection renamed!');
+      })
+      .catch((err) => {
+        toast.error(err?.message || 'An error occurred while renaming the collection');
+      });
+    cancelCollectionRename();
+  };
+
+  const handleCollectionNameKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commitCollectionRename();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelCollectionRename();
     }
   };
 
@@ -496,13 +540,46 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
           ) : (
             <div className="flex flex-row justify-center items-center gap-x-1">
               <DisplayIcon size={18} strokeWidth={1.5} className="cursor-pointer display-icon" onClick={handleDisplayIconClick} />
+              {/* Regular collections: the name itself is click-to-rename (Postman-style);
+                  the chevron alone opens the switcher. Scratch collections keep the
+                  whole trigger for the switcher (workspace rename lives in its menu). */}
+              {!isScratchCollection && (
+                isRenamingCollection ? (
+                  <input
+                    type="text"
+                    className="collection-name-input"
+                    value={collectionNameInput}
+                    autoFocus
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck="false"
+                    data-testid="collection-header-rename-input"
+                    onFocus={(e) => e.target.select()}
+                    onChange={(e) => setCollectionNameInput(e.target.value)}
+                    onBlur={commitCollectionRename}
+                    onKeyDown={handleCollectionNameKeyDown}
+                  />
+                ) : (
+                  <span
+                    className="switcher-name collection-name-editable"
+                    title="Click to rename"
+                    data-testid="collection-header-name"
+                    onClick={startCollectionRename}
+                  >
+                    {displayName}
+                  </span>
+                )
+              )}
               <Dropdown
                 placement="bottom-start"
                 onCreate={onSwitcherCreate}
                 appendTo={() => document.body}
                 icon={(
                   <button className="switcher-trigger">
-                    <span className={classNames('switcher-name', { 'scratch-collection': isScratchCollection })}>{displayName}</span>
+                    {isScratchCollection && (
+                      <span className="switcher-name scratch-collection">{displayName}</span>
+                    )}
                     <IconChevronDown size={14} strokeWidth={1.5} className="chevron" />
                   </button>
                 )}

@@ -1233,6 +1233,21 @@ export const pasteItem = (targetCollectionUid, targetItemUid = null) => (dispatc
     return Promise.reject(new Error('Target collection not found'));
   }
 
+  // Prefix-match the copied item's pathname against the open collections so
+  // the paste can be performed on disk (the clipboard object may hold an
+  // index-only item whose children were never hydrated).
+  const findCollectionContainingPathname = (pathname) => {
+    if (!pathname) {
+      return null;
+    }
+    const normalize = (value) => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const normalizedPathname = normalize(pathname);
+    return state.collections.collections.find((candidate) => {
+      const collectionPathname = normalize(candidate.pathname);
+      return collectionPathname && normalizedPathname.startsWith(`${collectionPathname}/`);
+    }) || null;
+  };
+
   return new Promise(async (resolve, reject) => {
     try {
       for (const clipboardItem of clipboardResult.items) {
@@ -1256,8 +1271,68 @@ export const pasteItem = (targetCollectionUid, targetItemUid = null) => (dispatc
 
         const existingItems = targetItem ? targetItem.items : targetCollection.items;
 
+        // Preferred path: paste from disk in the main process. This is the
+        // only correct option for folders/requests copied from an indexed
+        // (lazily hydrated) sidebar — their in-memory copy has no request
+        // data — and it also handles cross-collection format conversion and
+        // filename collisions (auto-rename) in one place.
+        const sourceCollection = findCollectionContainingPathname(copiedItem.pathname);
+        if (sourceCollection) {
+          const result = await callIpc('renderer:paste-item-by-path', {
+            sourcePathname: copiedItem.pathname,
+            sourceCollectionPathname: sourceCollection.pathname,
+            targetDirname: targetParentPathname,
+            targetCollectionPathname: targetCollection.pathname
+          });
+
+          const targetIndexExists = Boolean(state.collections.collectionIndexes?.[targetCollectionUid]);
+          if (result?.pathname && result.type === 'folder') {
+            const sourceIndexExists = Boolean(state.collections.collectionIndexes?.[sourceCollection.uid]);
+            if (targetIndexExists && sourceIndexExists) {
+              dispatch(collectionIndexNodeCloned({
+                sourceCollectionUid: sourceCollection.uid,
+                targetCollectionUid,
+                sourcePathname: copiedItem.pathname,
+                targetPathname: result.pathname,
+                rootName: result.name
+              }));
+            } else {
+              await dispatch(refreshCollectionIndex({ collectionUid: targetCollectionUid }));
+            }
+          } else if (result?.pathname) {
+            if (targetIndexExists) {
+              dispatch(collectionIndexNodeAdded({
+                collectionUid: targetCollectionUid,
+                pathname: result.pathname,
+                name: result.name,
+                type: result.type || 'http-request',
+                uid: uuid()
+              }));
+            }
+            dispatch(insertTaskIntoQueue({
+              uid: uuid(),
+              type: 'OPEN_REQUEST',
+              collectionUid: targetCollectionUid,
+              itemPathname: result.pathname
+            }));
+          }
+          continue;
+        }
+
+        // Fallback: the source collection is no longer open, so paste from the
+        // in-memory clipboard copy (only possible when it was fully hydrated).
         // Handle folder pasting
         if (isItemAFolder(copiedItem)) {
+          const hasNonHydratedDescendant = (item) => (item.items || []).some((child) => {
+            if (child.type === 'folder') {
+              return hasNonHydratedDescendant(child);
+            }
+            return !child.request || child.request.gridmanIndexOnly || child.gridmanIndexOnly;
+          });
+          if (copiedItem.gridmanIndexOnly || hasNonHydratedDescendant(copiedItem)) {
+            return reject(new Error('The copied folder is no longer available. Copy it again and retry.'));
+          }
+
           // Generate unique name for folder
           const { newName, newFilename } = generateUniqueName(copiedItem.name, existingItems, true);
 
@@ -1271,6 +1346,9 @@ export const pasteItem = (targetCollectionUid, targetItemUid = null) => (dispatc
 
           await ipcRenderer.invoke('renderer:clone-folder', copiedItem, fullPathname, targetCollection.pathname);
         } else {
+          if (!copiedItem.request || copiedItem.request.gridmanIndexOnly || copiedItem.gridmanIndexOnly) {
+            return reject(new Error('The copied request is no longer available. Copy it again and retry.'));
+          }
           // Handle request pasting
           // Generate unique name for request
           const { newName, newFilename } = generateUniqueName(copiedItem.name, existingItems, false);
@@ -1377,13 +1455,23 @@ export const moveCollectionItemByPath = ({
       sourcePathname,
       targetPathname: result.pathname
     }));
+    // The main process auto-renames on filename collision; reflect the new
+    // display name in the index.
+    if (result.name) {
+      dispatch(collectionIndexNodeRenamed({
+        collectionUid: targetCollectionUid,
+        pathname: result.pathname,
+        name: result.name
+      }));
+    }
   } else if (sourceCollectionUid !== targetCollectionUid && result?.pathname && !result?.skipped) {
     if (shouldRefreshTargetIndex) {
       dispatch(collectionIndexNodeCloned({
         sourceCollectionUid,
         targetCollectionUid,
         sourcePathname,
-        targetPathname: result.pathname
+        targetPathname: result.pathname,
+        rootName: result.name
       }));
     }
     if (shouldRefreshSourceIndex) {

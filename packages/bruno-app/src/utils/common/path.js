@@ -213,9 +213,21 @@ const getRelativePathWithinBasePath = (basePath, filePath, shouldPosixify = fals
   }
 };
 
+/**
+ * Normalize a path for COMPARISON (not for filesystem access): unifies
+ * separators, strips trailing slashes and NFC-normalizes unicode.
+ *
+ * The unicode normalization matters on macOS: paths coming back from the
+ * filesystem (watchers, the search index) are NFD-decomposed while paths the
+ * renderer builds or reads from workspace.yml are NFC. Persian/accented
+ * collection names would otherwise never compare equal — e.g. a collection
+ * opened from a workspace-search result registered under the NFD form and
+ * vanished from the sidebar list, which matches workspace.yml (NFC) paths.
+ * Callers must keep using the ORIGINAL path for IPC/filesystem operations.
+ */
 const normalizePath = (p) => {
   if (!p) return '';
-  return p.replace(/\\/g, '/').replace(/\/+$/, '');
+  return String(p).normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
 };
 
 export default brunoPath;

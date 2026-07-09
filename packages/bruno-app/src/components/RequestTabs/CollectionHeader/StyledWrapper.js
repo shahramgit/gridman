@@ -52,6 +52,40 @@ const StyledWrapper = styled.div`
     }
   }
 
+  /* Collection name outside the switcher trigger: click-to-rename */
+  .collection-name-editable {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 4px 4px 4px 8px;
+    border-radius: 4px;
+    font-weight: 500;
+    color: ${(props) => props.theme.text};
+    cursor: text;
+
+    &:hover {
+      background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
+    }
+  }
+
+  .collection-name-input {
+    font-size: 14px;
+    font-weight: 500;
+    padding: 3px 6px;
+    border: 1px solid ${(props) => props.theme.input.border};
+    border-radius: 3px;
+    background: ${(props) => props.theme.input.bg};
+    color: ${(props) => props.theme.text};
+    outline: none;
+    min-width: 150px;
+    max-width: 260px;
+
+    &:focus {
+      border-color: ${(props) => props.theme.input.focusBorder};
+    }
+  }
+
   .workspace-actions-trigger {
     cursor: pointer;
     opacity: 0.6;
