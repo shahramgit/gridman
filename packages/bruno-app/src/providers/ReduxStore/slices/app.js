@@ -99,11 +99,20 @@ export const appSlice = createSlice({
       state.isDragging = action.payload.isDragging;
     },
     revealRequestInSidebar: (state, action) => {
-      const { collectionUid, pathname } = action.payload;
+      const { collectionUid, pathname, ensureVisible } = action.payload;
       // `pending` keeps the reveal alive until a row consumes it, so a
       // just-opened collection that hydrates/indexes after the dispatch still
       // gets scrolled into view (effects re-attempt as data arrives).
-      state.sidebarReveal = { nonce: Date.now(), collectionUid, pathname, pending: true };
+      // `ensureVisible` marks a deliberate reveal (workflow "Show in sidebar",
+      // search) that may expand the sidebar's Collections section; passive
+      // reveals from tab activation leave the accordion alone.
+      state.sidebarReveal = {
+        nonce: Date.now(),
+        collectionUid,
+        pathname,
+        pending: true,
+        ensureVisible: Boolean(ensureVisible)
+      };
     },
     clearSidebarReveal: (state) => {
       if (state.sidebarReveal) {

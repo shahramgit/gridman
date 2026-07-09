@@ -1402,18 +1402,31 @@ const IndexedCollectionItems = ({ collectionUid, searchText, multiSelect }) => {
       return;
     }
     const rowIndex = visibleRows.findIndex((row) => row.uid === pendingRevealNodeUidRef.current);
-    if (rowIndex >= 0) {
-      // scrollIntoView scrolls only when the row is off-screen. Clicking a
-      // request also fires a reveal (via tab activation), and centering the
-      // row the user just clicked yanked the sidebar around.
-      if (virtuosoRef.current?.scrollIntoView) {
-        virtuosoRef.current.scrollIntoView({ index: rowIndex, behavior: 'smooth' });
-      } else {
-        virtuosoRef.current?.scrollToIndex?.({ index: rowIndex, align: 'center' });
-      }
-      pendingRevealNodeUidRef.current = null;
-      dispatch(clearSidebarReveal());
+    if (rowIndex < 0) {
+      return;
     }
+    // The Virtuoso handle attaches a beat after this component mounts (the
+    // reveal often lands in the same commit the collection expands). Do NOT
+    // consume the reveal until a scroll actually ran — consuming with a null
+    // ref silently ate the reveal and the row never came into view.
+    const virtuoso = virtuosoRef.current;
+    if (!virtuoso) {
+      const retry = requestAnimationFrame(() => {
+        // re-trigger this effect after the ref attaches
+        setExpandedNodeUids((current) => new Set(current));
+      });
+      return () => cancelAnimationFrame(retry);
+    }
+    // scrollIntoView scrolls only when the row is off-screen. Clicking a
+    // request also fires a reveal (via tab activation), and centering the
+    // row the user just clicked yanked the sidebar around.
+    if (virtuoso.scrollIntoView) {
+      virtuoso.scrollIntoView({ index: rowIndex, behavior: 'smooth' });
+    } else {
+      virtuoso.scrollToIndex?.({ index: rowIndex, align: 'center' });
+    }
+    pendingRevealNodeUidRef.current = null;
+    dispatch(clearSidebarReveal());
   }, [visibleRows, dispatch]);
 
   // Stable identity so memoized rows don't re-render on unrelated parent

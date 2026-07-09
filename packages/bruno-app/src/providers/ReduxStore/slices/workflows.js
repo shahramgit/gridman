@@ -974,7 +974,10 @@ export const revealWorkflowNode = (pathname, nodeId) => async (dispatch, getStat
 
   dispatch(revealRequestInSidebar({
     collectionUid: collection.uid,
-    pathname: `${collection.pathname}/${node.ref.request}`
+    pathname: `${collection.pathname}/${node.ref.request}`,
+    // Deliberate reveal: make sure the sidebar's Collections section is open
+    // so the row can actually be focused (a collapsed section unmounts it).
+    ensureVisible: true
   }));
 };
 

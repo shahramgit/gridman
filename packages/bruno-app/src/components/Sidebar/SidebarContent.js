@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { useSelector } from 'react-redux';
 import { useSidebarAccordion } from './SidebarAccordionContext';
 
 /**
@@ -19,7 +21,18 @@ import { useSidebarAccordion } from './SidebarAccordionContext';
  */
 
 const SidebarContent = ({ sections }) => {
-  const { isExpanded, getExpandedCount } = useSidebarAccordion();
+  const { isExpanded, getExpandedCount, setSectionExpanded } = useSidebarAccordion();
+
+  // A deliberate reveal (workflow "Show in sidebar", search) must be able to
+  // land: a collapsed Collections section unmounts every Collection component,
+  // so nothing would consume the reveal. Passive reveals (tab activation) do
+  // not set ensureVisible and never force the section open.
+  const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
+  useEffect(() => {
+    if (sidebarReveal?.pending && sidebarReveal.ensureVisible) {
+      setSectionExpanded('collections', true);
+    }
+  }, [sidebarReveal?.nonce, sidebarReveal?.pending, sidebarReveal?.ensureVisible, setSectionExpanded]);
 
   const expandedCount = getExpandedCount();
 
