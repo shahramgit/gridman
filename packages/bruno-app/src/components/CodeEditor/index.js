@@ -180,13 +180,15 @@ class CodeEditor extends React.Component {
     }));
 
     // Hanging indent for wrapped lines (Postman-style): a long value (e.g. a
-    // JWT in a JSON response) wraps under its own start column instead of
-    // snapping back to column 0, which visually flattened the nesting.
+    // JWT in a JSON response) wraps ONE indent level deeper than its own line
+    // instead of snapping back to column 0 — continuations read as clearly
+    // part of the value, never as siblings of the key.
     if (this.props.enableLineWrapping ?? true) {
       const charWidth = editor.defaultCharWidth();
       const basePadding = 4;
       editor.on('renderLine', (cm, line, elt) => {
-        const off = CodeMirror.countColumn(line.text, null, cm.getOption('tabSize')) * charWidth;
+        const tabSize = cm.getOption('tabSize');
+        const off = (CodeMirror.countColumn(line.text, null, tabSize) + tabSize) * charWidth;
         elt.style.textIndent = `-${off}px`;
         elt.style.paddingLeft = `${basePadding + off}px`;
       });

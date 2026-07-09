@@ -303,7 +303,10 @@ export const formatResponse = (data, dataBufferString, mode, filter, bufferThres
     }
 
     try {
-      return fastJsonFormat(rawData);
+      // 4-space indent (Postman-like): with 2 spaces, a child whose key is
+      // shorter than its parent's puts its '{' visually LEFT of the parent's
+      // '{', which reads as "no nesting" (client issue form, item 1).
+      return fastJsonFormat(rawData, '    ');
     } catch (error) {}
 
     if (typeof data === 'string') {

@@ -40,7 +40,7 @@ describe('formatResponse', () => {
       const dataBuffer = createBase64Buffer(JSON.stringify(data));
       const result = formatResponse(data, dataBuffer, 'application/json');
 
-      expect(result).toBe('{\n  "name": "John",\n  "age": 30\n}');
+      expect(result).toBe('{\n    "name": "John",\n    "age": 30\n}');
       expect(typeof result).toBe('string');
     });
 
@@ -49,7 +49,7 @@ describe('formatResponse', () => {
       const dataBuffer = createBase64Buffer(data); // Use data directly, not JSON.stringify(data)
       const result = formatResponse(data, dataBuffer, 'application/json');
 
-      expect(result).toBe('{\n  "name": "John",\n  "age": 30\n}');
+      expect(result).toBe('{\n    "name": "John",\n    "age": 30\n}');
       expect(typeof result).toBe('string');
     });
 
@@ -58,7 +58,7 @@ describe('formatResponse', () => {
       const dataBuffer = createBase64Buffer(data);
       const result = formatResponse(data, dataBuffer, 'application/json');
 
-      expect(result).toBe('{\n  "data": 1736184243098437392\n}');
+      expect(result).toBe('{\n    "data": 1736184243098437392\n}');
       expect(typeof result).toBe('string');
     });
 
