@@ -435,8 +435,9 @@ const RequestTabPanel = () => {
 
   if (focusedTab.type === 'folder-settings') {
     let folder = findItemInCollection(collection, focusedTab.folderUid);
-    if (!folder && focusedTab.pathname) {
-      folder = findItemInCollectionByPathname(collection, focusedTab.pathname);
+    const folderPathname = focusedTab.itemPathname || focusedTab.pathname;
+    if (!folder && folderPathname) {
+      folder = findItemInCollectionByPathname(collection, folderPathname);
     }
 
     if (folder) {

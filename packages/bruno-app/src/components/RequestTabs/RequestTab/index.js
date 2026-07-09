@@ -18,6 +18,7 @@ import SpecialTab from './SpecialTab';
 import StyledWrapper from './StyledWrapper';
 import MenuDropdown from 'ui/MenuDropdown';
 import CloneCollectionItem from 'components/Sidebar/Collections/Collection/CollectionItem/CloneCollectionItem/index';
+import SaveAsRequest from 'components/SaveAsRequest';
 import NewRequest from 'components/Sidebar/NewRequest/index';
 import GradientCloseButton from './GradientCloseButton';
 import { flattenItems } from 'utils/collections/index';
@@ -173,7 +174,12 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     setShowConfirmCollectionClose(true);
   };
 
-  const folder = folderUid ? findItemInCollection(collection, folderUid) : null;
+  // Resolve the folder by uid, falling back to the tab's pathname (indexed
+  // folder tabs may be re-created before the tree item is re-hydrated).
+  const folder = folderUid
+    ? (findItemInCollection(collection, folderUid)
+      || (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null))
+    : null;
 
   const handleCloseFolderSettings = (event) => {
     if (!folder?.draft) {
@@ -830,12 +836,9 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
       )}
 
       {showSaveAsModal && (
-        <CloneCollectionItem
+        <SaveAsRequest
           item={currentTabItem}
           collectionUid={findCollectionForTab(currentTab)?.uid || collection.uid}
-          title="Save As"
-          confirmText="Save"
-          successText="Request saved as a new request!"
           onClose={() => setShowSaveAsModal(false)}
         />
       )}

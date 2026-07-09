@@ -16,9 +16,11 @@ import Dropdown from 'components/Dropdown';
 import StyledWrapper from './StyledWrapper';
 import Button from 'ui/Button';
 
-// Also powers "Save As" on request tabs: cloneItem persists the item's CURRENT
-// draft state (transformRequestToSaveToFilesystem prefers item.draft) into a new
-// file and leaves the original item — including its unsaved draft — untouched.
+// Note: cloneItem persists the item's CURRENT draft state
+// (transformRequestToSaveToFilesystem prefers item.draft) into a new file and
+// leaves the original item — including its unsaved draft — untouched.
+// "Save As" on request tabs now uses components/SaveAsRequest (adds a
+// location picker).
 const CloneCollectionItem = ({ collectionUid, item, onClose, onClone, title, confirmText, successText }) => {
   const dispatch = useDispatch();
   const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid));

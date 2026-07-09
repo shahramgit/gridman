@@ -16,6 +16,7 @@ import stripJsonComments from 'strip-json-comments';
 import { getAllVariables } from 'utils/collections';
 import { setupLinkAware } from 'utils/codemirror/linkAware';
 import { setupLintErrorTooltip } from 'utils/codemirror/lint-errors';
+import findDuplicateJsonKeys from 'utils/common/jsonDuplicateKeys';
 import { setupEmbeddedMediaPreview } from 'utils/codemirror/embeddedMediaPreview';
 import { setupSelectionDataTools } from 'utils/codemirror/selectionDataTools';
 import { setupIndentGuides } from 'utils/codemirror/indentGuides';
@@ -217,6 +218,22 @@ class CodeEditor extends React.Component {
             message
           });
         }
+      }
+      // Second pass: warn on duplicate keys within the same object scope
+      // (e.g. "grant_type" twice in an OAuth body). Runs on the original text
+      // (the scanner tolerates {{templates}} and comments itself) so the
+      // squiggle lands exactly on the duplicate key the user sees.
+      try {
+        for (const duplicate of findDuplicateJsonKeys(text)) {
+          found.push({
+            from: CodeMirror.Pos(duplicate.from.line, duplicate.from.ch),
+            to: CodeMirror.Pos(duplicate.to.line, duplicate.to.ch),
+            severity: 'warning',
+            message: `Duplicate key "${duplicate.key}"`
+          });
+        }
+      } catch (_err) {
+        // Never let the duplicate-key pass break linting.
       }
       return found;
     });

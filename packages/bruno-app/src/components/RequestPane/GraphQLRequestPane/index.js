@@ -31,8 +31,8 @@ import AuthMode from '../Auth/AuthMode/index';
 
 const TAB_CONFIG = [
   { key: 'query', label: 'Query' },
-  { key: 'headers', label: 'Headers' },
   { key: 'auth', label: 'Auth' },
+  { key: 'headers', label: 'Headers' },
   { key: 'vars', label: 'Vars' },
   { key: 'script', label: 'Script' },
   { key: 'assert', label: 'Assert' },

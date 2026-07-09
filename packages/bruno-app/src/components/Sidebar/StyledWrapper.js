@@ -20,6 +20,14 @@ const Wrapper = styled.div`
       height: 100%;
     }
 
+    /* Subtle highlight while an OS file drag hovers over the collections
+       section - dropping the file there imports it as a collection. */
+    .collections-file-drop.file-drag-active .sidebar-section {
+      outline: 2px dashed ${(props) => props.theme.textLink};
+      outline-offset: -2px;
+      border-radius: 4px;
+    }
+
     /* Expanded sections grow to fill available space but are constrained */
     .sidebar-section.expanded {
       flex: 1 1 0%;

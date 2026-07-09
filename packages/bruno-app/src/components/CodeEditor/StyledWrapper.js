@@ -45,6 +45,22 @@ const StyledWrapper = styled.div`
     text-decoration: underline;
   }
 
+  /* Squiggle under the offending text itself (the lint addon's own CSS is not
+     imported, so without these the in-text lint marks are invisible). The
+     colors come from the theme, keeping the underline visible in light and
+     dark mode alike. */
+  .CodeMirror-lint-mark-error {
+    text-decoration: underline wavy ${(props) => props.theme.colors.text.danger};
+    text-decoration-skip-ink: none;
+    text-underline-offset: 2px;
+  }
+
+  .CodeMirror-lint-mark-warning {
+    text-decoration: underline wavy ${(props) => props.theme.colors.text.warning};
+    text-decoration-skip-ink: none;
+    text-underline-offset: 2px;
+  }
+
   /* Removes the glow outline around the folded json */
   .CodeMirror-foldmarker {
     text-shadow: none;

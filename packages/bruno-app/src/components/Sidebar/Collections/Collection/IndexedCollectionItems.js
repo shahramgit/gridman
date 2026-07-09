@@ -692,21 +692,28 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
     });
   };
 
-  const viewFolderSettings = () => {
+  // Open (or focus) this folder's settings tab. Single-click browsing opens it
+  // as a preview tab (replaced by the next preview, like request previews);
+  // explicit intents (context menu Settings, double-click) make it permanent.
+  // The folder item is hydrated on demand so the panel can resolve it by uid,
+  // and itemPathname is carried on the tab as a pathname fallback.
+  const openFolderSettingsTab = ({ preview = true } = {}) => {
     ensureNodeHydrated();
-    if (isTabForItemPresent) {
-      dispatch(focusTab({ uid: node.uid }));
-      return;
-    }
-
     dispatch(
       addTab({
         uid: node.uid,
         collectionUid,
-        type: 'folder-settings'
+        type: 'folder-settings',
+        itemPathname: node.pathname,
+        preview
       })
     );
+    if (!preview) {
+      dispatch(makeTabPermanent({ uid: node.uid }));
+    }
   };
+
+  const viewFolderSettings = () => openFolderSettingsTab({ preview: false });
 
   const handleGenerateCode = async () => {
     ensureNodeHydrated();
@@ -1132,13 +1139,16 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
       return;
     }
 
+    // Folder click: toggle expansion AND open its settings tab as a preview
+    // (Postman-style folder tab) so single-click browsing doesn't litter tabs.
     onToggleFolder(node.uid);
+    openFolderSettingsTab({ preview: true });
   };
 
   const handleDoubleClick = () => {
-    if (isRequest) {
-      dispatch(makeTabPermanent({ uid: node.uid }));
-    }
+    // Requests: tab uid is synthetic (indexed-request:...), resolved via the
+    // itemUid fallback in findTabForUpdate. Folders: tab uid === node.uid.
+    dispatch(makeTabPermanent({ uid: node.uid }));
   };
 
   const handleExamplesCollapse = (event) => {

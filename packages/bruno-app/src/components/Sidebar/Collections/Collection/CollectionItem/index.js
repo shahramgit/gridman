@@ -419,11 +419,15 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText, m
         })
       );
     } else {
+      // Folder click opens its settings tab as a preview (Postman-style folder
+      // tab); double-click on the row makes it permanent via handleDoubleClick.
       dispatch(
         addTab({
           uid: item.uid,
           collectionUid: collectionUid,
-          type: 'folder-settings'
+          type: 'folder-settings',
+          itemPathname: item.pathname,
+          preview: true
         })
       );
       if (item.collapsed) {
@@ -728,15 +732,18 @@ const CollectionItem = ({ item, collectionUid, collectionPathname, searchText, m
     if (isItemAFolder(item)) {
       if (isTabForItemPresent) {
         dispatch(focusTab({ uid: item.uid }));
-        return;
+      } else {
+        dispatch(
+          addTab({
+            uid: item.uid,
+            collectionUid,
+            type: 'folder-settings',
+            itemPathname: item.pathname
+          })
+        );
       }
-      dispatch(
-        addTab({
-          uid: item.uid,
-          collectionUid,
-          type: 'folder-settings'
-        })
-      );
+      // Explicit Settings intent: keep the tab around (not a preview tab)
+      dispatch(makeTabPermanent({ uid: item.uid }));
     }
   };
 

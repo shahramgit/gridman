@@ -1111,6 +1111,81 @@ export const cloneItem = (newName, newFilename, itemUid, collectionUid) => (disp
   });
 };
 
+// Save the request's CURRENT state (drafts included —
+// transformRequestToSaveToFilesystem prefers item.draft) as a NEW request at
+// an arbitrary location: any open collection, any folder. The original
+// request and its unsaved draft are left untouched. Powers the request Save
+// button's "Save As…" and the tab-menu Save As.
+export const saveRequestAs = ({ item, targetCollectionUid, targetDirname, name, filename }) => async (dispatch, getState) => {
+  const state = getState();
+  const targetCollection = findCollectionByUid(state.collections.collections, targetCollectionUid);
+
+  if (!targetCollection) {
+    throw new Error('Target collection not found');
+  }
+  if (!item || (!item.draft?.request && !item.request)) {
+    throw new Error('Unable to locate the request to save');
+  }
+
+  const dirname = targetDirname || targetCollection.pathname;
+  const resolvedFilename = resolveRequestFilename(trim(filename), targetCollection.format);
+  const fullPathname = path.join(dirname, resolvedFilename);
+
+  // Sequence the new request after its future siblings. The index covers
+  // lazily hydrated collections; the hydrated tree is the fallback.
+  const normalizeForCompare = (p) => String(p || '').normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
+  let seq = 1;
+  const targetIndex = state.collections.collectionIndexes?.[targetCollectionUid];
+  if (targetIndex?.nodesByUid) {
+    const parentNode = normalizeForCompare(dirname) === normalizeForCompare(targetCollection.pathname)
+      ? null
+      : Object.values(targetIndex.nodesByUid).find(
+          (node) => node.type === 'folder' && normalizeForCompare(node.pathname) === normalizeForCompare(dirname)
+        );
+    const parentKey = parentNode?.uid || 'root';
+    const siblingRequests = (targetIndex.childrenByParentUid?.[parentKey] || [])
+      .map((uid) => targetIndex.nodesByUid[uid])
+      .filter((node) => node && node.type !== 'folder');
+    seq = siblingRequests.length + 1;
+  } else {
+    const parentItem = normalizeForCompare(dirname) === normalizeForCompare(targetCollection.pathname)
+      ? targetCollection
+      : findItemInCollectionByPathname(targetCollection, dirname);
+    const siblingRequests = filter(parentItem?.items || [], (i) => i.type !== 'folder');
+    seq = siblingRequests.length + 1;
+  }
+
+  const itemToSave = refreshUidsInItem(transformRequestToSaveToFilesystem(item));
+  set(itemToSave, 'name', trim(name));
+  set(itemToSave, 'filename', resolvedFilename);
+  itemToSave.seq = seq;
+
+  await itemSchema.validate(itemToSave);
+  const { ipcRenderer } = window;
+  await ipcRenderer.invoke('renderer:new-request', fullPathname, itemToSave, targetCollection.format);
+
+  if (targetIndex) {
+    dispatch(collectionIndexNodeAdded({
+      collectionUid: targetCollectionUid,
+      pathname: fullPathname,
+      name: trim(name),
+      type: itemToSave.type || 'http-request',
+      seq,
+      uid: uuid()
+    }));
+  }
+
+  // Task middleware opens the new request in a tab once the file loads
+  dispatch(insertTaskIntoQueue({
+    uid: uuid(),
+    type: 'OPEN_REQUEST',
+    collectionUid: targetCollectionUid,
+    itemPathname: fullPathname
+  }));
+
+  return { pathname: fullPathname };
+};
+
 export const refreshCollectionIndex = ({ collectionUid }) => (dispatch, getState) => {
   const state = getState();
   const collection = findCollectionByUid(state.collections.collections, collectionUid);

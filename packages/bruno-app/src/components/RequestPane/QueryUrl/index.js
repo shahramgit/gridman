@@ -17,9 +17,11 @@ import { saveRequest, cancelRequest } from 'providers/ReduxStore/slices/collecti
 import { getRequestFromCurlCommand } from 'utils/curl';
 import HttpMethodSelector from './HttpMethodSelector';
 import { useTheme } from 'providers/Theme';
-import { IconDeviceFloppy, IconCode } from '@tabler/icons';
+import { IconDeviceFloppy, IconCode, IconCaretDown } from '@tabler/icons';
 import SingleLineEditor from 'components/SingleLineEditor';
 import SendButton from 'components/RequestPane/SendButton';
+import MenuDropdown from 'ui/MenuDropdown';
+import SaveAsRequest from 'components/SaveAsRequest';
 import { isMacOS } from 'utils/common/platform';
 import { uuid } from 'utils/common';
 import { deriveTransientRequestNameFromUrl, hasRequestChanges } from 'utils/collections';
@@ -38,6 +40,7 @@ const QueryUrl = ({ item, collection, handleRun }) => {
   const isLoading = ['queued', 'sending'].includes(item.requestState);
 
   const [generateCodeItemModalOpen, setGenerateCodeItemModalOpen] = useState(false);
+  const [saveAsModalOpen, setSaveAsModalOpen] = useState(false);
   const hasChanges = useMemo(() => hasRequestChanges(item), [item]);
 
   const renameAutoTransientFromUrl = useCallback((requestUrl) => {
@@ -460,24 +463,59 @@ const QueryUrl = ({ item, collection, handleRun }) => {
               <IconCode color={theme.requestTabs.icon.color} strokeWidth={1.5} size={20} className="cursor-pointer" />
               <span className="infotiptext text-xs">Generate Code</span>
             </div>
-            <div
-              title="Save Request"
-              className="infotip"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (!hasChanges) return;
-                onSave();
-              }}
-            >
-              <IconDeviceFloppy
-                color={hasChanges ? theme.draftColor : theme.requestTabs.icon.color}
-                strokeWidth={1.5}
-                size={20}
-                className={`${hasChanges ? 'cursor-pointer' : 'cursor-default'}`}
-              />
-              <span className="infotiptext text-xs">
-                Save <span className="shortcut">({saveShortcut})</span>
-              </span>
+            {/* Split save button: the floppy saves (unchanged); the caret
+                opens Save / Save As… (saves the current draft as a NEW
+                request with a name + location picker). */}
+            <div className="flex items-center save-split-button">
+              <div
+                title="Save Request"
+                className="infotip"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!hasChanges) return;
+                  onSave();
+                }}
+              >
+                <IconDeviceFloppy
+                  color={hasChanges ? theme.draftColor : theme.requestTabs.icon.color}
+                  strokeWidth={1.5}
+                  size={20}
+                  className={`${hasChanges ? 'cursor-pointer' : 'cursor-default'}`}
+                />
+                <span className="infotiptext text-xs">
+                  Save <span className="shortcut">({saveShortcut})</span>
+                </span>
+              </div>
+              <MenuDropdown
+                placement="bottom-end"
+                data-testid="save-options-menu"
+                items={[
+                  {
+                    id: 'save',
+                    label: 'Save',
+                    disabled: !hasChanges,
+                    onClick: onSave
+                  },
+                  {
+                    id: 'save-as',
+                    label: 'Save As…',
+                    onClick: () => setSaveAsModalOpen(true)
+                  }
+                ]}
+              >
+                <span
+                  title="Save options"
+                  data-testid="save-options-trigger"
+                  className="cursor-pointer flex items-center"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <IconCaretDown
+                    color={theme.requestTabs.icon.color}
+                    size={14}
+                    strokeWidth={1.5}
+                  />
+                </span>
+              </MenuDropdown>
             </div>
           </div>
         </div>
@@ -493,6 +531,13 @@ const QueryUrl = ({ item, collection, handleRun }) => {
           collectionUid={collection.uid}
           item={item}
           onClose={() => setGenerateCodeItemModalOpen(false)}
+        />
+      )}
+      {saveAsModalOpen && (
+        <SaveAsRequest
+          item={item}
+          collectionUid={collection.uid}
+          onClose={() => setSaveAsModalOpen(false)}
         />
       )}
     </StyledWrapper>

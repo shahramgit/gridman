@@ -1,7 +1,10 @@
 import React from 'react';
 import classnames from 'classnames';
+import toast from 'react-hot-toast';
 import { updatedFolderSettingsSelectedTab } from 'providers/ReduxStore/slices/collections';
+import { renameCollectionItemByPath } from 'providers/ReduxStore/slices/collections/actions';
 import { useDispatch } from 'react-redux';
+import SettingsHeaderName from 'components/SettingsHeaderName';
 import Headers from './Headers';
 import Script from './Script';
 import Tests from './Tests';
@@ -73,9 +76,32 @@ const FolderSettings = ({ collection, folder }) => {
     });
   };
 
+  // Display-name-only rename (no file move): renameCollectionItemByPath
+  // without newFilename updates the folder meta name in place.
+  const handleRename = (newName) => {
+    dispatch(renameCollectionItemByPath({
+      collectionUid: collection?.uid,
+      sourcePathname: folder?.pathname,
+      newName
+    }))
+      .then(() => {
+        toast.success('Folder renamed!');
+      })
+      .catch((err) => {
+        toast.error(err?.message || 'An error occurred while renaming the folder');
+      });
+  };
+
   return (
     <StyledWrapper className="flex flex-col h-full overflow-auto">
       <div className="flex flex-col h-full relative px-4 py-4">
+        <div className="mb-3">
+          <SettingsHeaderName
+            name={folder?.name}
+            onRename={handleRename}
+            testId="folder-settings-name"
+          />
+        </div>
         <div className="flex flex-wrap items-center tabs" role="tablist">
           <div className={getTabClassname('headers')} role="tab" data-testid="folder-settings-tab-headers" onClick={() => setTab('headers')}>
             Headers

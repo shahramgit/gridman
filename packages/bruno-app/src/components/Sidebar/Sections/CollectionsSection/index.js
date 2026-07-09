@@ -1,5 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
+import classnames from 'classnames';
 import get from 'lodash/get';
 import { useDispatch, useSelector } from 'react-redux';
 import {
@@ -22,6 +23,7 @@ import { savePreferences, setIsCreatingCollection, toggleSidebarSearch } from 'p
 import { normalizePath } from 'utils/common/path';
 import { isScratchCollection, flattenItems, isItemTransientRequest } from 'utils/collections';
 import { sanitizeName } from 'utils/common/regex';
+import { createCollectionFileProcessor, isFilesDragEvent } from 'utils/importers/fileImport';
 import filter from 'lodash/filter';
 
 import MenuDropdown from 'ui/MenuDropdown';
@@ -108,6 +110,64 @@ const CollectionsSection = () => {
     setImportData({ rawData, type, ...rest });
     setImportCollectionLocationModalOpen(true);
   };
+
+  // Dropping a collection file (JSON/YAML/ZIP/WSDL) anywhere on the sidebar's
+  // collections section imports it, exactly like dropping it on the Import
+  // Collection dialog. Native document-level listeners (hit-tested against the
+  // section) are used because react-dnd's window-level drag layers can starve
+  // React's delegated drag events; internal item drags are excluded by the
+  // 'Files' dataTransfer type guard.
+  const [fileDragActive, setFileDragActive] = useState(false);
+  const importModalOpenRef = useRef(false);
+  importModalOpenRef.current = importCollectionModalOpen || importCollectionLocationModalOpen;
+  const processDroppedFilesRef = useRef(null);
+  processDroppedFilesRef.current = createCollectionFileProcessor({ handleSubmit: handleImportCollection });
+
+  useEffect(() => {
+    const findDropTarget = (e) => (e.target instanceof Element ? e.target.closest('.collections-file-drop') : null);
+    const onDragOver = (e) => {
+      // While an import dialog is open its own drop handling takes over.
+      if (!isFilesDragEvent(e) || importModalOpenRef.current) {
+        return;
+      }
+      if (!findDropTarget(e)) {
+        setFileDragActive(false);
+        return;
+      }
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      setFileDragActive(true);
+    };
+    const onDrop = (e) => {
+      setFileDragActive(false);
+      if (!isFilesDragEvent(e) || importModalOpenRef.current || !findDropTarget(e)) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer?.files?.length) {
+        processDroppedFilesRef.current?.(e.dataTransfer.files);
+      }
+    };
+    const onDragLeaveWindow = (e) => {
+      // Pointer left the window entirely
+      if (!e.relatedTarget) {
+        setFileDragActive(false);
+      }
+    };
+    const onDragEnd = () => setFileDragActive(false);
+
+    document.addEventListener('dragover', onDragOver);
+    document.addEventListener('drop', onDrop);
+    document.addEventListener('dragleave', onDragLeaveWindow);
+    document.addEventListener('dragend', onDragEnd);
+    return () => {
+      document.removeEventListener('dragover', onDragOver);
+      document.removeEventListener('drop', onDrop);
+      document.removeEventListener('dragleave', onDragLeaveWindow);
+      document.removeEventListener('dragend', onDragEnd);
+    };
+  }, []);
 
   const handleImportCollectionLocation = (convertedCollection, collectionLocation, options = {}) => {
     const importAction = options.isZipImport
@@ -401,6 +461,7 @@ const CollectionsSection = () => {
         title="Collections"
         icon={IconBox}
         actions={sectionActions}
+        className={classnames('collections-file-drop', { 'file-drag-active': fileDragActive })}
       >
         <Collections
           showSearch={showSearch}

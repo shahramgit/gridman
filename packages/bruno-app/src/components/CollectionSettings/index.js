@@ -1,8 +1,11 @@
 import React from 'react';
 import classnames from 'classnames';
 import get from 'lodash/get';
+import toast from 'react-hot-toast';
 import { updateSettingsSelectedTab } from 'providers/ReduxStore/slices/collections';
+import { renameCollection } from 'providers/ReduxStore/slices/collections/actions';
 import { useDispatch } from 'react-redux';
+import SettingsHeaderName from 'components/SettingsHeaderName';
 import ProxySettings from './ProxySettings';
 import ClientCertSettings from './ClientCertSettings';
 import Headers from './Headers';
@@ -103,8 +106,25 @@ const CollectionSettings = ({ collection }) => {
     });
   };
 
+  const handleRename = (newName) => {
+    dispatch(renameCollection(newName, collection.uid))
+      .then(() => {
+        toast.success('Collection renamed!');
+      })
+      .catch((err) => {
+        toast.error(err?.message || 'An error occurred while renaming the collection');
+      });
+  };
+
   return (
     <StyledWrapper className="flex flex-col h-full relative px-4 py-4 overflow-hidden">
+      <div className="mb-3">
+        <SettingsHeaderName
+          name={collection?.name}
+          onRename={handleRename}
+          testId="collection-settings-name"
+        />
+      </div>
       <div className="flex flex-wrap items-center tabs" role="tablist">
         <div className={getTabClassname('overview')} role="tab" data-testid="collection-settings-tab-overview" onClick={() => setTab('overview')}>
           Overview

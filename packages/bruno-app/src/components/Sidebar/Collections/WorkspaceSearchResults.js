@@ -207,6 +207,11 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
   const store = useStore();
   const isRequest = node.nodeKind === 'request';
   const [examplesExpanded, setExamplesExpanded] = useState(false);
+  // Direct search results carry their example names inline; browse rows (a
+  // request under a name-matched folder/collection) only carry exampleCount
+  // from the index, so their example names are loaded lazily on expand.
+  const [loadedExamples, setLoadedExamples] = useState(null);
+  const [examplesLoading, setExamplesLoading] = useState(false);
   // A folder/collection matched only by name has no search children; let it be
   // expanded to browse its actual contents (lazily loaded from the index).
   const [browseExpanded, setBrowseExpanded] = useState(false);
@@ -335,6 +340,54 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
         type: 'response-example',
         itemUid: found.item.uid
       }));
+    }
+  };
+
+  // Load example names for a request row that only knows its exampleCount
+  // (browse rows built from the collection index). Loads the request into the
+  // collection state and reads its examples once they hydrate.
+  const loadExamples = async () => {
+    setExamplesLoading(true);
+    try {
+      const collection = await ensureCollectionLoaded();
+      if (cancelledRef.current) {
+        return;
+      }
+      if (!collection) {
+        setLoadedExamples([]);
+        return;
+      }
+      const collectionUid = collection.uid;
+      dispatch(loadRequest({ collectionUid, pathname: node.pathname }));
+
+      const readExamples = () => {
+        const c = findCollection();
+        const item = c ? findItemInCollectionByPathname(c, node.pathname) : null;
+        return item?.examples?.length
+          ? item.examples.map((example, index) => ({ name: example.name, index }))
+          : null;
+      };
+      let entries = readExamples();
+      const startedAt = Date.now();
+      while (!entries && !cancelledRef.current && Date.now() - startedAt < 8000) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        entries = readExamples();
+      }
+      if (!cancelledRef.current) {
+        setLoadedExamples(entries || []);
+      }
+    } finally {
+      if (!cancelledRef.current) {
+        setExamplesLoading(false);
+      }
+    }
+  };
+
+  const toggleExamples = () => {
+    const next = !examplesExpanded;
+    setExamplesExpanded(next);
+    if (next && !(node.examples?.length) && loadedExamples === null && !examplesLoading) {
+      loadExamples();
     }
   };
 
@@ -477,7 +530,7 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
     toggleBrowse();
   };
 
-  const examples = isRequest ? (node.examples || []) : [];
+  const examples = isRequest ? ((node.examples?.length ? node.examples : loadedExamples) || []) : [];
   const hasExamples = examples.length > 0 || (node.exampleCount || 0) > 0;
 
   return (
@@ -491,7 +544,11 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
         title={node.pathname || node.collectionPathname}
         onClick={handleClick}
       >
-        <span className="flex items-center justify-center mt-0.5" style={{ width: 16, minWidth: 16 }}>
+        {/* The row is items-start so two-line rows (name + match context) keep
+            their icon on the first line; giving each icon box the height of
+            one text line (1.5em = the line-height) and centering inside it
+            aligns icons/badges dead-center with the row text. */}
+        <span className="flex items-center justify-center" style={{ width: 16, minWidth: 16, height: '1.5em' }}>
           {isExpandable ? (
             <IconChevronRight
               size={15}
@@ -508,18 +565,18 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
               data-testid="search-request-examples-chevron"
               onClick={(e) => {
                 e.stopPropagation();
-                setExamplesExpanded((open) => !open);
+                toggleExamples();
               }}
             />
           ) : null}
         </span>
 
         {isRequest ? (
-          <span className="text-left mt-1" style={{ width: 52, minWidth: 52 }}>
+          <span className="flex items-center text-left" style={{ width: 52, minWidth: 52, height: '1.5em' }}>
             {node.method ? <MethodBadge method={node.method} /> : null}
           </span>
         ) : (
-          <span className="flex items-center justify-center text-muted mt-0.5" style={{ width: 18, minWidth: 18 }}>
+          <span className="flex items-center justify-center text-muted" style={{ width: 18, minWidth: 18, height: '1.5em' }}>
             <IconFolder size={15} strokeWidth={1.8} />
           </span>
         )}
@@ -535,6 +592,12 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
           ) : null}
         </span>
       </button>
+
+      {isRequest && hasExamples && examplesExpanded && examplesLoading && !examples.length ? (
+        <div className="text-xs text-muted py-1" style={{ paddingLeft: 8 + (node.depth || 0) * 14 + 30 }}>
+          Loading…
+        </div>
+      ) : null}
 
       {isRequest && hasExamples && examplesExpanded
         ? examples.map((example) => (

@@ -19,11 +19,12 @@ import ResponsiveTabs from 'ui/ResponsiveTabs';
 import HeightBoundContainer from 'ui/HeightBoundContainer';
 import AuthMode from '../Auth/AuthMode/index';
 
+// Postman-parity ordering requested by the client: Params, Auth, Headers, Body
 const TAB_CONFIG = [
   { key: 'params', label: 'Params' },
-  { key: 'body', label: 'Body' },
-  { key: 'headers', label: 'Headers' },
   { key: 'auth', label: 'Auth' },
+  { key: 'headers', label: 'Headers' },
+  { key: 'body', label: 'Body' },
   { key: 'vars', label: 'Vars' },
   { key: 'script', label: 'Script' },
   { key: 'assert', label: 'Assert' },
