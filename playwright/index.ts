@@ -198,6 +198,10 @@ export const test = baseTest.extend<
           env: {
             ...process.env,
             ELECTRON_USER_DATA_PATH: userDataPath,
+            // Keep workspace/collection creation inside the test's temp dir —
+            // without this the app resolves ~/Documents/gridman and the run
+            // reads/pollutes the user's real default workspace.
+            GRIDMAN_DEFAULT_LOCATION: userDataPath,
             DISABLE_SAMPLE_COLLECTION_IMPORT: 'true',
             PLAYWRIGHT: 'true',
             DISABLE_SINGLE_INSTANCE: 'true',

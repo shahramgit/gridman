@@ -16,7 +16,7 @@ function findCreatedWorkspaceDirs(location: string): string[] {
     const fullPath = path.join(location, e);
     return (
       fs.statSync(fullPath).isDirectory()
-      && e !== 'default-workspace'
+      && e !== 'My Workspace'
       && fs.existsSync(path.join(fullPath, 'workspace.yml'))
     );
   });

@@ -39,6 +39,34 @@ describe('buildVisibleRows (no filter)', () => {
   it('returns [] without an index', () => {
     expect(buildVisibleRows({ index: null })).toEqual([]);
   });
+
+  it('adds a synthetic empty-folder CTA row under an expanded empty folder', () => {
+    const index = makeIndex();
+    index.nodesByUid['folder-empty'] = { uid: 'folder-empty', type: 'folder', name: 'empty', pathname: '/col/empty', parentUid: null };
+    index.childrenByParentUid.root.push('folder-empty');
+
+    const rows = buildVisibleRows({ index, expandedNodeUids: new Set(['folder-empty']) });
+    const ctaRow = rows.find((r) => r.type === 'empty-folder');
+    expect(ctaRow).toEqual({
+      uid: 'folder-empty:empty-folder',
+      type: 'empty-folder',
+      folderUid: 'folder-empty',
+      pathname: '/col/empty::empty-folder'
+    });
+    // Directly follows its folder
+    expect(rows[rows.indexOf(ctaRow) - 1].uid).toBe('folder-empty');
+
+    // Not rendered during filtered views
+    const filtered = buildVisibleRows({
+      index,
+      searchText: 'empty',
+      searchMatches: {
+        matchedPathnames: new Set(['/col/empty']),
+        matchMeta: new Map([['/col/empty', { field: 'name', text: 'empty' }]])
+      }
+    });
+    expect(filtered.some((r) => r.type === 'empty-folder')).toBe(false);
+  });
 });
 
 describe('buildVisibleRows (content search / external matches)', () => {

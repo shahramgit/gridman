@@ -6,6 +6,16 @@ import { buildCommonLocators, buildScriptErrorLocators } from './locators';
 type SandboxMode = 'safe' | 'developer';
 
 /**
+ * Returns the app's first window once the renderer reports loaded state.
+ * @param app - The launched ElectronApplication
+ */
+const waitForReadyPage = async (app): Promise<Page> => {
+  const page = await app.firstWindow();
+  await page.locator('[data-app-state="loaded"]').waitFor({ timeout: 30000 });
+  return page;
+};
+
+/**
  * Close all collections
  * @param page - The page object
  * @returns void
@@ -1425,6 +1435,7 @@ const openExampleFromSidebar = async (page: Page, requestName: string, exampleNa
 };
 
 export {
+  waitForReadyPage,
   closeAllCollections,
   openCollection,
   createCollection,

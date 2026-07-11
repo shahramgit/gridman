@@ -57,6 +57,7 @@ import { getDefaultRequestPaneTab, getInitialExampleName } from 'utils/collectio
 import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname } from 'utils/collections';
 import { excludeDescendantItems } from 'utils/collections/multiSelect';
 import { buildVisibleRows, sortNodes } from 'utils/collections/visibleRows';
+import { createEmptyStateMenuItems } from 'utils/collections/emptyStateRequest';
 import { uuid } from 'utils/common';
 import { foldSearchText } from '@usebruno/common';
 import { scrollToTheActiveTab, doesTabMatchRequestNode } from 'utils/tabs';
@@ -215,6 +216,57 @@ const useVisibleRows = ({ index, expandedNodeUids, searchText, searchMatches }) 
   return useMemo(
     () => buildVisibleRows({ index, expandedNodeUids, searchText, searchMatches }),
     [index, expandedNodeUids, searchText, searchMatches]
+  );
+};
+
+// '+ Add request' CTA row under an expanded empty folder (synthetic
+// 'empty-folder' row from buildVisibleRows). Mirrors the classic renderer's
+// empty-folder message; the folder chain is hydrated on mount so the new
+// request can resolve its parent tree item.
+const IndexedEmptyFolderRow = ({ node, collectionUid }) => {
+  const dispatch = useDispatch();
+  const { dropdownContainerRef } = useSidebarAccordion();
+  const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
+  const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid), isEqual);
+  const folderNode = index?.nodesByUid?.[node.folderUid];
+
+  useEffect(() => {
+    if (!folderNode) {
+      return;
+    }
+    for (const chainNode of getIndexedNodeChain(index, folderNode)) {
+      dispatch(collectionIndexNodeActivated({ collectionUid, node: chainNode }));
+    }
+  }, [node.folderUid]);
+
+  if (!folderNode || !collection) {
+    return null;
+  }
+
+  const depth = getIndexedNodeDisplayDepth(index, folderNode) + 1;
+  const menuItems = createEmptyStateMenuItems({ dispatch, collection, itemUid: node.folderUid });
+
+  return (
+    <StyledWrapper>
+      <div className="empty-folder-message flex items-center" style={{ height: ROW_HEIGHT }}>
+        {Array.from({ length: depth }).map((_, indentIndex) => (
+          <div key={`${node.uid}-indent-${indentIndex}`} className="indent-block" style={{ width: 16, minWidth: 16, height: '100%' }}>
+            &nbsp;
+          </div>
+        ))}
+        <div style={{ paddingLeft: 8 }}>
+          <MenuDropdown
+            data-testid="add-request-cta-folder"
+            items={menuItems}
+            placement="bottom-start"
+            appendTo={dropdownContainerRef?.current || document.body}
+            popperOptions={{ strategy: 'fixed' }}
+          >
+            <button className="ml-1 add-request-link">+ Add request</button>
+          </MenuDropdown>
+        </div>
+      </div>
+    </StyledWrapper>
   );
 };
 
@@ -1213,6 +1265,7 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
         style={showMatchContext ? { minHeight: ROW_HEIGHT } : { height: ROW_HEIGHT }}
         title={node.pathname}
         tabIndex={0}
+        data-testid="sidebar-collection-item-row"
         onFocus={handleRowFocus}
         onBlur={handleRowBlur}
         onContextMenu={handleContextMenu}
@@ -1497,15 +1550,19 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
         data={visibleRows}
         computeItemKey={(_index, node) => node.pathname || node.uid}
         itemContent={(_index, node) => (
-          <IndexedRow
-            node={node}
-            collectionUid={collectionUid}
-            searchText={searchText}
-            filterActive={filterActive}
-            expandedNodeUids={expandedNodeUids}
-            onToggleFolder={onToggleFolder}
-            multiSelect={rowMultiSelect}
-          />
+          node.type === 'empty-folder' ? (
+            <IndexedEmptyFolderRow node={node} collectionUid={collectionUid} />
+          ) : (
+            <IndexedRow
+              node={node}
+              collectionUid={collectionUid}
+              searchText={searchText}
+              filterActive={filterActive}
+              expandedNodeUids={expandedNodeUids}
+              onToggleFolder={onToggleFolder}
+              multiSelect={rowMultiSelect}
+            />
+          )
         )}
       />
     </div>

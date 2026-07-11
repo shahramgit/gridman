@@ -82,7 +82,7 @@ test.describe('Collection reorder persistence', () => {
     });
 
     await test.step('Verify workspace.yml has ColB before ColA', async () => {
-      const workspacePath = path.join(userDataPath, 'default-workspace');
+      const workspacePath = path.join(userDataPath, 'My Workspace');
       const ymlPath = path.join(workspacePath, 'workspace.yml');
       expect(fs.existsSync(ymlPath)).toBe(true);
       const config = yaml.load(fs.readFileSync(ymlPath, 'utf8')) as WorkspaceConfig | undefined;

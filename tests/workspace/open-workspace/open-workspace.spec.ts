@@ -1,6 +1,6 @@
 import type { ElectronApplication } from '@playwright/test';
 import { expect, test } from '../../../playwright';
-import { buildCommonLocators, waitForReadyPage } from '../../utils/page';
+import { buildCommonLocators } from '../../utils/page';
 
 test.describe('Open Workspace', () => {
   test('click on cancel button, should just close the dialog', async ({
@@ -10,7 +10,8 @@ test.describe('Open Workspace', () => {
     const userDataPath = await createTmpDir('open-workspace-cancel');
 
     let app: ElectronApplication = await launchElectronApp({ userDataPath });
-    const page = await waitForReadyPage(app);
+    const page = await app.firstWindow();
+    await page.locator('[data-app-state="loaded"]').waitFor({ timeout: 30000 });
     const locators = buildCommonLocators(page);
 
     const initialWorkspaceName = await page

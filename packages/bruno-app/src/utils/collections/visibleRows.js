@@ -56,14 +56,28 @@ export const buildVisibleRows = ({ index, expandedNodeUids = new Set(), searchTe
   const childrenByParentUid = index.childrenByParentUid || {};
   const trimmedSearchText = searchText?.trim();
 
-  const walkExpanded = () => {
+  // includeEmptyFolderRows: an expanded folder with no children gets a
+  // synthetic '+ Add request' CTA row (only outside search/filter views,
+  // matching the classic renderer's empty-folder message).
+  const walkExpanded = ({ includeEmptyFolderRows = false } = {}) => {
     const rows = [];
     const walk = (parentUid) => {
       const children = sortNodes((childrenByParentUid[parentUid || 'root'] || []).map((uid) => nodesByUid[uid]).filter(Boolean));
       for (const child of children) {
         rows.push(child);
         if (child.type === 'folder' && expandedNodeUids.has(child.uid)) {
-          walk(child.uid);
+          const childCount = (childrenByParentUid[child.uid] || []).length;
+          if (childCount) {
+            walk(child.uid);
+          } else if (includeEmptyFolderRows) {
+            rows.push({
+              uid: `${child.uid}:empty-folder`,
+              type: 'empty-folder',
+              folderUid: child.uid,
+              // computeItemKey keys rows by pathname
+              pathname: `${child.pathname || child.uid}::empty-folder`
+            });
+          }
         }
       }
     };
@@ -174,5 +188,5 @@ export const buildVisibleRows = ({ index, expandedNodeUids = new Set(), searchTe
     return buildFilteredRows(matched);
   }
 
-  return walkExpanded();
+  return walkExpanded({ includeEmptyFolderRows: true });
 };

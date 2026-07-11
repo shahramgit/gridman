@@ -20,12 +20,16 @@ function isLegacyDefaultLocation(dirPath) {
 /**
  * Returns the default location where new workspaces and collections are stored.
  * Checks ~/Documents/gridman if available, otherwise falls back to the app's data directory.
+ * GRIDMAN_DEFAULT_LOCATION overrides both — set by the playwright fixture so
+ * e2e runs stay inside their temp userData dir instead of reading/polluting
+ * the user's real Documents folder.
  */
 function resolveDefaultLocation() {
   const defaultPaths = [
+    process.env.GRIDMAN_DEFAULT_LOCATION,
     getDocumentsDefaultLocation(),
     app.getPath('userData')
-  ];
+  ].filter(Boolean);
 
   for (const dirPath of defaultPaths) {
     try {
