@@ -39,8 +39,38 @@ const isCollectionMetadataFile = (name, dirname, collectionPathname, format) => 
   return name === 'collection.bru' || name === 'opencollection.yml' || name === 'bruno.json';
 };
 
+// Temporary perf instrumentation (GRIDMAN_PERF=1): accumulates the I/O vs
+// CPU split of an index scan. Module-level is safe because only one indexer
+// job runs at a time (MAX_ACTIVE_INDEXERS = 1). Remove after the perf work.
+const perfEnabled = Boolean(process.env.GRIDMAN_PERF);
+let perf = null;
+const perfStart = () => {
+  if (perfEnabled) {
+    perf = { t0: performance.now(), readMs: 0, parseMs: 0, files: 0, bytes: 0 };
+  }
+};
+const perfLog = (label) => {
+  if (perf) {
+    const total = performance.now() - perf.t0;
+    console.warn(
+      `[perf:index] ${label} files=${perf.files} bytes=${perf.bytes} `
+      + `total=${total.toFixed(0)}ms read=${perf.readMs.toFixed(0)}ms `
+      + `parse=${perf.parseMs.toFixed(0)}ms other=${(total - perf.readMs - perf.parseMs).toFixed(0)}ms`
+    );
+    perf = null;
+  }
+};
+
 const safeReadText = async (pathname) => {
   try {
+    if (perf) {
+      const r0 = performance.now();
+      const content = await fs.readFile(pathname, 'utf8');
+      perf.readMs += performance.now() - r0;
+      perf.files += 1;
+      perf.bytes += content.length;
+      return content;
+    }
     return await fs.readFile(pathname, 'utf8');
   } catch (_err) {
     return null;
@@ -139,6 +169,7 @@ const extractRequestMeta = async (pathname, format) => {
   }
 
   try {
+    const p0 = perf ? performance.now() : 0;
     const parsed = {
       name: extractLineValue(content, 'name'),
       type: format === 'bru' ? extractBruType(content) : extractLineValue(content, 'type'),
@@ -148,7 +179,7 @@ const extractRequestMeta = async (pathname, format) => {
         url: extractLineValue(content, 'url')
       }
     };
-    return {
+    const meta = {
       name: parsed.name || fallbackName,
       type: normalizeRequestType(parsed.type),
       seq: parsed.seq,
@@ -157,6 +188,10 @@ const extractRequestMeta = async (pathname, format) => {
       url: parsed.request?.url || parsed.url || '',
       exampleCount: countExamples(content, format)
     };
+    if (perf) {
+      perf.parseMs += performance.now() - p0;
+    }
+    return meta;
   } catch (_err) {
     return {
       name: fallbackName,
@@ -285,10 +320,12 @@ const cancelCollectionIndex = (collectionUid, loadSessionId) => {
 const runCollectionIndex = async (win, job) => {
   activeIndexers += 1;
   activeJobs.set(job.collectionUid, job);
+  perfStart();
 
   try {
     await scanDirectory(win, job, job.collectionPathname, null, 0);
     sendBatch(win, job, true);
+    perfLog(path.basename(job.collectionPathname));
 
     if (job.cancelled) {
       win.webContents.send('main:collection-index-cancelled', {

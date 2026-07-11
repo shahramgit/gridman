@@ -220,12 +220,109 @@ const createWorkspaceCollectionSearchResult = ({ workspacePath, collectionPath }
   };
 };
 
-const buildWorkspaceSearchCacheEntry = async ({ workspacePath, collectionPath, pathname, format, mtimeMs, size, isFolderMeta }) => {
+// --- Fold worker pool ---------------------------------------------------
+// Folding is the CPU-dominant cost of an index build (~97% of wall time on
+// content-heavy collections, measured on the GSB workspace) and it is pure
+// computation — so it runs on a small worker_threads pool, chunked to
+// amortize messaging. Falls back to inline folding if workers cannot spawn.
+const os = require('os');
+const FOLD_POOL_SIZE = Math.max(1, Math.min(4, os.cpus().length - 1));
+// Chunks flush on EITHER bound. The byte bound is what matters: fold cost
+// scales with content bytes, so a count-only bound lets one 8MB chunk pin a
+// single worker while the rest of the pool idles.
+const FOLD_CHUNK_SIZE = 64;
+const FOLD_CHUNK_BYTES = 256 * 1024;
+let foldPool = null; // { workers: [], pending: Map<id, {resolve,reject}>, nextId, nextWorker } | 'unavailable'
+
+const FOLD_POOL_IDLE_MS = 30 * 1000;
+
+const terminateFoldPool = () => {
+  if (foldPool && foldPool !== 'unavailable') {
+    for (const worker of foldPool.workers) {
+      worker.terminate().catch(() => {});
+    }
+    clearTimeout(foldPool.idleTimer);
+    foldPool = null;
+  }
+};
+
+const scheduleFoldPoolTeardown = (pool) => {
+  clearTimeout(pool.idleTimer);
+  pool.idleTimer = setTimeout(() => {
+    if (foldPool === pool && pool.pending.size === 0) {
+      terminateFoldPool();
+    }
+  }, FOLD_POOL_IDLE_MS);
+  pool.idleTimer.unref?.();
+};
+
+const getFoldPool = () => {
+  // Never spawn worker threads under jest: open worker handles keep the test
+  // process alive after the run finishes (observed as hung jest processes).
+  // Tests exercise the inline fold path, which is behavior-identical.
+  if (process.env.JEST_WORKER_ID !== undefined) {
+    return null;
+  }
+  if (foldPool) {
+    return foldPool === 'unavailable' ? null : foldPool;
+  }
+  try {
+    const { Worker } = require('node:worker_threads');
+    const scriptPath = path.join(__dirname, 'workspace-search-fold-worker.js');
+    const pool = { workers: [], pending: new Map(), nextId: 1, nextWorker: 0, idleTimer: null };
+    for (let i = 0; i < FOLD_POOL_SIZE; i++) {
+      const worker = new Worker(scriptPath);
+      worker.unref(); // never keep the process alive for the pool
+      worker.on('message', ({ id, results, error }) => {
+        const entry = pool.pending.get(id);
+        if (entry) {
+          pool.pending.delete(id);
+          error ? entry.reject(new Error(error)) : entry.resolve(results);
+        }
+      });
+      worker.on('error', (err) => {
+        // Fail all in-flight requests routed to this worker; callers fall
+        // back to inline folding.
+        for (const [id, entry] of pool.pending.entries()) {
+          if (entry.workerIndex === i) {
+            pool.pending.delete(id);
+            entry.reject(err);
+          }
+        }
+      });
+      pool.workers.push(worker);
+    }
+    foldPool = pool;
+    return pool;
+  } catch (_err) {
+    foldPool = 'unavailable';
+    return null;
+  }
+};
+
+const foldChunkInWorker = (pool, jobs) => new Promise((resolve, reject) => {
+  const id = pool.nextId++;
+  const workerIndex = pool.nextWorker;
+  pool.nextWorker = (pool.nextWorker + 1) % pool.workers.length;
+  pool.pending.set(id, { resolve, reject, workerIndex });
+  pool.workers[workerIndex].postMessage({ id, jobs });
+  // Tear the pool down after it sits idle — warm builds are bursty and the
+  // threads should not linger for the rest of the session.
+  scheduleFoldPoolTeardown(pool);
+});
+
+const buildWorkspaceSearchCacheEntry = async ({ workspacePath, collectionPath, pathname, format, mtimeMs, size, isFolderMeta }, perf) => {
+  const r0 = perf ? performance.now() : 0;
   const content = await readSearchText(pathname);
+  if (perf) {
+    perf.readMs += performance.now() - r0;
+    perf.bytes += content.length;
+  }
   const result = isFolderMeta
     ? createWorkspaceFolderSearchResult({ workspacePath, collectionPath, pathname, content, format })
     : createWorkspaceSearchResult({ workspacePath, collectionPath, pathname, content, format });
 
+  const f0 = perf ? performance.now() : 0;
   const fields = buildSearchFields({
     content,
     format,
@@ -233,9 +330,16 @@ const buildWorkspaceSearchCacheEntry = async ({ workspacePath, collectionPath, p
     filename: result.filename,
     url: result.url
   });
+  if (perf) {
+    perf.foldMs += performance.now() - f0;
+  }
 
-  // Attach a lightweight example list to the request result so search rows can
-  // show the "has examples" marker and expand to the examples without parsing.
+  return assembleCacheEntry({ result, fields, mtimeMs, size, isFolderMeta });
+};
+
+// Attach a lightweight example list to the request result so search rows can
+// show the "has examples" marker and expand to the examples without parsing.
+const assembleCacheEntry = ({ result, fields, mtimeMs, size, isFolderMeta }) => {
   const exampleEntries = fields.exampleEntries || [];
   if (!isFolderMeta && exampleEntries.length) {
     result.exampleCount = exampleEntries.length;
@@ -261,6 +365,11 @@ const WORKSPACE_SEARCH_BUILD_CONCURRENCY = 32;
 
 const buildCollectionSearchEntries = async (workspacePath, collectionPath, format) => {
   const files = [];
+  // Temporary perf instrumentation (GRIDMAN_PERF=1) — I/O vs CPU split of a
+  // search-index build. Local to this build; safe under concurrent builds.
+  const perf = process.env.GRIDMAN_PERF
+    ? { t0: performance.now(), statMs: 0, readMs: 0, foldMs: 0, built: 0, cached: 0, bytes: 0 }
+    : null;
 
   const walk = async (dirname) => {
     let dirents;
@@ -294,34 +403,130 @@ const buildCollectionSearchEntries = async (workspacePath, collectionPath, forma
   // Stat/build in parallel, but keep walk order deterministic in the result.
   const built = new Array(files.length);
   let nextFile = 0;
-  const worker = async () => {
+  // Phase 1 (main thread, pooled): stat + read changed files and prepare
+  // their result shells. Folding — the CPU-dominant part — is dispatched to
+  // the worker pool in chunks AS reads complete, so transient memory stays
+  // bounded and the fold runs on other cores while reads continue.
+  const pool = getFoldPool();
+  const pendingFold = [];
+  let pendingFoldBytes = 0;
+  const foldDispatches = [];
+
+  const foldChunk = (chunk) => {
+    const dispatch = async () => {
+      let fieldsList = null;
+      if (pool) {
+        try {
+          fieldsList = await foldChunkInWorker(pool, chunk.map((job) => ({
+            content: job.content,
+            format,
+            name: job.result.name,
+            filename: job.result.filename,
+            url: job.result.url
+          })));
+          if (perf) {
+            perf.workerChunks = (perf.workerChunks || 0) + 1;
+          }
+        } catch (err) {
+          fieldsList = null; // worker died — fold this chunk inline below
+          if (perf) {
+            perf.inlineChunks = (perf.inlineChunks || 0) + 1;
+            perf.workerError = err?.message;
+          }
+        }
+      } else if (perf) {
+        perf.noPool = true;
+      }
+      chunk.forEach((job, k) => {
+        let fields = fieldsList?.[k];
+        if (!fields) {
+          const f0 = perf ? performance.now() : 0;
+          fields = buildSearchFields({
+            content: job.content,
+            format,
+            name: job.result.name,
+            filename: job.result.filename,
+            url: job.result.url
+          });
+          if (perf) {
+            perf.foldMs += performance.now() - f0;
+          }
+        }
+        const entry = assembleCacheEntry({
+          result: job.result,
+          fields,
+          mtimeMs: job.mtimeMs,
+          size: job.size,
+          isFolderMeta: job.isFolderMeta
+        });
+        workspaceSearchFileCache.set(job.pathname, entry);
+        built[job.index] = entry;
+        job.content = null; // release the file text as soon as it is folded
+      });
+    };
+    foldDispatches.push(dispatch());
+  };
+
+  const reader = async () => {
     while (nextFile < files.length) {
       const index = nextFile++;
       const { pathname, isFolderMeta } = files[index];
-      let cacheEntry = workspaceSearchFileCache.get(pathname);
+      const cacheEntry = workspaceSearchFileCache.get(pathname);
       try {
+        const s0 = perf ? performance.now() : 0;
         const stat = await fs.promises.stat(pathname);
-        if (!cacheEntry || cacheEntry.mtimeMs !== stat.mtimeMs || cacheEntry.size !== stat.size) {
-          cacheEntry = await buildWorkspaceSearchCacheEntry({
-            workspacePath,
-            collectionPath,
-            pathname,
-            format,
-            mtimeMs: stat.mtimeMs,
-            size: stat.size,
-            isFolderMeta
-          });
-          workspaceSearchFileCache.set(pathname, cacheEntry);
+        if (perf) {
+          perf.statMs += performance.now() - s0;
         }
-        built[index] = cacheEntry;
+        if (!cacheEntry || cacheEntry.mtimeMs !== stat.mtimeMs || cacheEntry.size !== stat.size) {
+          if (perf) {
+            perf.built += 1;
+          }
+          const r0 = perf ? performance.now() : 0;
+          const content = await readSearchText(pathname);
+          if (perf) {
+            perf.readMs += performance.now() - r0;
+            perf.bytes += content.length;
+          }
+          const result = isFolderMeta
+            ? createWorkspaceFolderSearchResult({ workspacePath, collectionPath, pathname, content, format })
+            : createWorkspaceSearchResult({ workspacePath, collectionPath, pathname, content, format });
+          pendingFold.push({ index, pathname, isFolderMeta, mtimeMs: stat.mtimeMs, size: stat.size, content, result });
+          pendingFoldBytes += content.length;
+          if (pendingFold.length >= FOLD_CHUNK_SIZE || pendingFoldBytes >= FOLD_CHUNK_BYTES) {
+            foldChunk(pendingFold.splice(0, pendingFold.length));
+            pendingFoldBytes = 0;
+          }
+        } else {
+          if (perf) {
+            perf.cached += 1;
+          }
+          built[index] = cacheEntry;
+        }
       } catch (_err) {
         // skip unreadable files
       }
     }
   };
   await Promise.all(
-    Array.from({ length: Math.min(WORKSPACE_SEARCH_BUILD_CONCURRENCY, files.length) }, worker)
+    Array.from({ length: Math.min(WORKSPACE_SEARCH_BUILD_CONCURRENCY, files.length) }, reader)
   );
+  if (pendingFold.length) {
+    foldChunk(pendingFold.splice(0, pendingFold.length));
+  }
+  await Promise.all(foldDispatches);
+
+  if (perf) {
+    const total = performance.now() - perf.t0;
+    console.warn(
+      `[perf:search] ${path.basename(collectionPath)} files=${files.length} `
+      + `built=${perf.built} cached=${perf.cached} bytes=${perf.bytes} `
+      + `total=${total.toFixed(0)}ms stat=${perf.statMs.toFixed(0)}ms `
+      + `read=${perf.readMs.toFixed(0)}ms inlineFold=${perf.foldMs.toFixed(0)}ms `
+      + `wchunks=${perf.workerChunks || 0} ichunks=${perf.inlineChunks || 0}`
+      + `${perf.noPool ? ' NOPOOL' : ''}${perf.workerError ? ` werr=${perf.workerError}` : ''}`
+    );
+  }
 
   const entries = new Map();
   for (let i = 0; i < files.length; i++) {

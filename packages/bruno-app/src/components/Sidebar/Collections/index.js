@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import toast from 'react-hot-toast';
 import { IconBox, IconLoader2 } from '@tabler/icons';
@@ -106,6 +106,31 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
       collectionPaths
     }).catch(() => {});
   }, [showSearch, activeWorkspace?.pathname]);
+
+  // Also warm the search index in the background shortly after a workspace
+  // loads — delayed so it never competes with collection opening/indexing at
+  // startup. By the time the user first opens search, the index is usually
+  // already built (the whole GSB workspace warms in single-digit seconds on
+  // the fold worker pool). Once per workspace per session.
+  const warmedWorkspacesRef = useRef(new Set());
+  useEffect(() => {
+    const workspacePath = activeWorkspace?.pathname;
+    if (!workspacePath || warmedWorkspacesRef.current.has(workspacePath)) {
+      return;
+    }
+    const collectionPaths = (activeWorkspace.collections || []).map((wc) => wc.path).filter(Boolean);
+    if (!collectionPaths.length) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      warmedWorkspacesRef.current.add(workspacePath);
+      window.ipcRenderer.invoke('renderer:warm-workspace-search', {
+        workspacePath,
+        collectionPaths
+      }).catch(() => {});
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, [activeWorkspace?.pathname, activeWorkspace?.collections]);
 
   const nonScratchCollections = useMemo(() => {
     return collections.filter((c) => !isScratchCollection(c, workspaces));
