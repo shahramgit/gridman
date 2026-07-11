@@ -3,7 +3,7 @@ import toast from 'react-hot-toast';
 import { useDispatch, useSelector, useStore } from 'react-redux';
 import { IconChevronRight, IconFolder, IconLoader2, IconSearch } from '@tabler/icons';
 import classnames from 'classnames';
-import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
+import { addTab, focusTab, makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
 import { collectionIndexNodeActivated } from 'providers/ReduxStore/slices/collections';
 import { loadRequest, mountCollection, openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
 import { getDefaultRequestPaneTab, findItemInCollectionByPathname } from 'utils/collections';
@@ -518,16 +518,70 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
     }
   };
 
+  // Open the folder's settings tab, exactly like clicking the folder in the
+  // sidebar does — so after the search is cleared, the folder tab remains and
+  // the user keeps their context (client item 8). The search node's uid is a
+  // hash, so the real index node is resolved by pathname first.
+  const openFolderTab = async ({ preview = true } = {}) => {
+    const collection = await ensureCollectionLoaded();
+    if (!collection || cancelledRef.current || !node.pathname) {
+      return;
+    }
+    const state = store.getState().collections;
+    const index = state.collectionIndexes?.[collection.uid];
+    const nodesByUid = index?.nodesByUid || {};
+    const mappedUid = index?.uidByPathname?.[normalizePath(node.pathname)];
+    const folderNode = (mappedUid && nodesByUid[mappedUid])
+      || Object.values(nodesByUid).find((n) => normalizePath(n.pathname) === normalizePath(node.pathname));
+    if (!folderNode) {
+      return;
+    }
+    // Hydrate the folder's ancestor chain (same as the sidebar's
+    // activateNodeChain) so the settings panel can resolve the item.
+    const chain = [];
+    let current = folderNode;
+    const seen = new Set();
+    while (current?.uid && !seen.has(current.uid)) {
+      seen.add(current.uid);
+      chain.unshift(current);
+      current = current.parentUid ? nodesByUid[current.parentUid] : null;
+    }
+    for (const chainNode of chain) {
+      dispatch(collectionIndexNodeActivated({ collectionUid: collection.uid, node: chainNode }));
+    }
+    dispatch(addTab({
+      uid: folderNode.uid,
+      collectionUid: collection.uid,
+      type: 'folder-settings',
+      itemPathname: folderNode.pathname,
+      preview
+    }));
+    if (!preview) {
+      dispatch(makeTabPermanent({ uid: folderNode.uid }));
+    }
+  };
+
+  const isFolderRow = !isRequest && node.type === 'folder' && Boolean(node.pathname);
+
   const handleClick = () => {
     if (isRequest) {
       openRequest();
       return;
+    }
+    if (isFolderRow) {
+      openFolderTab({ preview: true });
     }
     if (hasSearchChildren) {
       onToggleNode(node.uid);
       return;
     }
     toggleBrowse();
+  };
+
+  const handleDoubleClick = () => {
+    if (isFolderRow) {
+      openFolderTab({ preview: false });
+    }
   };
 
   const examples = isRequest ? ((node.examples?.length ? node.examples : loadedExamples) || []) : [];
@@ -543,6 +597,7 @@ const WorkspaceSearchTreeRow = ({ node, searchText, workspacePath, collapsedNode
         style={{ minHeight: 28, paddingLeft: 8 + (node.depth || 0) * 14 }}
         title={node.pathname || node.collectionPathname}
         onClick={handleClick}
+        onDoubleClick={handleDoubleClick}
       >
         {/* The row is items-start so two-line rows (name + match context) keep
             their icon on the first line; giving each icon box the height of
