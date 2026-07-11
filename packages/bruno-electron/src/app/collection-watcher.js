@@ -206,7 +206,11 @@ const unlinkEnvironmentFile = async (win, pathname, collectionUid) => {
   }
 };
 
-const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread, watcher) => {
+// Added to a background parse's queue priority (lower = served first) so a
+// user-initiated parse always jumps ahead of an initial-scan backlog.
+const BACKGROUND_PARSE_PRIORITY_BOOST = 1e9;
+
+const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread, watcher, parsePriorityBoost = 0) => {
   // A git checkout/pull/merge rewrites many files at once; skip the per-file
   // storm and let the single post-operation reindex resync the collection.
   if (isPathUnderActiveGitOperation(pathname)) {
@@ -351,7 +355,8 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
       if (fileStats.size < MAX_FILE_SIZE) {
         file.data = await parseRequestViaWorker(content, {
           format,
-          filename: pathname
+          filename: pathname,
+          priorityBoost: parsePriorityBoost
         });
         file.partial = false;
         file.loading = false;
@@ -843,13 +848,18 @@ class CollectionWatcher {
       });
 
       let startedNewWatcher = false;
+      // During the initial scan, parses run at background priority so a
+      // user-initiated parse (opening a request) queued into the same worker
+      // lane is served first. Live events after 'ready' use normal priority.
+      let initialScanActive = !options.skipInitialLoad;
       watcher
         .on('ready', () => {
+          initialScanActive = false;
           if (!options.skipInitialLoad) {
             onWatcherSetupComplete(win, watchPath, collectionUid, this);
           }
         })
-        .on('add', (pathname) => add(win, pathname, collectionUid, watchPath, useWorkerThread, this))
+        .on('add', (pathname) => add(win, pathname, collectionUid, watchPath, useWorkerThread, this, initialScanActive ? BACKGROUND_PARSE_PRIORITY_BOOST : 0))
         .on('addDir', (pathname) => addDirectory(win, pathname, collectionUid, watchPath))
         .on('change', (pathname) => change(win, pathname, collectionUid, watchPath))
         .on('unlink', (pathname) => unlink(win, pathname, collectionUid, watchPath))

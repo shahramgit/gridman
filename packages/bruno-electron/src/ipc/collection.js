@@ -369,9 +369,42 @@ const addIndexedCollectionWatcherAfterIdle = (watcher, mainWindow, collectionPat
 //     the initial scan skipped; requests hydrate on demand (unchanged).
 // Running the eager scan only after index-ready keeps the indexer's
 // uids/parents authoritative; hydration upserts then match nodes by uid.
+// Eager initial scans are expensive: chokidar replays every file as a fully
+// PARSED addFile event, and measured on the GSB workspace that is ~160s of
+// parse CPU across 87 small collections (2.6k example-heavy files). Two
+// protections keep startup responsive:
+//  - parses run on the filestore worker thread, never the main process
+//  - attaches are staggered (one every EAGER_ATTACH_GAP_MS), so startup is
+//    not 87 simultaneous directory scans + IPC bursts. Until a collection
+//    hydrates, every feature already works through the lazy/index paths.
+const EAGER_ATTACH_GAP_MS = 250;
+const eagerAttachQueue = [];
+let eagerAttachTimer = null;
+const drainEagerAttachQueue = () => {
+  if (eagerAttachTimer) {
+    return;
+  }
+  const next = eagerAttachQueue.shift();
+  if (!next) {
+    return;
+  }
+  try {
+    next();
+  } catch (_err) {
+    // an attach failure must not stall the rest of the queue
+  }
+  eagerAttachTimer = setTimeout(() => {
+    eagerAttachTimer = null;
+    drainEagerAttachQueue();
+  }, EAGER_ATTACH_GAP_MS);
+};
+
 const startIndexedCollectionLoad = (watcher, mainWindow, { collectionUid, collectionPathname, brunoConfig, loadSessionId, lazyHydration }) => {
   const attachEagerWatcher = () => {
-    watcher.addWatcher(mainWindow, collectionPathname, collectionUid, brunoConfig, false, false);
+    eagerAttachQueue.push(() => {
+      watcher.addWatcher(mainWindow, collectionPathname, collectionUid, brunoConfig, false, true);
+    });
+    drainEagerAttachQueue();
   };
 
   startCollectionIndex(mainWindow, {
