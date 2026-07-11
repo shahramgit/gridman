@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { getEmptyImage } from 'react-dnd-html5-backend';
 import classnames from 'classnames';
 import { uuid } from 'utils/common';
-import filter from 'lodash/filter';
 import { useDrop, useDrag } from 'react-dnd';
 import {
   IconChevronRight,
@@ -27,7 +26,7 @@ import {
   IconClock
 } from '@tabler/icons';
 import OpenAPISyncIcon from 'components/Icons/OpenAPISync';
-import { toggleCollection, collapseFullCollection, toggleCollectionItem } from 'providers/ReduxStore/slices/collections';
+import { toggleCollection, collapseFullCollection } from 'providers/ReduxStore/slices/collections';
 import {
   mountCollection,
   moveCollectionAndPersist,
@@ -36,7 +35,8 @@ import {
   pasteItem,
   showInFolder,
   saveCollectionSecurityConfig,
-  renameCollection
+  renameCollection,
+  refreshCollectionIndex
 } from 'providers/ReduxStore/slices/collections/actions';
 import { useDispatch, useSelector, useStore } from 'react-redux';
 import { addTab, makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
@@ -44,14 +44,12 @@ import { setFocusedSidebarPath } from 'providers/ReduxStore/slices/app';
 import toast from 'react-hot-toast';
 import NewRequest from 'components/Sidebar/NewRequest';
 import NewFolder from 'components/Sidebar/NewFolder';
-import CollectionItem from './CollectionItem';
 import IndexedCollectionItems, { sortIndexedChildren } from './IndexedCollectionItems';
 import ImportIntoFolder from './ImportIntoFolder';
 import SearchHighlight from '../SearchHighlight';
 import RemoveCollection from './RemoveCollection';
-import { doesCollectionHaveItemsMatchingSearchText } from 'utils/collections/search';
-import { isItemAFolder, isItemARequest, areItemsLoading, flattenItems, findParentItemInCollection } from 'utils/collections';
-import { buildClassicVisibleUids, getRangeUids } from 'utils/collections/multiSelect';
+import { isItemAFolder, isItemARequest } from 'utils/collections';
+import { getRangeUids } from 'utils/collections/multiSelect';
 import { isTabForItemActive } from 'src/selectors/tab';
 
 import StyledWrapper from './StyledWrapper';
@@ -60,7 +58,6 @@ import { scrollToTheActiveTab } from 'utils/tabs';
 import ShareCollection from 'components/ShareCollection/index';
 import GenerateDocumentation from './GenerateDocumentation';
 import { CollectionItemDragPreview } from './CollectionItem/CollectionItemDragPreview/index';
-import { sortByNameThenSequence } from 'utils/common/index';
 import { getRevealInFolderLabel } from 'utils/common/platform';
 import { openDevtoolsAndSwitchToTerminal } from 'utils/terminal';
 import ActionIcon from 'ui/ActionIcon';
@@ -74,18 +71,6 @@ import useKeybinding from 'hooks/useKeybinding';
 // Delay before showing empty collection state (ms)
 // This prevents flicker from race condition between loading state and item batch updates
 const EMPTY_STATE_DELAY_MS = 300;
-
-// Temporary escape hatch for sidebar unification Phase 2 (kept for one
-// release): set localStorage 'gridman.classicSidebar' to any truthy value and
-// reload to force the classic recursive sidebar renderer.
-const isClassicSidebarForced = () => {
-  try {
-    return Boolean(window.localStorage?.getItem('gridman.classicSidebar'));
-  } catch (err) {
-    return false;
-  }
-};
-const classicSidebarForced = isClassicSidebarForced();
 
 const Collection = ({ collection, searchText }) => {
   const isOpenAPISyncEnabled = useBetaFeature(BETA_FEATURES.OPENAPI_SYNC);
@@ -106,11 +91,10 @@ const Collection = ({ collection, searchText }) => {
   const store = useStore();
   const isLoading = collection.isLoading;
   const collectionIndex = useSelector((state) => state.collections.collectionIndexes?.[collection.uid]);
-  // The indexed renderer is the default for every collection (the main process
-  // always builds an index now). The classic recursive tree remains only for
-  // the localStorage escape hatch and as a fallback when indexing failed —
-  // small collections are still eagerly hydrated, so the tree has data then.
-  const useIndexedSidebar = !classicSidebarForced && Boolean(collectionIndex) && collectionIndex.status !== 'failed';
+  // The indexed renderer is the only renderer (unification Phase 3a). When
+  // indexing failed, a retry row renders instead — a collection must never
+  // silently render empty.
+  const indexFailed = collectionIndex?.status === 'failed';
   const collectionRef = useRef(null);
   // Only count persisted requests and folders; transients and file items
   // (bruno.json, .js scripts) don't affect empty state
@@ -128,12 +112,6 @@ const Collection = ({ collection, searchText }) => {
   // callbacks stay referentially stable for the memoized row components;
   // nothing renders from the anchor itself.
   const lastSelectedUidRef = useRef(null);
-  // Refs so the stable callbacks below always read the current tree/search.
-  const collectionDataRef = useRef(collection);
-  collectionDataRef.current = collection;
-  const searchTextRef = useRef(searchText);
-  searchTextRef.current = searchText;
-
   // The visible rows change wholesale on search/collection changes; a stale
   // selection would silently target hidden items, so reset it.
   useEffect(() => {
@@ -179,8 +157,8 @@ const Collection = ({ collection, searchText }) => {
   }, []);
 
   // Shift-click: select the visible range between the anchor and the target.
-  // The indexed renderer passes its own visibleUids (from useVisibleRows);
-  // the classic renderer omits them and the order is computed from the tree.
+  // The indexed renderer passes its visibleUids (from useVisibleRows);
+  // getRangeUids falls back to just the target when an endpoint is hidden.
   const selectItemRange = useCallback((targetUid, visibleUids) => {
     const anchorUid = lastSelectedUidRef.current;
     if (!anchorUid) {
@@ -189,10 +167,7 @@ const Collection = ({ collection, searchText }) => {
       return;
     }
 
-    const orderedUids = visibleUids || buildClassicVisibleUids(collectionDataRef.current?.items, {
-      treatFoldersAsExpanded: Boolean(searchTextRef.current?.trim?.())
-    });
-    setSelectedItemUids(new Set(getRangeUids(orderedUids, anchorUid, targetUid)));
+    setSelectedItemUids(new Set(getRangeUids(visibleUids || [], anchorUid, targetUid)));
   }, []);
 
   const multiSelect = useMemo(() => ({
@@ -203,13 +178,11 @@ const Collection = ({ collection, searchText }) => {
     clearItemSelection
   }), [selectedItemUids, toggleItemSelection, selectItemRange, selectSingleItem, clearItemSelection]);
 
-  // Reveal-in-sidebar: expand this collection and (for classic trees) the
-  // collapsed ancestor folders of the revealed request. Scrolling is handled
-  // by the row components; the indexed renderer expands its own node chain.
-  // Re-attempts as the collection hydrates/indexes (deps include the tree
-  // and index), so revealing into a just-opened collection works once its
-  // data arrives. The reveal is consumed (pending->false) by the row that
-  // scrolls, so this stops re-firing afterwards.
+  // Reveal-in-sidebar: mount and expand this collection; the indexed renderer
+  // expands the revealed node's ancestor chain and consumes the reveal
+  // (pending->false) once it scrolls the row into view. Re-attempts as the
+  // collection mounts/indexes so revealing into a just-opened collection
+  // works once its data arrives.
   useEffect(() => {
     if (!sidebarReveal?.pending || sidebarReveal.collectionUid !== collection.uid) {
       return;
@@ -221,27 +194,7 @@ const Collection = ({ collection, searchText }) => {
     if (collection.collapsed) {
       dispatch(toggleCollection(collection.uid));
     }
-
-    // The indexed renderer expands its own node chain and consumes the reveal.
-    if (useIndexedSidebar) {
-      return;
-    }
-
-    const normalizeSeparators = (value) => String(value || '').replace(/\\/g, '/');
-    const revealedItem = flattenItems(collection.items)
-      .find((candidate) => normalizeSeparators(candidate.pathname) === normalizeSeparators(sidebarReveal.pathname));
-    if (!revealedItem) {
-      return;
-    }
-
-    let currentItem = findParentItemInCollection(collection, revealedItem.uid);
-    while (currentItem?.type === 'folder') {
-      if (currentItem.collapsed) {
-        dispatch(toggleCollectionItem({ collectionUid: collection.uid, itemUid: currentItem.uid }));
-      }
-      currentItem = findParentItemInCollection(collection, currentItem.uid);
-    }
-  }, [sidebarReveal?.nonce, sidebarReveal?.pending, collection.items, collection.mountStatus, collectionIndex?.totalNodes]);
+  }, [sidebarReveal?.nonce, sidebarReveal?.pending, collection.mountStatus, collectionIndex?.totalNodes]);
   const menuDropdownRef = useRef(null);
 
   // Open the OpenAPI Sync tab
@@ -390,6 +343,14 @@ const Collection = ({ collection, searchText }) => {
     return sortIndexedChildren({ store, dispatch, collectionUid: collection.uid, parentKey: 'root', mode });
   };
 
+  // Retry row action when indexing failed — re-runs the main-process index.
+  const handleRetryIndex = () => {
+    ensureCollectionIsMounted();
+    dispatch(refreshCollectionIndex({ collectionUid: collection.uid })).catch((err) => {
+      toast.error(err?.message || 'Unable to re-index the collection');
+    });
+  };
+
   const handlePasteItem = () => {
     dispatch(pasteItem(collection.uid, null))
       .then(() => {
@@ -533,9 +494,9 @@ const Collection = ({ collection, searchText }) => {
   }, [itemCount, isLoading, collection.mountStatus]);
 
   if (searchText && searchText.length) {
-    // The index (always built now) is authoritative for search visibility even
-    // when the classic renderer is forced; fall back to the hydrated tree only
-    // when indexing failed.
+    // The index (always built now) is authoritative for search visibility.
+    // Collections with a missing/failed/still-building index stay visible so
+    // search never silently hides a collection (the retry/indexing row shows).
     if (collectionIndex && collectionIndex.status !== 'failed') {
       const normalizedSearchText = searchText.trim().toLowerCase();
       const collectionMatches = collection.name?.toLowerCase?.().includes(normalizedSearchText);
@@ -545,8 +506,6 @@ const Collection = ({ collection, searchText }) => {
       } else if (!collectionMatches && !Object.keys(collectionIndex.nodesByUid || {}).length) {
         return null;
       }
-    } else if (!doesCollectionHaveItemsMatchingSearchText(collection, searchText)) {
-      return null;
     }
   }
 
@@ -557,13 +516,6 @@ const Collection = ({ collection, searchText }) => {
     'collection-keyboard-focused': isKeyboardFocused
   });
 
-  // we need to sort request items by seq property
-  const sortItemsBySequence = (items = []) => {
-    return items.sort((a, b) => a.seq - b.seq);
-  };
-
-  const requestItems = sortItemsBySequence(filter(collection.items, (i) => isItemARequest(i) && !i.isTransient));
-  const folderItems = sortByNameThenSequence(filter(collection.items, (i) => isItemAFolder(i) && !i.isTransient));
   const showEmptyCollectionMessage = showEmptyState && !hasSearchText;
 
   const emptyStateMenuItems = createEmptyStateMenuItems({ dispatch, collection, itemUid: null });
@@ -811,17 +763,17 @@ const Collection = ({ collection, searchText }) => {
       <div>
         {!collectionIsCollapsed ? (
           <div>
-            {useIndexedSidebar ? (
+            {indexFailed ? (
+              <div className="text-xs text-muted ml-8 py-1">
+                Failed to load collection items.
+                <button className="ml-1 add-request-link" onClick={handleRetryIndex}>
+                  Retry
+                </button>
+              </div>
+            ) : collectionIndex ? (
               <IndexedCollectionItems collectionUid={collection.uid} searchText={searchText} multiSelect={multiSelect} />
             ) : (
-              <>
-                {folderItems?.map?.((i) => {
-                  return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} multiSelect={multiSelect} />;
-                })}
-                {requestItems?.map?.((i) => {
-                  return <CollectionItem key={i.uid} item={i} collectionUid={collection.uid} collectionPathname={collection.pathname} searchText={searchText} multiSelect={multiSelect} />;
-                })}
-              </>
+              <div className="text-xs text-muted ml-8 py-1">Loading collection...</div>
             )}
             {showEmptyCollectionMessage ? (
               <div className="empty-collection-message">

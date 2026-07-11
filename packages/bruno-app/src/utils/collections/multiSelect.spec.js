@@ -1,5 +1,5 @@
 const { describe, it, expect } = require('@jest/globals');
-import { excludeDescendantItems, getRangeUids, buildClassicVisibleUids } from './multiSelect';
+import { excludeDescendantItems, getRangeUids } from './multiSelect';
 
 describe('excludeDescendantItems', () => {
   const folder = { uid: 'f1', type: 'folder', pathname: '/col/folder' };
@@ -69,45 +69,5 @@ describe('getRangeUids', () => {
 
   it('returns an empty range without a target', () => {
     expect(getRangeUids(visible, 'a', undefined)).toEqual([]);
-  });
-});
-
-describe('buildClassicVisibleUids', () => {
-  const request = (uid, seq) => ({ uid, type: 'http-request', request: {}, seq, name: uid });
-  const folder = (uid, items = [], extra = {}) => ({ uid, type: 'folder', items, name: uid, ...extra });
-
-  it('lists folders first, then requests by sequence, walking expanded folders', () => {
-    const items = [
-      request('req-2', 2),
-      request('req-1', 1),
-      folder('folder-b', [request('nested-1', 1)]),
-      folder('folder-a', [request('hidden-1', 1)], { collapsed: true })
-    ];
-
-    expect(buildClassicVisibleUids(items)).toEqual([
-      'folder-a',
-      'folder-b',
-      'nested-1',
-      'req-1',
-      'req-2'
-    ]);
-  });
-
-  it('includes collapsed folder children when folders are treated as expanded', () => {
-    const items = [folder('folder-a', [request('hidden-1', 1)], { collapsed: true })];
-
-    expect(buildClassicVisibleUids(items, { treatFoldersAsExpanded: true })).toEqual([
-      'folder-a',
-      'hidden-1'
-    ]);
-  });
-
-  it('skips transient items', () => {
-    const items = [
-      { ...request('transient-1', 1), isTransient: true },
-      request('req-1', 2)
-    ];
-
-    expect(buildClassicVisibleUids(items)).toEqual(['req-1']);
   });
 });
