@@ -72,7 +72,7 @@ import useKeybinding from 'hooks/useKeybinding';
 // This prevents flicker from race condition between loading state and item batch updates
 const EMPTY_STATE_DELAY_MS = 300;
 
-const Collection = ({ collection, searchText }) => {
+const Collection = ({ collection, searchText, searchMatches = null }) => {
   const isOpenAPISyncEnabled = useBetaFeature(BETA_FEATURES.OPENAPI_SYNC);
   const { dropdownContainerRef } = useSidebarAccordion();
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
@@ -493,10 +493,11 @@ const Collection = ({ collection, searchText }) => {
     return () => clearTimeout(timer);
   }, [itemCount, isLoading, collection.mountStatus]);
 
-  if (searchText && searchText.length) {
-    // The index (always built now) is authoritative for search visibility.
-    // Collections with a missing/failed/still-building index stay visible so
-    // search never silently hides a collection (the retry/indexing row shows).
+  if (searchText && searchText.length && !searchMatches) {
+    // Renderer-side name filter (short queries; content searches pass
+    // searchMatches and are already filtered by the parent). The index is
+    // authoritative for visibility; collections with a missing/failed/
+    // still-building index stay visible so search never silently hides one.
     if (collectionIndex && collectionIndex.status !== 'failed') {
       const normalizedSearchText = searchText.trim().toLowerCase();
       const collectionMatches = collection.name?.toLowerCase?.().includes(normalizedSearchText);
@@ -771,7 +772,12 @@ const Collection = ({ collection, searchText }) => {
                 </button>
               </div>
             ) : collectionIndex ? (
-              <IndexedCollectionItems collectionUid={collection.uid} searchText={searchText} multiSelect={multiSelect} />
+              <IndexedCollectionItems
+                collectionUid={collection.uid}
+                searchText={searchText}
+                searchMatches={searchMatches}
+                multiSelect={multiSelect}
+              />
             ) : (
               <div className="text-xs text-muted ml-8 py-1">Loading collection...</div>
             )}

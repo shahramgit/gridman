@@ -56,9 +56,9 @@ import ImportIntoFolder from './ImportIntoFolder';
 import { getDefaultRequestPaneTab, getInitialExampleName } from 'utils/collections';
 import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname } from 'utils/collections';
 import { excludeDescendantItems } from 'utils/collections/multiSelect';
+import { buildVisibleRows, sortNodes } from 'utils/collections/visibleRows';
 import { uuid } from 'utils/common';
 import { foldSearchText } from '@usebruno/common';
-import { sortByNameThenSequence } from 'utils/common/index';
 import { scrollToTheActiveTab, doesTabMatchRequestNode } from 'utils/tabs';
 import ExampleItem from './CollectionItem/ExampleItem';
 import ExampleIcon from 'components/Icons/ExampleIcon';
@@ -76,35 +76,32 @@ import { useSidebarAccordion } from 'components/Sidebar/SidebarAccordionContext'
 const ROW_HEIGHT = 28;
 const MAX_LIST_HEIGHT = 520;
 
-const sortNodes = (nodes = []) => {
-  // Match the classic renderer's ordering: folders first using
-  // sortByNameThenSequence semantics, then requests by sequence.
-  const folders = nodes.filter((node) => node.type === 'folder');
-  const requests = nodes.filter((node) => node.type !== 'folder');
-
-  const sortedRequests = [...requests].sort((a, b) => {
-    const aSeq = Number.isFinite(a.seq) ? a.seq : Number.MAX_SAFE_INTEGER;
-    const bSeq = Number.isFinite(b.seq) ? b.seq : Number.MAX_SAFE_INTEGER;
-    if (aSeq !== bSeq) {
-      return aSeq - bSeq;
-    }
-
-    return (a.name || '').localeCompare(b.name || '');
-  });
-
-  return [...sortByNameThenSequence(folders), ...sortedRequests];
-};
-
-const nodeMatchesSearch = (node, searchText) => {
-  if (!searchText) {
+// A content-search match is already "visible" when the query appears in what
+// identifies the row (name/filename/method/url); otherwise the row grows a
+// one-line subtitle showing where the hit came from (field + snippet).
+const isMatchVisibleInRow = (node, searchText) => {
+  const query = foldSearchText(String(searchText || '').trim());
+  if (!query) {
     return true;
   }
-
-  const text = foldSearchText(searchText);
-  return [node.name, node.method, node.url, node.pathname]
+  return [node.name, node.filename, node.method, node.url]
     .filter(Boolean)
-    .some((value) => foldSearchText(value).includes(text));
+    .some((value) => foldSearchText(value).includes(query));
 };
+
+const MATCH_FIELD_LABELS = {
+  url: 'url',
+  path: 'path',
+  method: 'method',
+  filename: 'file',
+  headers: 'headers',
+  body: 'body',
+  examples: 'example',
+  content: 'content',
+  name: 'name'
+};
+
+const formatMatchLabel = (field) => MATCH_FIELD_LABELS[field] || 'name';
 
 const normalizeRequestType = (type) => {
   const normalizedType = String(type || '').toLowerCase();
@@ -214,83 +211,11 @@ export const sortIndexedChildren = async ({ store, dispatch, collectionUid, pare
   }
 };
 
-const useVisibleRows = ({ index, expandedNodeUids, searchText }) => {
-  return useMemo(() => {
-    if (!index?.nodesByUid) {
-      return [];
-    }
-
-    const nodesByUid = index.nodesByUid;
-    const childrenByParentUid = index.childrenByParentUid || {};
-    const trimmedSearchText = searchText?.trim();
-
-    if (trimmedSearchText) {
-      // Build a filtered tree rather than a flat list so a matched folder shows
-      // its children (and the path to a matched request stays visible).
-      const matched = new Set(
-        Object.values(nodesByUid).filter((node) => nodeMatchesSearch(node, trimmedSearchText)).map((node) => node.uid)
-      );
-      if (!matched.size) {
-        return [];
-      }
-
-      const included = new Set();
-      const includeAncestors = (uid) => {
-        let node = nodesByUid[uid];
-        while (node && !included.has(node.uid)) {
-          included.add(node.uid);
-          node = node.parentUid ? nodesByUid[node.parentUid] : null;
-        }
-      };
-      const includeSubtree = (uid) => {
-        const stack = [uid];
-        while (stack.length) {
-          const current = stack.pop();
-          included.add(current);
-          for (const childUid of childrenByParentUid[current] || []) {
-            stack.push(childUid);
-          }
-        }
-      };
-      for (const uid of matched) {
-        includeAncestors(uid);
-        if (nodesByUid[uid]?.type === 'folder') {
-          includeSubtree(uid);
-        }
-      }
-
-      const searchRows = [];
-      const walkFiltered = (parentUid) => {
-        const children = sortNodes(
-          (childrenByParentUid[parentUid || 'root'] || [])
-            .map((uid) => nodesByUid[uid])
-            .filter((node) => node && included.has(node.uid))
-        );
-        for (const child of children) {
-          searchRows.push(child);
-          if (child.type === 'folder') {
-            walkFiltered(child.uid);
-          }
-        }
-      };
-      walkFiltered(null);
-      return searchRows;
-    }
-
-    const rows = [];
-    const walk = (parentUid) => {
-      const children = sortNodes((childrenByParentUid[parentUid || 'root'] || []).map((uid) => nodesByUid[uid]).filter(Boolean));
-      for (const child of children) {
-        rows.push(child);
-        if (child.type === 'folder' && expandedNodeUids.has(child.uid)) {
-          walk(child.uid);
-        }
-      }
-    };
-
-    walk(null);
-    return rows;
-  }, [index, expandedNodeUids, searchText]);
+const useVisibleRows = ({ index, expandedNodeUids, searchText, searchMatches }) => {
+  return useMemo(
+    () => buildVisibleRows({ index, expandedNodeUids, searchText, searchMatches }),
+    [index, expandedNodeUids, searchText, searchMatches]
+  );
 };
 
 // Rendered only while a row's examples are expanded, so the full-collection
@@ -313,7 +238,7 @@ const IndexedRowExamples = ({ collectionUid, item }) => {
   );
 };
 
-const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUids, onToggleFolder, multiSelect }) => {
+const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, expandedNodeUids, onToggleFolder, multiSelect }) => {
   const dispatch = useDispatch();
   const store = useStore();
   const { dropdownContainerRef } = useSidebarAccordion();
@@ -321,8 +246,8 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
   const menuDropdownRef = useRef(null);
   const isRequest = node.type !== 'folder';
   const isFolder = !isRequest;
-  // During search the filtered tree is always shown fully expanded.
-  const isExpanded = (searchText && searchText.trim()) ? true : expandedNodeUids.has(node.uid);
+  // While a filter is active the filtered tree is always shown fully expanded.
+  const isExpanded = filterActive ? true : expandedNodeUids.has(node.uid);
   const [renameItemModalOpen, setRenameItemModalOpen] = useState(false);
   const [examplesExpanded, setExamplesExpanded] = useState(false);
   const [cloneItemModalOpen, setCloneItemModalOpen] = useState(false);
@@ -510,6 +435,24 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
     activateNodeChain(node);
     return getActionCompatibleItem();
   };
+
+  // A content-search hit inside an example auto-expands the request's example
+  // child rows (hydrating the request so the example names exist) so the
+  // matched example is immediately visible under the filtered row.
+  const searchMatchMeta = node.searchMatchMeta;
+  // Two-line row: when the hit is not visible in the row itself (e.g. a body
+  // or header match), show a field badge + snippet under the name.
+  const showMatchContext = Boolean(searchMatchMeta?.text) && !isMatchVisibleInRow(node, searchText);
+  useEffect(() => {
+    if (!isRequest || searchMatchMeta?.field !== 'examples') {
+      return;
+    }
+    setExamplesExpanded(true);
+    if (!item?.examples?.length && node.pathname) {
+      activateNodeChain(node);
+      dispatch(loadRequest({ collectionUid, pathname: node.pathname })).catch(() => {});
+    }
+  }, [searchMatchMeta?.field, node.uid]);
 
   const isItemRequestReady = (candidate) => Boolean(
     candidate?.request
@@ -1267,7 +1210,7 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
           'drop-target': isOver && canDrop && dropType === 'inside',
           'drop-target-above': isOver && canDrop && dropType === 'adjacent'
         })}
-        style={{ height: ROW_HEIGHT }}
+        style={showMatchContext ? { minHeight: ROW_HEIGHT } : { height: ROW_HEIGHT }}
         title={node.pathname}
         tabIndex={0}
         onFocus={handleRowFocus}
@@ -1323,15 +1266,31 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
               // same icon/name alignment as folders and requests that have one.
               <div style={{ width: 16, minWidth: 16 }} />
             )}
-            <div className="ml-1 flex w-full h-full items-center overflow-hidden">
-              {node.type === 'folder' ? (
-                <IconFolder size={16} strokeWidth={1.7} className="mr-2" />
-              ) : (
-                <CollectionItemIcon item={displayItem} />
+            <div
+              className={classnames(
+                'ml-1 flex w-full overflow-hidden',
+                showMatchContext ? 'flex-col justify-center py-1' : 'h-full items-center'
               )}
-              <span className="item-name">
-                <SearchHighlight text={node.name || node.filename || 'Untitled'} searchText={searchText} />
+            >
+              <span className="flex items-center min-w-0">
+                {node.type === 'folder' ? (
+                  <IconFolder size={16} strokeWidth={1.7} className="mr-2" style={{ minWidth: 16 }} />
+                ) : (
+                  <CollectionItemIcon item={displayItem} />
+                )}
+                <span className="item-name">
+                  <SearchHighlight text={node.name || node.filename || 'Untitled'} searchText={searchText} />
+                </span>
               </span>
+              {showMatchContext ? (
+                <span
+                  className="block text-xs text-muted truncate font-normal"
+                  style={{ paddingLeft: 24 }}
+                  data-testid="row-match-context"
+                >
+                  {formatMatchLabel(searchMatchMeta.field)}: <SearchHighlight text={searchMatchMeta.text} searchText={searchText} />
+                </span>
+              ) : null}
             </div>
           </div>
           <MenuDropdown
@@ -1368,11 +1327,17 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, expandedNodeUi
 
 IndexedRow.displayName = 'IndexedRow';
 
-const IndexedCollectionItems = ({ collectionUid, searchText, multiSelect }) => {
+const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = null, multiSelect }) => {
   const dispatch = useDispatch();
   const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
   const [expandedNodeUids, setExpandedNodeUids] = useState(() => new Set());
-  const visibleRows = useVisibleRows({ index, expandedNodeUids, searchText });
+  const visibleRows = useVisibleRows({ index, expandedNodeUids, searchText, searchMatches });
+  // Rows in a filtered view render fully expanded; a collection matched only
+  // by its name browses normally (expand/collapse works), so the rows must
+  // not derive expansion from searchText themselves.
+  const filterActive = searchMatches
+    ? searchMatches.matchedPathnames.size > 0
+    : Boolean(searchText?.trim());
 
   // Shift-click ranges must follow the virtualized list's visible order.
   // The rows read it via a ref so the wrapped callback stays stable and the
@@ -1536,6 +1501,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, multiSelect }) => {
             node={node}
             collectionUid={collectionUid}
             searchText={searchText}
+            filterActive={filterActive}
             expandedNodeUids={expandedNodeUids}
             onToggleFolder={onToggleFolder}
             multiSelect={rowMultiSelect}

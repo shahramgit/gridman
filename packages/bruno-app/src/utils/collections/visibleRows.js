@@ -1,0 +1,178 @@
+import { foldSearchText } from '@usebruno/common';
+import { sortByNameThenSequence } from 'utils/common/index';
+
+// Row projection for the indexed sidebar renderer (the only sidebar renderer
+// since unification Phase 3a). Pure functions so the search-as-filter
+// behavior (Phase 3b) is unit-testable without mounting the component.
+
+export const normalizeForPathCompare = (pathname) => String(pathname || '').normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
+
+export const sortNodes = (nodes = []) => {
+  // Folders first using sortByNameThenSequence semantics, then requests by
+  // sequence (ties broken by name).
+  const folders = nodes.filter((node) => node.type === 'folder');
+  const requests = nodes.filter((node) => node.type !== 'folder');
+
+  const sortedRequests = [...requests].sort((a, b) => {
+    const aSeq = Number.isFinite(a.seq) ? a.seq : Number.MAX_SAFE_INTEGER;
+    const bSeq = Number.isFinite(b.seq) ? b.seq : Number.MAX_SAFE_INTEGER;
+    if (aSeq !== bSeq) {
+      return aSeq - bSeq;
+    }
+
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  return [...sortByNameThenSequence(folders), ...sortedRequests];
+};
+
+export const nodeMatchesSearch = (node, searchText) => {
+  if (!searchText) {
+    return true;
+  }
+
+  const text = foldSearchText(searchText);
+  return [node.name, node.method, node.url, node.pathname]
+    .filter(Boolean)
+    .some((value) => foldSearchText(value).includes(text));
+};
+
+// Build the sidebar's visible row list for one collection.
+//
+// - No filter: the expanded tree (expandedNodeUids drives folder expansion).
+// - searchMatches (content search, from the main-process folded index):
+//   matched nodes + their ancestor chain + matched-folder subtrees, fully
+//   expanded; matched rows carry `searchMatchMeta` ({ field, text }) for the
+//   match-context subtitle. A collection matched only by name (empty match
+//   set) browses normally so the user can drill into it.
+// - searchText only (short renderer-side filter): same shape, matched by
+//   folded name/method/url/pathname.
+export const buildVisibleRows = ({ index, expandedNodeUids = new Set(), searchText, searchMatches = null }) => {
+  if (!index?.nodesByUid) {
+    return [];
+  }
+
+  const nodesByUid = index.nodesByUid;
+  const childrenByParentUid = index.childrenByParentUid || {};
+  const trimmedSearchText = searchText?.trim();
+
+  const walkExpanded = () => {
+    const rows = [];
+    const walk = (parentUid) => {
+      const children = sortNodes((childrenByParentUid[parentUid || 'root'] || []).map((uid) => nodesByUid[uid]).filter(Boolean));
+      for (const child of children) {
+        rows.push(child);
+        if (child.type === 'folder' && expandedNodeUids.has(child.uid)) {
+          walk(child.uid);
+        }
+      }
+    };
+    walk(null);
+    return rows;
+  };
+
+  // Shared by both filter sources: show matched nodes with their ancestor
+  // chain, plus the full subtree of matched folders, in sidebar order.
+  const buildFilteredRows = (matched, matchMetaByUid = null) => {
+    if (!matched.size) {
+      return [];
+    }
+
+    const included = new Set();
+    const includeAncestors = (uid) => {
+      let node = nodesByUid[uid];
+      while (node && !included.has(node.uid)) {
+        included.add(node.uid);
+        node = node.parentUid ? nodesByUid[node.parentUid] : null;
+      }
+    };
+    const includeSubtree = (uid) => {
+      const stack = [uid];
+      while (stack.length) {
+        const current = stack.pop();
+        included.add(current);
+        for (const childUid of childrenByParentUid[current] || []) {
+          stack.push(childUid);
+        }
+      }
+    };
+    for (const uid of matched) {
+      includeAncestors(uid);
+      if (nodesByUid[uid]?.type === 'folder') {
+        includeSubtree(uid);
+      }
+    }
+
+    const searchRows = [];
+    const walkFiltered = (parentUid) => {
+      const children = sortNodes(
+        (childrenByParentUid[parentUid || 'root'] || [])
+          .map((uid) => nodesByUid[uid])
+          .filter((node) => node && included.has(node.uid))
+      );
+      for (const child of children) {
+        const meta = matchMetaByUid?.get(child.uid);
+        // Shallow-clone matched rows to carry their match context; index
+        // nodes are immutable redux state and must not be mutated.
+        searchRows.push(meta ? { ...child, searchMatchMeta: meta } : child);
+        if (child.type === 'folder') {
+          walkFiltered(child.uid);
+        }
+      }
+    };
+    walkFiltered(null);
+    return searchRows;
+  };
+
+  // Content search: the match set comes from the main process (folded
+  // body/headers/examples index); this only projects it onto the tree.
+  if (searchMatches) {
+    // Collection matched by name only (no item hits): show the ordinary
+    // browsable tree so the user can drill into the matched collection.
+    if (!searchMatches.matchedPathnames.size) {
+      return walkExpanded();
+    }
+
+    const uidByPathname = index.uidByPathname || {};
+    const matched = new Set();
+    const matchMetaByUid = new Map();
+    let unresolved = null;
+    for (const pathname of searchMatches.matchedPathnames) {
+      // O(1) via the index's normalized pathname map; unresolved hits fall
+      // back to one normalize-compare scan (covers NFC/NFD mismatches).
+      const uid = uidByPathname[pathname];
+      if (uid && nodesByUid[uid]) {
+        matched.add(uid);
+        matchMetaByUid.set(uid, searchMatches.matchMeta.get(pathname));
+      } else {
+        (unresolved ||= []).push(pathname);
+      }
+    }
+    if (unresolved) {
+      const wanted = new Set(unresolved.map((pathname) => normalizeForPathCompare(pathname)));
+      for (const node of Object.values(nodesByUid)) {
+        const nodeKey = normalizeForPathCompare(node.pathname);
+        if (wanted.has(nodeKey) && !matched.has(node.uid)) {
+          matched.add(node.uid);
+          const meta = searchMatches.matchMeta.get(node.pathname)
+            || [...searchMatches.matchMeta.entries()].find(([key]) => normalizeForPathCompare(key) === nodeKey)?.[1];
+          if (meta) {
+            matchMetaByUid.set(node.uid, meta);
+          }
+        }
+      }
+    }
+
+    return buildFilteredRows(matched, matchMetaByUid);
+  }
+
+  // Short-query filter (renderer-side, names/urls from the index).
+  if (trimmedSearchText) {
+    const matched = new Set(
+      Object.values(nodesByUid).filter((node) => nodeMatchesSearch(node, trimmedSearchText)).map((node) => node.uid)
+    );
+    return buildFilteredRows(matched);
+  }
+
+  return walkExpanded();
+};

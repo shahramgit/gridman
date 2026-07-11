@@ -1,15 +1,16 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import toast from 'react-hot-toast';
-import { IconBox, IconLoader2 } from '@tabler/icons';
+import { IconBox, IconLoader2, IconSearch } from '@tabler/icons';
 import Collection from './Collection';
 import StyledWrapper from './StyledWrapper';
 import CreateOrOpenCollection from './CreateOrOpenCollection';
 import CollectionSearch from './CollectionSearch/index';
 import InlineCollectionCreator from './InlineCollectionCreator';
-import WorkspaceSearchResults from './WorkspaceSearchResults';
+import useWorkspaceSearch from './useWorkspaceSearch';
 import { openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
 import { isScratchCollection } from 'utils/collections';
+import { normalizePath } from 'utils/common/path';
 import { buildSidebarEntries, getSidebarEntryName } from 'utils/collections/sidebarEntries';
 
 const SEARCH_OPTIONS_STORAGE_KEY = 'gridman.sidebar-search-options';
@@ -151,6 +152,27 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
 
   const hasWorkspaceCollections = activeWorkspace?.collections?.length > 0;
 
+  // Content search (>= 2 chars) filters the ordinary sidebar rows instead of
+  // rendering a separate results tree — one renderer, one search (Phase 3b).
+  const workspaceSearch = useWorkspaceSearch({ searchText, searchOptions, activeWorkspace });
+
+  // During a content search only entries with hits (or a matching collection
+  // name) stay in the list; everything else collapses out. Registered-but-
+  // unloaded collections with hits keep their placeholder row so search never
+  // silently hides a collection the user could open.
+  const visibleEntries = useMemo(() => {
+    if (!workspaceSearch.isActive) {
+      return sidebarEntries.map((entry) => ({ entry, searchMatches: null }));
+    }
+    return sidebarEntries
+      .map((entry) => {
+        const entryPath = entry.type === 'loaded' ? entry.collection.pathname : entry.workspaceCollection.path;
+        const searchMatches = workspaceSearch.matchesByCollection.get(normalizePath(entryPath)) || null;
+        return searchMatches ? { entry, searchMatches } : null;
+      })
+      .filter(Boolean);
+  }, [workspaceSearch.isActive, workspaceSearch.matchesByCollection, sidebarEntries]);
+
   if (!sidebarEntries.length && !hasWorkspaceCollections) {
     return (
       <StyledWrapper>
@@ -185,17 +207,36 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
             onOpenAdvanced={onOpenAdvancedCreate}
           />
         )}
-        {searchText.trim().length >= 2 ? (
-          <WorkspaceSearchResults searchText={searchText} searchOptions={searchOptions} activeWorkspace={activeWorkspace} />
-        ) : (
-          sidebarEntries.map((entry) => (
-            entry.type === 'loaded' ? (
-              <Collection searchText={searchText} collection={entry.collection} key={entry.key} />
-            ) : (
-              <UnloadedCollection entry={entry} workspacePath={activeWorkspace?.pathname} key={entry.key} />
-            )
-          ))
-        )}
+        {workspaceSearch.isActive ? (
+          <div className="px-3 py-2 text-xs text-muted flex items-center gap-2">
+            {workspaceSearch.status === 'searching'
+              ? <IconLoader2 className="animate-spin" size={14} />
+              : <IconSearch size={14} />}
+            <span>
+              {workspaceSearch.status === 'searching'
+                ? 'Searching workspace...'
+                : `${workspaceSearch.totalResults} result${workspaceSearch.totalResults === 1 ? '' : 's'}`}
+            </span>
+          </div>
+        ) : null}
+        {workspaceSearch.isActive && workspaceSearch.error ? (
+          <div className="px-4 py-2 text-red-600">{workspaceSearch.error}</div>
+        ) : null}
+        {visibleEntries.map(({ entry, searchMatches }) => (
+          entry.type === 'loaded' ? (
+            <Collection
+              searchText={searchText}
+              searchMatches={searchMatches}
+              collection={entry.collection}
+              key={entry.key}
+            />
+          ) : (
+            <UnloadedCollection entry={entry} workspacePath={activeWorkspace?.pathname} key={entry.key} />
+          )
+        ))}
+        {workspaceSearch.isActive && workspaceSearch.status === 'ready' && !visibleEntries.length ? (
+          <div className="px-4 py-2 text-muted">No matches found.</div>
+        ) : null}
       </div>
     </StyledWrapper>
   );
