@@ -7,6 +7,9 @@ module.exports = {
     '/node_modules/(?!strip-json-comments|nanoid|xml-formatter)/'
   ],
   moduleNameMapper: {
+    // Image imports resolve to a string stub (rsbuild emits asset URLs at
+    // build time; jest must not feed binary files to babel).
+    '\\.(png|jpe?g|gif|webp|ico|woff2?)$': '<rootDir>/jest.fileMock.js',
     '^assets/(.*)$': '<rootDir>/src/assets/$1',
     '^components/(.*)$': '<rootDir>/src/components/$1',
     '^hooks/(.*)$': '<rootDir>/src/hooks/$1',

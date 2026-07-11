@@ -12,17 +12,11 @@ jest.mock('ui/ActionIcon', () => ({ children, onClick, label }) => (
 jest.mock('components/ResponsePane/ResponseLayoutToggle', () => () => null);
 
 import AppTitleBar from './index';
+// The real light theme — a hand-rolled partial mock breaks whenever any
+// styled component in the titlebar tree reads a new theme key.
+import themes from 'themes/index';
 
-const theme = {
-  text: '#333',
-  sidebar: {
-    bg: '#fff',
-    color: '#333',
-    muted: '#888',
-    collection: { item: { hoverBg: '#eee' } }
-  },
-  dropdown: { color: '#333', mutedText: '#888', hoverBg: '#eee' }
-};
+const theme = themes.light;
 
 const mockStore = configureStore({
   reducer: {

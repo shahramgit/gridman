@@ -251,12 +251,18 @@ describe('Git remote on workspace collections', () => {
     expect(gitignore).toContain('node_modules');
   });
 
-  test('setCollectionGitRemote skips .gitignore for collections outside the workspace', async () => {
+  test('setCollectionGitRemote rejects collections outside the workspace', async () => {
+    // Workspace-only policy: readWorkspaceConfig (sanitizeCollections /
+    // normalizeCollectionEntry) drops entries whose path escapes the
+    // workspace, so setting a remote on one must fail — and .gitignore
+    // must stay untouched.
     const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bruno-outside-'));
     fs.writeFileSync(path.join(outsideDir, 'bruno.json'), JSON.stringify({ name: 'x', version: '1', type: 'collection' }));
     try {
       writeYml([collection('External', outsideDir)]);
-      await setCollectionGitRemote(workspacePath, outsideDir, 'https://github.com/x/external');
+      await expect(
+        setCollectionGitRemote(workspacePath, outsideDir, 'https://github.com/x/external')
+      ).rejects.toThrow('Collection not found in workspace');
 
       const gitignorePath = path.join(workspacePath, '.gitignore');
       if (fs.existsSync(gitignorePath)) {
