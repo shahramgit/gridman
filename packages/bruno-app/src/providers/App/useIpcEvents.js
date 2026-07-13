@@ -128,6 +128,8 @@ const useIpcEvents = () => {
         && val?.partial === false;
 
       if (isReadyRequestFile) {
+        // Drop any stale queued (partial) updates for the same file — the
+        // ready payload supersedes them.
         const readyPathname = String(val.meta.pathname || '').normalize('NFC');
         for (let i = collectionTreeQueue.length - 1; i >= 0; i -= 1) {
           const update = collectionTreeQueue[i];
@@ -139,9 +141,13 @@ const useIpcEvents = () => {
             collectionTreeQueue.splice(i, 1);
           }
         }
-
-        dispatchCollectionTreeUpdate(type, val);
-        return;
+        // Ready files go through the queue like everything else (<=50ms
+        // extra latency; the request panel renders from loadedRequestsByPath
+        // which the direct load call populates, not this watcher event).
+        // Dispatching them immediately meant ONE render per hydrated file —
+        // background eager hydration streams thousands of ready files for
+        // tens of seconds after startup, which kept the app laggy for ~30s
+        // after a first search mounted hundreds of subscribed filtered rows.
       }
 
       collectionTreeQueue.push({ type, val });
