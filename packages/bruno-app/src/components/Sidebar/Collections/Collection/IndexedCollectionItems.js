@@ -1483,6 +1483,18 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
     if (rowIndex < 0) {
       return;
     }
+    // Filtered views render plain rows (no Virtuoso): the revealed row's own
+    // rowRef effect handles the flash; scroll it into view via the DOM.
+    if (filterActive) {
+      const revealedNode = visibleRows[rowIndex];
+      const rowElement = containerRef.current?.querySelector(
+        `[data-testid="sidebar-collection-item-row"][title="${CSS.escape(revealedNode.pathname || '')}"]`
+      );
+      rowElement?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      pendingRevealNodeUidRef.current = null;
+      dispatch(clearSidebarReveal());
+      return;
+    }
     // The Virtuoso handle attaches a beat after this component mounts (the
     // reveal often lands in the same commit the collection expands). Do NOT
     // consume the reveal until a scroll actually ran — consuming with a null
@@ -1505,7 +1517,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
     }
     pendingRevealNodeUidRef.current = null;
     dispatch(clearSidebarReveal());
-  }, [visibleRows, dispatch]);
+  }, [visibleRows, filterActive, dispatch]);
 
   // Stable identity so memoized rows don't re-render on unrelated parent
   // renders just because the handler was recreated.
@@ -1544,6 +1556,22 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
     ? { customScrollParent: scrollParent }
     : { style: { height: listHeight } };
 
+  const renderRow = (node) => (
+    node.type === 'empty-folder' ? (
+      <IndexedEmptyFolderRow node={node} collectionUid={collectionUid} />
+    ) : (
+      <IndexedRow
+        node={node}
+        collectionUid={collectionUid}
+        searchText={searchText}
+        filterActive={filterActive}
+        expandedNodeUids={expandedNodeUids}
+        onToggleFolder={onToggleFolder}
+        multiSelect={rowMultiSelect}
+      />
+    )
+  );
+
   return (
     <div ref={attachContainer}>
       {index.status === 'indexing' ? (
@@ -1551,27 +1579,25 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
           Indexing {index.totalScanned || 0} items...
         </div>
       ) : null}
-      <Virtuoso
-        ref={virtuosoRef}
-        {...virtuosoProps}
-        data={visibleRows}
-        computeItemKey={(_index, node) => node.pathname || node.uid}
-        itemContent={(_index, node) => (
-          node.type === 'empty-folder' ? (
-            <IndexedEmptyFolderRow node={node} collectionUid={collectionUid} />
-          ) : (
-            <IndexedRow
-              node={node}
-              collectionUid={collectionUid}
-              searchText={searchText}
-              filterActive={filterActive}
-              expandedNodeUids={expandedNodeUids}
-              onToggleFolder={onToggleFolder}
-              multiSelect={rowMultiSelect}
-            />
-          )
-        )}
-      />
+      {filterActive ? (
+        // Filtered views render as plain DOM: the row set is bounded (search
+        // hits + matched-folder subtrees), and a stack of virtualized lists
+        // sharing one scroll parent made the scrollbar 'end' keep moving as
+        // lists below the viewport measured themselves, while row mount/
+        // unmount churn stuttered every scroll step. Static rows mount once
+        // (deferred, off the typing interaction) and scroll natively.
+        visibleRows.map((node) => (
+          <React.Fragment key={node.pathname || node.uid}>{renderRow(node)}</React.Fragment>
+        ))
+      ) : (
+        <Virtuoso
+          ref={virtuosoRef}
+          {...virtuosoProps}
+          data={visibleRows}
+          computeItemKey={(_index, node) => node.pathname || node.uid}
+          itemContent={(_index, node) => renderRow(node)}
+        />
+      )}
     </div>
   );
 };
