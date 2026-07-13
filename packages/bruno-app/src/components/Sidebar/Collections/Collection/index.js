@@ -233,17 +233,23 @@ const Collection = ({ collection, searchText, searchMatches = null }) => {
   const hasSearchText = searchText && searchText?.trim()?.length;
   const collectionIsCollapsed = hasSearchText ? false : collection.collapsed;
 
-  // Content-search hits target this collection but it has no index yet: the
-  // index is only built on mount (renderer:mount-collection), which normally
-  // happens when the user expands the collection. Mount it now so the
-  // filtered rows can render — otherwise the 'Loading collection...' row
-  // sits there until the user expands the collection manually.
-  // Bounded: only collections with hits render in filter mode at all.
+  // Content-search hits target this collection but it has no index yet (the
+  // index normally builds when the user first expands a collection). Request
+  // an INDEX-ONLY build so the filtered rows can render — NOT a full mount:
+  // mounting eagerly hydrates small collections (parses every file), and a
+  // common search term matching dozens of collections at once turned that
+  // into a hydration storm that froze the app. The index scan is metadata
+  // only and the main process serializes index builds. Requested once per
+  // collection; clicking a row still mounts/hydrates on demand.
+  const indexRequestedRef = useRef(false);
   useEffect(() => {
-    if (searchMatches && !collectionIndex) {
-      ensureCollectionIsMounted();
+    if (searchMatches && !collectionIndex && !indexRequestedRef.current) {
+      indexRequestedRef.current = true;
+      dispatch(refreshCollectionIndex({ collectionUid: collection.uid })).catch(() => {
+        indexRequestedRef.current = false;
+      });
     }
-  }, [Boolean(searchMatches), Boolean(collectionIndex), collection.uid, collection.mountStatus]);
+  }, [Boolean(searchMatches), Boolean(collectionIndex), collection.uid]);
 
   const iconClassName = classnames({
     'rotate-90': !collectionIsCollapsed
