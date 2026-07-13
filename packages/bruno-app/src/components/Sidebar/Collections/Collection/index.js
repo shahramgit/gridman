@@ -233,6 +233,18 @@ const Collection = ({ collection, searchText, searchMatches = null }) => {
   const hasSearchText = searchText && searchText?.trim()?.length;
   const collectionIsCollapsed = hasSearchText ? false : collection.collapsed;
 
+  // Content-search hits target this collection but it has no index yet: the
+  // index is only built on mount (renderer:mount-collection), which normally
+  // happens when the user expands the collection. Mount it now so the
+  // filtered rows can render — otherwise the 'Loading collection...' row
+  // sits there until the user expands the collection manually.
+  // Bounded: only collections with hits render in filter mode at all.
+  useEffect(() => {
+    if (searchMatches && !collectionIndex) {
+      ensureCollectionIsMounted();
+    }
+  }, [Boolean(searchMatches), Boolean(collectionIndex), collection.uid, collection.mountStatus]);
+
   const iconClassName = classnames({
     'rotate-90': !collectionIsCollapsed
   });
