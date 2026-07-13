@@ -142,38 +142,69 @@ const useWorkspaceSearch = ({ searchText, searchOptions, activeWorkspace }) => {
     return () => clearTimeout(timer);
   }, [activeWorkspace?.pathname, collectionPathsKey, searchText, searchOptions?.matchCase, searchOptions?.scopes]);
 
+  // Per-collection entry objects are kept REFERENTIALLY STABLE across
+  // streaming batches: a collection's entry is reused when its hit list did
+  // not change, so only the collections a batch actually touched re-filter
+  // and re-render. Body/example scopes hit hundreds of files across many
+  // collections — rebuilding every entry per batch re-rendered every matched
+  // row in the workspace on each batch.
+  const prevEntriesRef = useRef(new Map());
   const matchesByCollection = useMemo(() => {
-    const map = new Map();
+    const grouped = new Map();
     for (const result of results) {
       const collectionKey = normalizePath(result.collectionPathname);
       if (!collectionKey) {
         continue;
       }
-      let entry = map.get(collectionKey);
-      if (!entry) {
-        entry = { collectionMatched: false, matchedPathnames: new Set(), matchMeta: new Map() };
-        map.set(collectionKey, entry);
+      let group = grouped.get(collectionKey);
+      if (!group) {
+        group = { collectionMatched: false, hits: [] };
+        grouped.set(collectionKey, group);
       }
-
       if (result.type === 'collection') {
-        entry.collectionMatched = true;
-        continue;
-      }
-
-      const pathname = normalizePath(result.pathname);
-      if (!pathname) {
-        continue;
-      }
-      entry.matchedPathnames.add(pathname);
-      // First match per file wins (the main process emits one hit per file).
-      if (!entry.matchMeta.has(pathname)) {
-        entry.matchMeta.set(pathname, {
-          field: result.matchField,
-          text: result.matchText,
-          type: result.type
-        });
+        group.collectionMatched = true;
+      } else {
+        group.hits.push(result);
       }
     }
+
+    const map = new Map();
+    for (const [collectionKey, group] of grouped) {
+      // Hits only ever append within a search session and are replaced
+      // wholesale when a new session's first batch lands, so (session +
+      // count + matched flag) identifies the hit list.
+      const signature = `${sessionRef.current}:${group.collectionMatched ? 1 : 0}:${group.hits.length}`;
+      const previous = prevEntriesRef.current.get(collectionKey);
+      if (previous && previous.signature === signature) {
+        map.set(collectionKey, previous.entry);
+        continue;
+      }
+
+      const entry = { collectionMatched: group.collectionMatched, matchedPathnames: new Set(), matchMeta: new Map() };
+      for (const result of group.hits) {
+        const pathname = normalizePath(result.pathname);
+        if (!pathname) {
+          continue;
+        }
+        entry.matchedPathnames.add(pathname);
+        // First match per file wins (the main process emits one hit per file).
+        if (!entry.matchMeta.has(pathname)) {
+          entry.matchMeta.set(pathname, {
+            field: result.matchField,
+            text: result.matchText,
+            type: result.type
+          });
+        }
+      }
+      map.set(collectionKey, entry);
+    }
+
+    prevEntriesRef.current = new Map(
+      [...map.entries()].map(([key, entry]) => {
+        const group = grouped.get(key);
+        return [key, { entry, signature: `${sessionRef.current}:${group.collectionMatched ? 1 : 0}:${group.hits.length}` }];
+      })
+    );
     return map;
   }, [results]);
 

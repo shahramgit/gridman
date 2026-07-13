@@ -76,6 +76,9 @@ import { useSidebarAccordion } from 'components/Sidebar/SidebarAccordionContext'
 
 const ROW_HEIGHT = 28;
 const MAX_LIST_HEIGHT = 520;
+// Filtered (search) views render plain rows; collections whose filtered set
+// exceeds this cap show an explicit "Show N more matches" expander.
+const FILTER_ROW_CAP = 60;
 
 // A content-search match is already "visible" when the query appears in what
 // identifies the row (name/filename/method/url); otherwise the row grows a
@@ -1391,7 +1394,13 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
   const index = useDeferredValue(liveIndex);
   const deferredSearchMatches = useDeferredValue(searchMatches);
   const [expandedNodeUids, setExpandedNodeUids] = useState(() => new Set());
+  const [showAllFilteredRows, setShowAllFilteredRows] = useState(false);
   const visibleRows = useVisibleRows({ index, expandedNodeUids, searchText, searchMatches: deferredSearchMatches });
+
+  // A new result set re-collapses an expanded over-cap list.
+  useEffect(() => {
+    setShowAllFilteredRows(false);
+  }, [deferredSearchMatches]);
   // Rows in a filtered view render fully expanded; a collection matched only
   // by its name browses normally (expand/collapse works), so the rows must
   // not derive expansion from searchText themselves.
@@ -1586,9 +1595,24 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
         // lists below the viewport measured themselves, while row mount/
         // unmount churn stuttered every scroll step. Static rows mount once
         // (deferred, off the typing interaction) and scroll natively.
-        visibleRows.map((node) => (
-          <React.Fragment key={node.pathname || node.uid}>{renderRow(node)}</React.Fragment>
-        ))
+        // Collections with very large filtered sets (matched-folder subtrees
+        // under broad body/example searches) cap at FILTER_ROW_CAP rows with
+        // an explicit expander, keeping first paint bounded.
+        <>
+          {(showAllFilteredRows ? visibleRows : visibleRows.slice(0, FILTER_ROW_CAP)).map((node) => (
+            <React.Fragment key={node.pathname || node.uid}>{renderRow(node)}</React.Fragment>
+          ))}
+          {!showAllFilteredRows && visibleRows.length > FILTER_ROW_CAP ? (
+            <button
+              type="button"
+              className="text-xs text-muted ml-8 py-1 add-request-link"
+              data-testid="filtered-rows-show-more"
+              onClick={() => setShowAllFilteredRows(true)}
+            >
+              Show {visibleRows.length - FILTER_ROW_CAP} more matches...
+            </button>
+          ) : null}
+        </>
       ) : (
         <Virtuoso
           ref={virtuosoRef}
