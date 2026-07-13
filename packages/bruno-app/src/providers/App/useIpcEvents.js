@@ -184,18 +184,57 @@ const useIpcEvents = () => {
 
     const removeCollectionTreeUpdateListener = ipcRenderer.on('main:collection-tree-updated', _collectionTreeUpdated);
     const removeCollectionIndexStartedListener = ipcRenderer.on('main:collection-index-started', (val) => {
+      flushIndexBatchBuffer();
       dispatch(collectionIndexStarted(val));
     });
+    // Index batches are coalesced before hitting redux: the startup warm
+    // streams batches for 100+ collections and dispatching each one froze
+    // frames (immer re-freezes the index maps per dispatch) while the user
+    // scrolled. Consecutive batches for the same load session merge into one
+    // dispatch, flushed at most every ~120ms; started/ready/failed/cancelled
+    // flush the buffer first so event ordering is preserved.
+    let indexBatchBuffer = [];
+    let indexBatchFlushTimer = null;
+    const flushIndexBatchBuffer = () => {
+      if (indexBatchFlushTimer) {
+        clearTimeout(indexBatchFlushTimer);
+        indexBatchFlushTimer = null;
+      }
+      if (!indexBatchBuffer.length) {
+        return;
+      }
+      const events = indexBatchBuffer;
+      indexBatchBuffer = [];
+      const merged = [];
+      for (const event of events) {
+        const last = merged[merged.length - 1];
+        if (last && last.collectionUid === event.collectionUid && last.loadSessionId === event.loadSessionId) {
+          last.nodes = last.nodes.concat(event.nodes || []);
+          last.totalScanned = event.totalScanned ?? last.totalScanned;
+        } else {
+          merged.push({ ...event, nodes: [...(event.nodes || [])] });
+        }
+      }
+      for (const event of merged) {
+        dispatch(collectionIndexBatchReceived(event));
+      }
+    };
     const removeCollectionIndexBatchListener = ipcRenderer.on('main:collection-index-batch', (val) => {
-      dispatch(collectionIndexBatchReceived(val));
+      indexBatchBuffer.push(val);
+      if (!indexBatchFlushTimer) {
+        indexBatchFlushTimer = setTimeout(flushIndexBatchBuffer, 120);
+      }
     });
     const removeCollectionIndexReadyListener = ipcRenderer.on('main:collection-index-ready', (val) => {
+      flushIndexBatchBuffer();
       dispatch(collectionIndexReady(val));
     });
     const removeCollectionIndexFailedListener = ipcRenderer.on('main:collection-index-failed', (val) => {
+      flushIndexBatchBuffer();
       dispatch(collectionIndexFailed(val));
     });
     const removeCollectionIndexCancelledListener = ipcRenderer.on('main:collection-index-cancelled', (val) => {
+      flushIndexBatchBuffer();
       dispatch(collectionIndexCancelled(val));
     });
 
@@ -426,6 +465,7 @@ const useIpcEvents = () => {
       removeCollectionIndexReadyListener();
       removeCollectionIndexFailedListener();
       removeCollectionIndexCancelledListener();
+      flushIndexBatchBuffer();
       removeApiSpecTreeUpdateListener();
       removeOpenCollectionListener();
       removeOpenWorkspaceListener();

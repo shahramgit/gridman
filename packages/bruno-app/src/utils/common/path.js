@@ -225,9 +225,26 @@ const getRelativePathWithinBasePath = (basePath, filePath, shouldPosixify = fals
  * vanished from the sidebar list, which matches workspace.yml (NFC) paths.
  * Callers must keep using the ORIGINAL path for IPC/filesystem operations.
  */
+// Memoized: this runs several times per node in the collection-index
+// reducers (uidByPathname keys, rekey checks) and NFC normalization on long
+// Persian paths showed up as a top CPU cost while index batches streamed.
+// Paths repeat heavily (shared ancestor dirs, re-indexing), so a bounded
+// cache pays for itself; reset when it grows past the cap.
+const NORMALIZE_PATH_CACHE_MAX = 20000;
+let normalizePathCache = new Map();
 const normalizePath = (p) => {
   if (!p) return '';
-  return String(p).normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
+  const key = String(p);
+  const cached = normalizePathCache.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const normalized = key.normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
+  if (normalizePathCache.size >= NORMALIZE_PATH_CACHE_MAX) {
+    normalizePathCache = new Map();
+  }
+  normalizePathCache.set(key, normalized);
+  return normalized;
 };
 
 export default brunoPath;

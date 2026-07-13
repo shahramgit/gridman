@@ -1,4 +1,5 @@
 import { configureStore } from '@reduxjs/toolkit';
+import { setAutoFreeze } from 'immer';
 import tasksMiddleware from './middlewares/tasks/middleware';
 import debugMiddleware from './middlewares/debug/middleware';
 import appReducer from './slices/app';
@@ -18,6 +19,16 @@ import { autosaveMiddleware } from './middlewares/autosave/middleware';
 const isDevEnv = () => {
   return import.meta.env.MODE === 'development';
 };
+
+// Production: skip immer's recursive auto-freeze of every reducer result.
+// Profiled on the GSB workspace, isNestedFrozen was the top renderer CPU
+// cost while index batches / background hydration streamed into the large
+// collections and index maps — the source of 100-150ms frame stalls when
+// scrolling during a search. Dev keeps freezing so accidental state
+// mutations still throw during development.
+if (!isDevEnv()) {
+  setAutoFreeze(false);
+}
 
 let middleware = [tasksMiddleware.middleware, draftDetectMiddleware, autosaveMiddleware];
 if (isDevEnv()) {
