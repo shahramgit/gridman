@@ -79,3 +79,4 @@ SESSION_SUMMARY.md
 TODO.md
 docs/sidebar-unification-plan.md
 docs/workflow-feature-plan.md
+tests/runner/cli-json-env-file/collection/out.json
