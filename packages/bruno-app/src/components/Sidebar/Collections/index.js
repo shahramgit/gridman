@@ -12,6 +12,7 @@ import { openMultipleCollections, refreshCollectionIndex } from 'providers/Redux
 import { isScratchCollection } from 'utils/collections';
 import { normalizePath } from 'utils/common/path';
 import { buildSidebarEntries, getSidebarEntryName } from 'utils/collections/sidebarEntries';
+import { perfLog } from 'utils/common/perfLogger';
 
 const SEARCH_OPTIONS_STORAGE_KEY = 'gridman.sidebar-search-options';
 
@@ -126,9 +127,13 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
     }
     const timer = setTimeout(() => {
       warmedWorkspacesRef.current.add(workspacePath);
+      const warmStart = performance.now();
+      perfLog('warm: search-index start', { collections: collectionPaths.length });
       window.ipcRenderer.invoke('renderer:warm-workspace-search', {
         workspacePath,
         collectionPaths
+      }).then(() => {
+        perfLog('warm: search-index DONE', { afterMs: Math.round(performance.now() - warmStart) });
       }).catch(() => {});
     }, 2000);
     return () => clearTimeout(timer);
@@ -151,11 +156,14 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
     const timer = setTimeout(() => {
       indexWarmedWorkspacesRef.current.add(workspacePath);
       const state = store.getState().collections;
+      let requested = 0;
       for (const collection of state.collections || []) {
         if (!state.collectionIndexes?.[collection.uid]) {
+          requested += 1;
           dispatch(refreshCollectionIndex({ collectionUid: collection.uid })).catch(() => {});
         }
       }
+      perfLog('warm: collection-indexes start', { requested });
     }, 3000);
     return () => clearTimeout(timer);
   }, [activeWorkspace?.pathname]);

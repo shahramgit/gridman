@@ -1,5 +1,6 @@
 import { configureStore } from '@reduxjs/toolkit';
 import { setAutoFreeze } from 'immer';
+import { initPerfLogging } from 'utils/common/perfLogger';
 import tasksMiddleware from './middlewares/tasks/middleware';
 import debugMiddleware from './middlewares/debug/middleware';
 import appReducer from './slices/app';
@@ -29,6 +30,8 @@ const isDevEnv = () => {
 if (!isDevEnv()) {
   setAutoFreeze(false);
 }
+
+initPerfLogging({ mode: import.meta.env.MODE });
 
 let middleware = [tasksMiddleware.middleware, draftDetectMiddleware, autosaveMiddleware];
 if (isDevEnv()) {

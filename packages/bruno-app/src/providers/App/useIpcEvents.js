@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { perfCount } from 'utils/common/perfLogger';
 import {
   updateCookies,
   updatePreferences,
@@ -113,6 +114,7 @@ const useIpcEvents = () => {
       const batchableUpdates = updates.filter(({ type }) => type === 'addDir' || type === 'addFile');
       const otherUpdates = updates.filter(({ type }) => type !== 'addDir' && type !== 'addFile');
 
+      perfCount('treeFiles', updates.length);
       batch(() => {
         if (batchableUpdates.length) {
           dispatch(collectionTreeBatchUpdatedEvent({ updates: batchableUpdates }));
@@ -222,6 +224,7 @@ const useIpcEvents = () => {
         }
       }
       for (const event of merged) {
+        perfCount('indexBatchNodes', (event.nodes || []).length);
         dispatch(collectionIndexBatchReceived(event));
       }
     };
@@ -233,6 +236,7 @@ const useIpcEvents = () => {
     });
     const removeCollectionIndexReadyListener = ipcRenderer.on('main:collection-index-ready', (val) => {
       flushIndexBatchBuffer();
+      perfCount('indexesReady', 1);
       dispatch(collectionIndexReady(val));
     });
     const removeCollectionIndexFailedListener = ipcRenderer.on('main:collection-index-failed', (val) => {

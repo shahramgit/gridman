@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { normalizePath } from 'utils/common/path';
+import { perfLog } from 'utils/common/perfLogger';
 
 const SEARCH_DEBOUNCE_MS = 200;
 const SEARCH_RESULT_LIMIT = 250;
@@ -29,6 +30,8 @@ const useWorkspaceSearch = ({ searchText, searchOptions, activeWorkspace }) => {
   const [error, setError] = useState('');
   const sessionRef = useRef(null);
   const pendingClearRef = useRef(false);
+  const sessionStartRef = useRef(null);
+  const sessionQueryRef = useRef('');
 
   const isActive = searchText.trim().length >= 2;
 
@@ -57,6 +60,13 @@ const useWorkspaceSearch = ({ searchText, searchOptions, activeWorkspace }) => {
       }
       // First data of a new session replaces the previous search's results;
       // later batches of the same session append.
+      if (pendingClearRef.current && sessionStartRef.current) {
+        perfLog('search: first results', {
+          query: sessionQueryRef.current,
+          count: batch.length,
+          afterMs: Math.round(performance.now() - sessionStartRef.current)
+        });
+      }
       const replacing = pendingClearRef.current;
       pendingClearRef.current = false;
       setResults((current) => {
@@ -83,6 +93,13 @@ const useWorkspaceSearch = ({ searchText, searchOptions, activeWorkspace }) => {
         setResults([]);
       }
       setStatus('ready');
+      if (sessionStartRef.current) {
+        perfLog('search: ALL results ready', {
+          query: sessionQueryRef.current,
+          afterMs: Math.round(performance.now() - sessionStartRef.current)
+        });
+        sessionStartRef.current = null;
+      }
     });
 
     const removeFailedListener = ipcRenderer.on('main:workspace-collection-search-failed', ({ searchSessionId, error }) => {
@@ -121,6 +138,9 @@ const useWorkspaceSearch = ({ searchText, searchOptions, activeWorkspace }) => {
     setError('');
 
     const timer = setTimeout(() => {
+      sessionStartRef.current = performance.now();
+      sessionQueryRef.current = trimmedSearchText;
+      perfLog('search: session start', { query: trimmedSearchText });
       window.ipcRenderer.invoke('renderer:start-workspace-collection-search', {
         searchSessionId,
         workspacePath: activeWorkspace.pathname,
