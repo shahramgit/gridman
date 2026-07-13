@@ -103,6 +103,11 @@ export const findItemByPathname = (items = [], pathname) => {
 };
 
 export const findItemInCollectionByPathname = (collection, pathname) => {
+  // Callers pass tab-referenced collections that may not (or no longer) be
+  // loaded — resolving against a missing collection is simply a miss.
+  if (!collection) {
+    return null;
+  }
   let flattenedItems = flattenItems(collection.items);
 
   return findItemByPathname(flattenedItems, pathname);

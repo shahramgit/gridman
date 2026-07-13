@@ -176,7 +176,10 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
 
   // Resolve the folder by uid, falling back to the tab's pathname (indexed
   // folder tabs may be re-created before the tree item is re-hydrated).
-  const folder = folderUid
+  // The tab strip shows tabs from every collection in the workspace, so the
+  // tab's collection may not (or no longer) be loaded — same guard as the
+  // treeItem resolution above.
+  const folder = folderUid && collection
     ? (findItemInCollection(collection, folderUid)
       || (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null))
     : null;
