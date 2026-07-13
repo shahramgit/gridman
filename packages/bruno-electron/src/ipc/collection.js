@@ -2343,13 +2343,14 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     }
   });
 
-  ipcMain.handle('renderer:refresh-collection-index', async (event, { collectionUid, collectionPathname, brunoConfig, loadSessionId }) => {
+  ipcMain.handle('renderer:refresh-collection-index', async (event, { collectionUid, collectionPathname, brunoConfig, loadSessionId, priority = false }) => {
     try {
       startCollectionIndex(mainWindow, {
         collectionUid,
         collectionPathname,
         brunoConfig,
-        loadSessionId
+        loadSessionId,
+        priority
       });
       return {
         loadSessionId

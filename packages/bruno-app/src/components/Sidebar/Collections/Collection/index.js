@@ -72,6 +72,13 @@ import useKeybinding from 'hooks/useKeybinding';
 // This prevents flicker from race condition between loading state and item batch updates
 const EMPTY_STATE_DELAY_MS = 300;
 
+// Search-triggered index requests, deduped at module level: Collection
+// components unmount/remount as the filtered list changes per keystroke, so
+// a per-instance ref would re-request (and restart) an in-flight index build
+// on every keystroke — stretching a ~2s serialized build into a long storm
+// of restarted builds whose batches jank scrolling.
+const searchIndexRequestedUids = new Set();
+
 const Collection = ({ collection, searchText, searchMatches = null }) => {
   const isOpenAPISyncEnabled = useBetaFeature(BETA_FEATURES.OPENAPI_SYNC);
   const { dropdownContainerRef } = useSidebarAccordion();
@@ -233,23 +240,25 @@ const Collection = ({ collection, searchText, searchMatches = null }) => {
   const hasSearchText = searchText && searchText?.trim()?.length;
   const collectionIsCollapsed = hasSearchText ? false : collection.collapsed;
 
-  // Content-search hits target this collection but it has no index yet (the
-  // index normally builds when the user first expands a collection). Request
-  // an INDEX-ONLY build so the filtered rows can render — NOT a full mount:
-  // mounting eagerly hydrates small collections (parses every file), and a
-  // common search term matching dozens of collections at once turned that
-  // into a hydration storm that froze the app. The index scan is metadata
-  // only and the main process serializes index builds. Requested once per
-  // collection; clicking a row still mounts/hydrates on demand.
-  const indexRequestedRef = useRef(false);
+  // Content-search hits target this collection but its index has no data yet
+  // (missing entirely, or still queued behind the startup warm-up builds).
+  // Request a PRIORITY, INDEX-ONLY build so the filtered rows can render —
+  // NOT a full mount: mounting eagerly hydrates small collections (parses
+  // every file), and a common search term matching dozens of collections at
+  // once turned that into a hydration storm that froze the app. The index
+  // scan is metadata only, serialized by the main process, and the priority
+  // flag jumps the warm-up queue. Requested once per collection; clicking a
+  // row still mounts/hydrates on demand.
+  const indexHasNoDataYet = !collectionIndex
+    || (collectionIndex.status === 'indexing' && !collectionIndex.totalNodes && !collectionIndex.totalScanned);
   useEffect(() => {
-    if (searchMatches && !collectionIndex && !indexRequestedRef.current) {
-      indexRequestedRef.current = true;
-      dispatch(refreshCollectionIndex({ collectionUid: collection.uid })).catch(() => {
-        indexRequestedRef.current = false;
+    if (searchMatches && indexHasNoDataYet && !searchIndexRequestedUids.has(collection.uid)) {
+      searchIndexRequestedUids.add(collection.uid);
+      dispatch(refreshCollectionIndex({ collectionUid: collection.uid, priority: true })).catch(() => {
+        searchIndexRequestedUids.delete(collection.uid);
       });
     }
-  }, [Boolean(searchMatches), Boolean(collectionIndex), collection.uid]);
+  }, [Boolean(searchMatches), indexHasNoDataYet, collection.uid]);
 
   const iconClassName = classnames({
     'rotate-90': !collectionIsCollapsed
@@ -364,7 +373,7 @@ const Collection = ({ collection, searchText, searchMatches = null }) => {
   // Retry row action when indexing failed — re-runs the main-process index.
   const handleRetryIndex = () => {
     ensureCollectionIsMounted();
-    dispatch(refreshCollectionIndex({ collectionUid: collection.uid })).catch((err) => {
+    dispatch(refreshCollectionIndex({ collectionUid: collection.uid, priority: true })).catch((err) => {
       toast.error(err?.message || 'Unable to re-index the collection');
     });
   };

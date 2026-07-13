@@ -379,7 +379,7 @@ const runNextQueuedIndex = () => {
   runCollectionIndex(next.win, next);
 };
 
-const startCollectionIndex = async (win, { collectionUid, collectionPathname, brunoConfig, loadSessionId, onReady, onFailed }) => {
+const startCollectionIndex = async (win, { collectionUid, collectionPathname, brunoConfig, loadSessionId, priority = false, onReady, onFailed }) => {
   cancelCollectionIndex(collectionUid);
 
   const job = {
@@ -403,7 +403,13 @@ const startCollectionIndex = async (win, { collectionUid, collectionPathname, br
     loadSessionId
   });
 
-  queuedJobs.push(job);
+  // Priority jobs (user-facing, e.g. a search filtering a collection) jump
+  // ahead of background warm-up builds queued behind MAX_ACTIVE_INDEXERS.
+  if (priority) {
+    queuedJobs.unshift(job);
+  } else {
+    queuedJobs.push(job);
+  }
   runNextQueuedIndex();
 };
 

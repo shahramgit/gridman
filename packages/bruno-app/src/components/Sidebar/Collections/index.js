@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import { useDispatch, useSelector, useStore } from 'react-redux';
 import toast from 'react-hot-toast';
 import { IconBox, IconLoader2, IconSearch } from '@tabler/icons';
 import Collection from './Collection';
@@ -8,7 +8,7 @@ import CreateOrOpenCollection from './CreateOrOpenCollection';
 import CollectionSearch from './CollectionSearch/index';
 import InlineCollectionCreator from './InlineCollectionCreator';
 import useWorkspaceSearch from './useWorkspaceSearch';
-import { openMultipleCollections } from 'providers/ReduxStore/slices/collections/actions';
+import { openMultipleCollections, refreshCollectionIndex } from 'providers/ReduxStore/slices/collections/actions';
 import { isScratchCollection } from 'utils/collections';
 import { normalizePath } from 'utils/common/path';
 import { buildSidebarEntries, getSidebarEntryName } from 'utils/collections/sidebarEntries';
@@ -132,6 +132,30 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
     }, 8000);
     return () => clearTimeout(timer);
   }, [activeWorkspace?.pathname, activeWorkspace?.collections]);
+
+  // Warm the COLLECTION indexes too (metadata scans, serialized by the main
+  // process; the whole GSB workspace measures ~2s). With indexes prebuilt,
+  // the first content search filters instantly instead of triggering
+  // on-demand index builds whose streaming batches jank scrolling.
+  const dispatch = useDispatch();
+  const store = useStore();
+  const indexWarmedWorkspacesRef = useRef(new Set());
+  useEffect(() => {
+    const workspacePath = activeWorkspace?.pathname;
+    if (!workspacePath || indexWarmedWorkspacesRef.current.has(workspacePath)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      indexWarmedWorkspacesRef.current.add(workspacePath);
+      const state = store.getState().collections;
+      for (const collection of state.collections || []) {
+        if (!state.collectionIndexes?.[collection.uid]) {
+          dispatch(refreshCollectionIndex({ collectionUid: collection.uid })).catch(() => {});
+        }
+      }
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, [activeWorkspace?.pathname]);
 
   const nonScratchCollections = useMemo(() => {
     return collections.filter((c) => !isScratchCollection(c, workspaces));

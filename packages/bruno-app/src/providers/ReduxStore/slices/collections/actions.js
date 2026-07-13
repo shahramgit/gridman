@@ -1186,7 +1186,7 @@ export const saveRequestAs = ({ item, targetCollectionUid, targetDirname, name, 
   return { pathname: fullPathname };
 };
 
-export const refreshCollectionIndex = ({ collectionUid }) => (dispatch, getState) => {
+export const refreshCollectionIndex = ({ collectionUid, priority = false }) => (dispatch, getState) => {
   const state = getState();
   const collection = findCollectionByUid(state.collections.collections, collectionUid);
 
@@ -1198,7 +1198,10 @@ export const refreshCollectionIndex = ({ collectionUid }) => (dispatch, getState
     collectionUid,
     collectionPathname: collection.pathname,
     brunoConfig: collection.brunoConfig,
-    loadSessionId: uuid()
+    loadSessionId: uuid(),
+    // Priority builds jump the main-process index queue ahead of background
+    // warm-up builds (user-facing paths: search filter, manual retry).
+    priority
   });
 };
 
