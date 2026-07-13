@@ -293,6 +293,24 @@ const scanDirectory = async (win, job, dirname, parentUid, depth) => {
   }
 };
 
+// Move an already-queued build for this collection to the front of the queue
+// WITHOUT cancelling/restarting it. Cancel+restart resets the renderer's
+// index (rows vanish and rebuild) — a user-facing prioritization (search
+// filter) must never do that to a build that is already pending or running.
+// Returns true when a job exists (active or queued) — the caller can skip
+// starting a duplicate.
+const promoteCollectionIndex = (collectionUid) => {
+  if (activeJobs.has(collectionUid)) {
+    return true;
+  }
+  const queuedAt = queuedJobs.findIndex((job) => job.collectionUid === collectionUid);
+  if (queuedAt > 0) {
+    const [job] = queuedJobs.splice(queuedAt, 1);
+    queuedJobs.unshift(job);
+  }
+  return queuedAt !== -1;
+};
+
 const cancelCollectionIndex = (collectionUid, loadSessionId) => {
   const job = activeJobs.get(collectionUid);
   if (job) {
@@ -415,5 +433,6 @@ const startCollectionIndex = async (win, { collectionUid, collectionPathname, br
 
 module.exports = {
   startCollectionIndex,
+  promoteCollectionIndex,
   cancelCollectionIndex
 };

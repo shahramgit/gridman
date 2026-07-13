@@ -79,7 +79,7 @@ const EMPTY_STATE_DELAY_MS = 300;
 // of restarted builds whose batches jank scrolling.
 const searchIndexRequestedUids = new Set();
 
-const Collection = ({ collection, searchText, searchMatches = null }) => {
+const Collection = ({ collection, searchText, searchMatches = null, filterRowAllowance = null }) => {
   const isOpenAPISyncEnabled = useBetaFeature(BETA_FEATURES.OPENAPI_SYNC);
   const { dropdownContainerRef } = useSidebarAccordion();
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
@@ -803,6 +803,7 @@ const Collection = ({ collection, searchText, searchMatches = null }) => {
                 collectionUid={collection.uid}
                 searchText={searchText}
                 searchMatches={searchMatches}
+                filterRowAllowance={filterRowAllowance}
                 multiSelect={multiSelect}
               />
             ) : (

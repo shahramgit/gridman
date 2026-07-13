@@ -1383,7 +1383,7 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
 
 IndexedRow.displayName = 'IndexedRow';
 
-const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = null, multiSelect }) => {
+const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = null, filterRowAllowance = null, multiSelect }) => {
   const dispatch = useDispatch();
   const liveIndex = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
   // Index batches stream rapidly while a collection (re)indexes — e.g. the
@@ -1395,6 +1395,9 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
   const deferredSearchMatches = useDeferredValue(searchMatches);
   const [expandedNodeUids, setExpandedNodeUids] = useState(() => new Set());
   const [showAllFilteredRows, setShowAllFilteredRows] = useState(false);
+  // Per-collection slice of the sidebar-wide row budget (broad queries match
+  // dozens of collections; the parent divides ~300 rows among them).
+  const rowCap = filterRowAllowance || FILTER_ROW_CAP;
   const visibleRows = useVisibleRows({ index, expandedNodeUids, searchText, searchMatches: deferredSearchMatches });
 
   // A new result set re-collapses an expanded over-cap list.
@@ -1599,17 +1602,17 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
         // under broad body/example searches) cap at FILTER_ROW_CAP rows with
         // an explicit expander, keeping first paint bounded.
         <>
-          {(showAllFilteredRows ? visibleRows : visibleRows.slice(0, FILTER_ROW_CAP)).map((node) => (
+          {(showAllFilteredRows ? visibleRows : visibleRows.slice(0, rowCap)).map((node) => (
             <React.Fragment key={node.pathname || node.uid}>{renderRow(node)}</React.Fragment>
           ))}
-          {!showAllFilteredRows && visibleRows.length > FILTER_ROW_CAP ? (
+          {!showAllFilteredRows && visibleRows.length > rowCap ? (
             <button
               type="button"
               className="text-xs text-muted ml-8 py-1 add-request-link"
               data-testid="filtered-rows-show-more"
               onClick={() => setShowAllFilteredRows(true)}
             >
-              Show {visibleRows.length - FILTER_ROW_CAP} more matches...
+              Show {visibleRows.length - rowCap} more matches...
             </button>
           ) : null}
         </>

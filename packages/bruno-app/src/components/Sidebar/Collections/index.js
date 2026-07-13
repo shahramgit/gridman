@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useDeferredValue } from 'react';
 import { useDispatch, useSelector, useStore } from 'react-redux';
 import toast from 'react-hot-toast';
 import { IconBox, IconLoader2, IconSearch } from '@tabler/icons';
@@ -184,7 +184,7 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
   // name) stay in the list; everything else collapses out. Registered-but-
   // unloaded collections with hits keep their placeholder row so search never
   // silently hides a collection the user could open.
-  const visibleEntries = useMemo(() => {
+  const liveVisibleEntries = useMemo(() => {
     if (!workspaceSearch.isActive) {
       return sidebarEntries.map((entry) => ({ entry, searchMatches: null }));
     }
@@ -196,6 +196,20 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
       })
       .filter(Boolean);
   }, [workspaceSearch.isActive, workspaceSearch.matchesByCollection, sidebarEntries]);
+  // Every intermediate query prefix matches a different collection SET, so
+  // typing swapped whole Collection blocks (headers + filtered rows) in and
+  // out per keystroke — deferring the swap keeps typing and scrolling
+  // responsive and commits the new list when the frame has room.
+  const visibleEntries = useDeferredValue(liveVisibleEntries);
+
+  // GLOBAL row budget across matched collections: a broad prefix like 'تام'
+  // matches dozens of collections, and a per-collection cap alone still
+  // committed thousands of rows at once (a 45s+ renderer block, measured).
+  // Each collection gets an equal slice of ~300 rows, min 5, max 60; the
+  // per-collection 'Show N more matches' expander reveals the rest on demand.
+  const filterRowAllowance = workspaceSearch.isActive && visibleEntries.length
+    ? Math.max(5, Math.min(60, Math.ceil(300 / visibleEntries.length)))
+    : null;
 
   if (!sidebarEntries.length && !hasWorkspaceCollections) {
     return (
@@ -251,6 +265,7 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
             <Collection
               searchText={searchText}
               searchMatches={searchMatches}
+              filterRowAllowance={filterRowAllowance}
               collection={entry.collection}
               key={entry.key}
             />

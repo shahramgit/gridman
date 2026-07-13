@@ -75,7 +75,7 @@ const { getProcessEnvVars } = require('../store/process-env');
 const { getOAuth2TokenUsingAuthorizationCode, getOAuth2TokenUsingClientCredentials, getOAuth2TokenUsingPasswordCredentials, getOAuth2TokenUsingImplicitGrant, refreshOauth2Token } = require('../utils/oauth2');
 const { getCertsAndProxyConfig } = require('./network/cert-utils');
 const collectionWatcher = require('../app/collection-watcher');
-const { startCollectionIndex, cancelCollectionIndex } = require('../app/collection-indexer');
+const { startCollectionIndex, promoteCollectionIndex, cancelCollectionIndex } = require('../app/collection-indexer');
 const { transformBrunoConfigBeforeSave } = require('../utils/transformBrunoConfig');
 const { REQUEST_TYPES } = require('../utils/constants');
 const { cancelOAuth2AuthorizationRequest, isOauth2AuthorizationRequestInProgress } = require('../utils/oauth2-protocol-handler');
@@ -2345,6 +2345,12 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
   ipcMain.handle('renderer:refresh-collection-index', async (event, { collectionUid, collectionPathname, brunoConfig, loadSessionId, priority = false }) => {
     try {
+      // A priority refresh with a build already pending/running (e.g. the
+      // startup warm) just moves it to the front — cancel+restart would
+      // reset the renderer index and unmount its filtered rows mid-search.
+      if (priority && promoteCollectionIndex(collectionUid)) {
+        return { promoted: true };
+      }
       startCollectionIndex(mainWindow, {
         collectionUid,
         collectionPathname,
