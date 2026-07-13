@@ -109,10 +109,11 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
   }, [showSearch, activeWorkspace?.pathname]);
 
   // Also warm the search index in the background shortly after a workspace
-  // loads — delayed so it never competes with collection opening/indexing at
-  // startup. By the time the user first opens search, the index is usually
-  // already built (the whole GSB workspace warms in single-digit seconds on
-  // the fold worker pool). Once per workspace per session.
+  // loads. The fold work runs on a worker-thread pool (off the UI and main
+  // threads) and the whole GSB workspace warms in single-digit seconds, so
+  // start EARLY — a session's first search pays inline for whatever hasn't
+  // warmed yet, which is exactly the 'first search is slow' report. Once per
+  // workspace per session.
   const warmedWorkspacesRef = useRef(new Set());
   useEffect(() => {
     const workspacePath = activeWorkspace?.pathname;
@@ -129,14 +130,16 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
         workspacePath,
         collectionPaths
       }).catch(() => {});
-    }, 8000);
+    }, 2000);
     return () => clearTimeout(timer);
   }, [activeWorkspace?.pathname, activeWorkspace?.collections]);
 
   // Warm the COLLECTION indexes too (metadata scans, serialized by the main
   // process; the whole GSB workspace measures ~2s). With indexes prebuilt,
   // the first content search filters instantly instead of triggering
-  // on-demand index builds whose streaming batches jank scrolling.
+  // on-demand index builds whose streaming batches jank scrolling. Search-
+  // triggered priority requests promote queued warm jobs, so starting early
+  // never delays an active search.
   const dispatch = useDispatch();
   const store = useStore();
   const indexWarmedWorkspacesRef = useRef(new Set());
@@ -153,7 +156,7 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
           dispatch(refreshCollectionIndex({ collectionUid: collection.uid })).catch(() => {});
         }
       }
-    }, 10000);
+    }, 3000);
     return () => clearTimeout(timer);
   }, [activeWorkspace?.pathname]);
 
