@@ -62,14 +62,19 @@ class CookiesStore {
 
       domainCookies.forEach((cookie) => {
         try {
-          // Create cookie with decrypted value
+          // Encrypted values carry a '$<algo>:' prefix. Anything else is a
+          // legacy PLAINTEXT value (an earlier bug stored values unencrypted
+          // when encryption threw) — use it as-is; the next debounced write
+          // re-encrypts it. Without this, every launch logged a decrypt
+          // failure per legacy cookie, forever.
+          const isEncrypted = typeof cookie.value === 'string' && cookie.value.startsWith('$');
           const decryptedCookie = {
             ...cookie,
-            value: decryptString(cookie.value, this.#passkey)
+            value: isEncrypted ? decryptString(cookie.value, this.#passkey) : (cookie.value ?? '')
           };
           decryptedCookies.push(decryptedCookie);
         } catch (err) {
-          console.warn('Failed to process cookie:', cookie?.key, err);
+          console.warn('Failed to process cookie:', cookie?.key, err?.message);
           // Still add the cookie but with empty value if processing fails
           decryptedCookies.push({
             ...cookie,

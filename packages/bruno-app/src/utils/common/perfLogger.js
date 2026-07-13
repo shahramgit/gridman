@@ -5,17 +5,17 @@
 
 // Bump when shipping a perf-relevant build so a pasted log proves which
 // build produced it.
-export const PERF_BUILD_TAG = '2026-07-12-D';
+export const PERF_BUILD_TAG = '2026-07-13-E';
 
 const since = () => `${(performance.now() / 1000).toFixed(1)}s`;
 
 export const perfLog = (event, data) => {
   try {
-    if (data !== undefined) {
-      console.info(`[gridman-perf] ${since()} ${event}`, data);
-    } else {
-      console.info(`[gridman-perf] ${since()} ${event}`);
-    }
+    const line = `[gridman-perf] ${since()} ${event}${data !== undefined ? ` ${JSON.stringify(data)}` : ''}`;
+    console.info(line);
+    // Also forward to the main process so the line shows in the terminal
+    // running `npm run dev` — where perf reports are read from.
+    window.ipcRenderer?.invoke?.('renderer:perf-log', line)?.catch?.(() => {});
   } catch (_err) {
     // logging must never break the app
   }

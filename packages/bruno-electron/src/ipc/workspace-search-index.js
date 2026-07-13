@@ -543,6 +543,14 @@ const buildCollectionSearchEntries = async (workspacePath, collectionPath, forma
 // immediately and the rebuild runs in the background — a keystroke never waits
 // on a full collection walk (that inline wait was the search lag on large
 // workspaces). Only the very first build (no entries yet) is awaited.
+// Warm-peek: usable entries exist right now (fresh, or stale-while-
+// revalidating). Lets the search match warm collections FIRST instead of
+// awaiting cold builds serially in workspace order.
+const hasWarmCollectionSearchIndex = (collectionPath) => {
+  const existing = workspaceSearchIndex.get(collectionPath);
+  return Boolean(existing?.entries?.size);
+};
+
 const getCollectionSearchIndex = async (workspacePath, collectionPath) => {
   const existing = workspaceSearchIndex.get(collectionPath);
   if (existing && !existing.building && (Date.now() - existing.builtAt) < WORKSPACE_SEARCH_INDEX_TTL_MS) {
@@ -595,6 +603,7 @@ const getCollectionSearchIndex = async (workspacePath, collectionPath) => {
 };
 
 module.exports = {
+  hasWarmCollectionSearchIndex,
   getCollectionSearchIndex,
   invalidateWorkspaceSearchForPath,
   evictWorkspaceSearchForPath,

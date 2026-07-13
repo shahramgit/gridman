@@ -238,7 +238,16 @@ const Collection = ({ collection, searchText, searchMatches = null, filterRowAll
   };
 
   const hasSearchText = searchText && searchText?.trim()?.length;
-  const collectionIsCollapsed = hasSearchText ? false : collection.collapsed;
+  // During a content search, only collections with ITEM hits auto-expand to
+  // show their filtered rows. Collections matched only by NAME stay in the
+  // user's collapsed state (click to browse) — a broad prefix like 'تا'
+  // name-matches ~100 GSB collections, and auto-expanding their full browse
+  // trees committed a stack of ~100 virtualized lists in one render (a 26s+
+  // renderer task in dev, per [gridman-perf] LONG-TASK telemetry).
+  const hasItemMatches = Boolean(searchMatches?.matchedPathnames?.size);
+  const collectionIsCollapsed = searchMatches
+    ? (!hasItemMatches && collection.collapsed)
+    : (hasSearchText ? false : collection.collapsed);
 
   // Content-search hits target this collection but its index has no data yet
   // (missing entirely, or still queued behind the startup warm-up builds).

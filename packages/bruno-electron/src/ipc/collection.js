@@ -378,10 +378,32 @@ const addIndexedCollectionWatcherAfterIdle = (watcher, mainWindow, collectionPat
 //    not 87 simultaneous directory scans + IPC bursts. Until a collection
 //    hydrates, every feature already works through the lazy/index paths.
 const EAGER_ATTACH_GAP_MS = 250;
+// Startup pipeline ordering: the search-index warm, the collection-index
+// warm, and eager hydration all read the entire workspace. Racing them
+// multiplied the warm's wall time ~10x (8-15s alone vs 2+ minutes measured
+// on GSB), which is exactly the window where a user's first search is slow.
+// Eager hydration is the most deferrable of the three (every feature works
+// through the lazy/index paths until it lands), so its attach queue waits
+// for the search warm — bounded so a wedged warm can never stall hydration.
+const EAGER_ATTACH_WARM_WAIT_CAP_MS = 45 * 1000;
+let searchWarmGate = null; // Promise | null — set when a workspace warm starts
+const setSearchWarmGate = (promise) => {
+  const bounded = Promise.race([
+    promise.catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, EAGER_ATTACH_WARM_WAIT_CAP_MS))
+  ]);
+  searchWarmGate = bounded;
+  bounded.finally(() => {
+    if (searchWarmGate === bounded) {
+      searchWarmGate = null;
+    }
+    drainEagerAttachQueue();
+  });
+};
 const eagerAttachQueue = [];
 let eagerAttachTimer = null;
 const drainEagerAttachQueue = () => {
-  if (eagerAttachTimer) {
+  if (eagerAttachTimer || searchWarmGate) {
     return;
   }
   const next = eagerAttachQueue.shift();
@@ -562,6 +584,7 @@ const {
 } = require('../utils/workspace-search-match');
 const {
   getCollectionSearchIndex,
+  hasWarmCollectionSearchIndex,
   evictWorkspaceSearchForPath,
   createWorkspaceCollectionSearchResult
 } = require('./workspace-search-index');
@@ -685,13 +708,21 @@ const startWorkspaceCollectionSearch = async (event, {
   }
 
   try {
-    for (const collectionPath of collectionPaths) {
+    // Two passes: collections whose search index is already warm answer
+    // first (results in milliseconds), cold ones build after. Previously the
+    // loop awaited builds serially in workspace order, so one cold
+    // collection blocked results from every warm collection behind it — a
+    // narrow query during the startup warm took 2+ minutes to first result.
+    const eligiblePaths = collectionPaths.filter(
+      (collectionPath) => isWorkspaceCollectionPathAllowed(workspacePath, collectionPath) && isDirectory(collectionPath)
+    );
+    const orderedPaths = [
+      ...eligiblePaths.filter((collectionPath) => hasWarmCollectionSearchIndex(collectionPath)),
+      ...eligiblePaths.filter((collectionPath) => !hasWarmCollectionSearchIndex(collectionPath))
+    ];
+    for (const collectionPath of orderedPaths) {
       if (job.cancelled || job.totalResults >= job.limit) {
         break;
-      }
-
-      if (!isWorkspaceCollectionPathAllowed(workspacePath, collectionPath) || !isDirectory(collectionPath)) {
-        continue;
       }
 
       if (scopes.collections) {
@@ -1781,7 +1812,13 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
   // focused) so the first keystroke matches an already-warm index.
   ipcMain.handle('renderer:warm-workspace-search', async (event, { workspacePath, collectionPaths = [] } = {}) => {
     if (workspacePath) {
-      warmWorkspaceSearch(workspacePath, collectionPaths).catch(() => {});
+      const warmPromise = warmWorkspaceSearch(workspacePath, collectionPaths);
+      // Defer eager-hydration attaches until the warm finishes (bounded) so
+      // the two full-workspace reads do not race each other on disk/CPU.
+      setSearchWarmGate(warmPromise);
+      // Resolve when the warm actually completes so the renderer can chain
+      // the collection-index warm after it (and log an honest duration).
+      await warmPromise.catch(() => {});
     }
     return true;
   });
@@ -2343,13 +2380,22 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     }
   });
 
+  // Renderer perf telemetry mirrored into the terminal (see
+  // bruno-app utils/common/perfLogger.js).
+  ipcMain.handle('renderer:perf-log', (event, line) => {
+    console.log(line);
+  });
+
   ipcMain.handle('renderer:refresh-collection-index', async (event, { collectionUid, collectionPathname, brunoConfig, loadSessionId, priority = false }) => {
     try {
-      // A priority refresh with a build already pending/running (e.g. the
-      // startup warm) just moves it to the front — cancel+restart would
-      // reset the renderer index and unmount its filtered rows mid-search.
-      if (priority && promoteCollectionIndex(collectionUid)) {
-        return { promoted: true };
+      // A refresh while a build is already pending/running never restarts
+      // it: priority refreshes (search filter, retry row) move the queued
+      // job to the front; background refreshes (the startup warm racing a
+      // freshly created collection's own index build) are a no-op. A
+      // cancel+restart here reset the renderer index mid-flight — wiping
+      // filtered rows during a search, and racing request-creation flows.
+      if (promoteCollectionIndex(collectionUid)) {
+        return { promoted: priority };
       }
       startCollectionIndex(mainWindow, {
         collectionUid,

@@ -65,7 +65,13 @@ export const store = configureStore({
     openapiSync: openapiSyncReducer,
     workflows: workflowsReducer
   },
-  middleware: (getDefaultMiddleware) => getDefaultMiddleware().concat(middleware)
+  // RTK's dev-only immutableCheck/serializableCheck walk the ENTIRE store
+  // on every dispatch. With GSB-scale state (11.7k index nodes + collection
+  // trees) one dispatch became a single 26-31s renderer task ([gridman-perf]
+  // LONG-TASK + CPU profile: detectMutations/trackProperties/
+  // findNonSerializableValue dominated the stall) — the app froze for ~30s
+  // after every search in dev. Standard RTK guidance for large states.
+  middleware: (getDefaultMiddleware) => getDefaultMiddleware({ immutableCheck: false, serializableCheck: false }).concat(middleware)
 });
 
 export default store;

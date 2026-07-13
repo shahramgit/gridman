@@ -134,39 +134,28 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
         collectionPaths
       }).then(() => {
         perfLog('warm: search-index DONE', { afterMs: Math.round(performance.now() - warmStart) });
-      }).catch(() => {});
+      }).catch(() => {}).finally(() => {
+        // Chain the collection-index warm AFTER the search warm so the two
+        // full-workspace scans never race each other (see the eager-attach
+        // gate in bruno-electron ipc/collection.js for the third pipeline).
+        const state = store.getState().collections;
+        let requested = 0;
+        for (const collection of state.collections || []) {
+          if (!state.collectionIndexes?.[collection.uid]) {
+            requested += 1;
+            dispatch(refreshCollectionIndex({ collectionUid: collection.uid })).catch(() => {});
+          }
+        }
+        perfLog('warm: collection-indexes start', { requested });
+      });
     }, 2000);
     return () => clearTimeout(timer);
   }, [activeWorkspace?.pathname, activeWorkspace?.collections]);
 
-  // Warm the COLLECTION indexes too (metadata scans, serialized by the main
-  // process; the whole GSB workspace measures ~2s). With indexes prebuilt,
-  // the first content search filters instantly instead of triggering
-  // on-demand index builds whose streaming batches jank scrolling. Search-
-  // triggered priority requests promote queued warm jobs, so starting early
-  // never delays an active search.
+  // The collection-index warm (metadata scans) chains after the search warm
+  // above — sequenced, not raced, since both read the whole workspace.
   const dispatch = useDispatch();
   const store = useStore();
-  const indexWarmedWorkspacesRef = useRef(new Set());
-  useEffect(() => {
-    const workspacePath = activeWorkspace?.pathname;
-    if (!workspacePath || indexWarmedWorkspacesRef.current.has(workspacePath)) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      indexWarmedWorkspacesRef.current.add(workspacePath);
-      const state = store.getState().collections;
-      let requested = 0;
-      for (const collection of state.collections || []) {
-        if (!state.collectionIndexes?.[collection.uid]) {
-          requested += 1;
-          dispatch(refreshCollectionIndex({ collectionUid: collection.uid })).catch(() => {});
-        }
-      }
-      perfLog('warm: collection-indexes start', { requested });
-    }, 3000);
-    return () => clearTimeout(timer);
-  }, [activeWorkspace?.pathname]);
 
   const nonScratchCollections = useMemo(() => {
     return collections.filter((c) => !isScratchCollection(c, workspaces));
@@ -274,7 +263,11 @@ const Collections = ({ showSearch, isCreatingCollection, onCreateClick, onDismis
         {visibleEntries.map(({ entry, searchMatches }) => (
           entry.type === 'loaded' ? (
             <Collection
-              searchText={searchText}
+              // Filtering starts with the content search (>= 2 chars). A
+              // single character used to trigger the renderer-side name
+              // filter across every collection — with plain-row rendering
+              // that mounted thousands of rows and froze the first keystroke.
+              searchText={workspaceSearch.isActive ? searchText : ''}
               searchMatches={searchMatches}
               filterRowAllowance={filterRowAllowance}
               collection={entry.collection}

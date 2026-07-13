@@ -216,7 +216,16 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
   if (isPathUnderActiveGitOperation(pathname)) {
     return;
   }
-  invalidateSearchForPath(pathname);
+  // Initial-scan adds (parsePriorityBoost > 0 <=> initialScanActive) are
+  // pre-existing files, not content changes — invalidating the workspace
+  // search index for each one evicted every collection's index thousands of
+  // times over the first minutes after startup, so ANY search in that window
+  // rebuilt serially against a perpetually-cold cache (measured 118s to
+  // first results on GSB; the user-reported 'first search is slow even after
+  // waiting 30 seconds').
+  if (parsePriorityBoost === 0) {
+    invalidateSearchForPath(pathname);
+  }
   if (isBrunoConfigFile(pathname, collectionPath)) {
     try {
       const content = fs.readFileSync(pathname, 'utf8');

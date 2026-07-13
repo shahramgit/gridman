@@ -143,13 +143,22 @@ const useIpcEvents = () => {
             collectionTreeQueue.splice(i, 1);
           }
         }
-        // Ready files go through the queue like everything else (<=50ms
-        // extra latency; the request panel renders from loadedRequestsByPath
-        // which the direct load call populates, not this watcher event).
-        // Dispatching them immediately meant ONE render per hydrated file —
-        // background eager hydration streams thousands of ready files for
-        // tens of seconds after startup, which kept the app laggy for ~30s
-        // after a first search mounted hundreds of subscribed filtered rows.
+        // A ready file some queued task is WAITING on (OPEN_REQUEST /
+        // OPEN_EXAMPLE — i.e. the user just created it) must dispatch
+        // immediately: the tasks middleware listens for the SINGLE
+        // collectionAddFileEvent, and routing it through the batch dispatch
+        // silently broke 'create request -> tab opens'. Everything else
+        // (bulk background hydration) stays batched — dispatching those
+        // individually meant one render per hydrated file, thousands of
+        // times, which kept the app laggy for ~30s after a first search.
+        const taskQueue = store.getState().app?.taskQueue || [];
+        const hasWaitingTask = taskQueue.some(
+          (task) => task.collectionUid === val.meta.collectionUid
+        );
+        if (hasWaitingTask) {
+          dispatchCollectionTreeUpdate(type, val);
+          return;
+        }
       }
 
       collectionTreeQueue.push({ type, val });
