@@ -21,20 +21,33 @@ const isDevEnv = () => {
   return import.meta.env.MODE === 'development';
 };
 
-// Production: skip immer's recursive auto-freeze of every reducer result.
+// Skip immer's recursive auto-freeze of every reducer result — in DEV too.
 // Profiled on the GSB workspace, isNestedFrozen was the top renderer CPU
 // cost while index batches / background hydration streamed into the large
 // collections and index maps — the source of 100-150ms frame stalls when
-// scrolling during a search. Dev keeps freezing so accidental state
-// mutations still throw during development.
-if (!isDevEnv()) {
-  setAutoFreeze(false);
-}
+// scrolling during a search. Dev originally kept freezing as a
+// mutation-detection safety net, but the team evaluates perf on dev runs
+// and the freeze overhead masked every production fix. Trade-off accepted;
+// mutation bugs still surface via tests and review.
+setAutoFreeze(false);
 
 initPerfLogging({ mode: import.meta.env.MODE });
 
+// The redux debug middleware console.debugs the ENTIRE store on EVERY
+// action — with the startup hydration/index streams that is thousands of
+// multi-MB logs, and with DevTools open it made dev builds unusably laggy
+// (and made perf testing on dev runs meaningless). Opt in explicitly:
+//   localStorage.setItem('gridman.debugRedux', '1')  (+ reload)
+const isReduxDebugEnabled = () => {
+  try {
+    return Boolean(window.localStorage?.getItem('gridman.debugRedux'));
+  } catch (_err) {
+    return false;
+  }
+};
+
 let middleware = [tasksMiddleware.middleware, draftDetectMiddleware, autosaveMiddleware];
-if (isDevEnv()) {
+if (isDevEnv() && isReduxDebugEnabled()) {
   middleware = [...middleware, debugMiddleware.middleware];
 }
 

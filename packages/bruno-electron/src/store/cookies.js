@@ -92,9 +92,14 @@ class CookiesStore {
             cookiesByDomain[cookie.domain] = [];
           }
 
+          // tough-cookie serialization can yield non-string values (e.g.
+          // valueless cookies); coerce instead of throwing per cookie on
+          // every debounced write (the throw+warn per cookie repeated
+          // endlessly in client logs and the cookies never persisted).
+          const rawValue = typeof cookie.value === 'string' ? cookie.value : String(cookie.value ?? '');
           cookiesByDomain[cookie.domain].push({
             ...cookie,
-            value: encryptString(cookie.value, this.#passkey)
+            value: encryptString(rawValue, this.#passkey)
           });
         } catch (err) {
           console.warn('Failed to process cookie for storage:', cookie?.key, err);
