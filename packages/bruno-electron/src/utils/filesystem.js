@@ -427,6 +427,28 @@ const removePath = async (source) => {
   }
 };
 
+// Move a path to the OS trash (Recycle Bin) instead of hard-deleting. Used by
+// USER-initiated deletes — requests, folders, collections, environment files —
+// so a mis-click is recoverable from the system trash; these used to be
+// permanent fs.unlink/rm, and git only protects committed files. Internal
+// cleanup (move sources, transient/temp files, caches) must keep using
+// removePath: that isn't user data and would spam the trash. Falls back to a
+// permanent delete when the platform/mount can't trash (some network shares)
+// and in Playwright runs so hermetic e2e temp dirs don't fill the developer's
+// real Trash.
+const trashPath = async (source) => {
+  if (process.env.PLAYWRIGHT === 'true') {
+    return removePath(source);
+  }
+  try {
+    const { shell } = require('electron');
+    await shell.trashItem(path.resolve(source));
+  } catch (error) {
+    console.warn(`Could not move ${source} to trash, deleting permanently:`, error?.message);
+    return removePath(source);
+  }
+};
+
 // Recursively gets paths. Returns plain (non-prefixed) paths for callers/UI;
 // only the fs calls use the Windows long-path prefix.
 const getPaths = async (source) => {
@@ -591,6 +613,7 @@ module.exports = {
   safeWriteFileSync,
   copyPath,
   removePath,
+  trashPath,
   getPaths,
   winLongPath,
   isLargeFile,

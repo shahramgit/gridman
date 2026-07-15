@@ -50,6 +50,7 @@ const {
   safeWriteFileSync,
   copyPath,
   removePath,
+  trashPath,
   getPaths,
   winLongPath,
   normalizeAndResolvePath,
@@ -1347,7 +1348,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         throw new Error(`environment: ${envFilePath} does not exist`);
       }
 
-      fs.unlinkSync(envFilePath);
+      await trashPath(envFilePath);
 
       environmentSecretsStore.deleteEnvironment(collectionPathname, environmentName);
     } catch (error) {
@@ -1702,7 +1703,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           deleteRequestUid(requestFile);
         }
 
-        fs.rmSync(pathname, { recursive: true, force: true });
+        await trashPath(pathname);
       } else if (['http-request', 'graphql-request', 'grpc-request', 'ws-request'].includes(type)) {
         if (!fs.existsSync(pathname)) {
           return Promise.reject(new Error('The file does not exist'));
@@ -1710,7 +1711,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
         deleteRequestUid(pathname);
 
-        fs.unlinkSync(pathname);
+        await trashPath(pathname);
       } else {
         return Promise.reject();
       }
@@ -1884,7 +1885,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     }
 
     if (shouldDeleteCollectionFiles && fs.existsSync(collectionPath)) {
-      await fsExtra.remove(collectionPath);
+      await trashPath(collectionPath);
     }
 
     // Clean up AppData spec files for this collection
@@ -2303,7 +2304,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       if (kind === 'folder') {
         const requestFilesAtSource = await searchForRequestFiles(sourcePath, collectionPathname);
         requestFilesAtSource.forEach((requestFile) => deleteRequestUid(requestFile));
-        await fsExtra.remove(sourcePath);
+        await trashPath(sourcePath);
         return {
           pathname: sourcePath,
           type: 'folder'
@@ -2315,7 +2316,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       }
       const requestType = getRequestTypeFromPath(sourcePath, collectionPathname);
       deleteRequestUid(sourcePath);
-      await fs.promises.unlink(sourcePath);
+      await trashPath(sourcePath);
       return {
         pathname: sourcePath,
         type: requestType
