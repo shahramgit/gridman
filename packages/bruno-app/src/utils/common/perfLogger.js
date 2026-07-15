@@ -5,7 +5,7 @@
 
 // Bump when shipping a perf-relevant build so a pasted log proves which
 // build produced it.
-export const PERF_BUILD_TAG = '2026-07-15-D';
+export const PERF_BUILD_TAG = '2026-07-15-E';
 
 const since = () => `${(performance.now() / 1000).toFixed(1)}s`;
 

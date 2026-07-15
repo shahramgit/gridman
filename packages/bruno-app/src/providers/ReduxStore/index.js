@@ -15,6 +15,8 @@ import workspacesReducer from './slices/workspaces';
 import apiSpecReducer from './slices/apiSpec';
 import openapiSyncReducer from './slices/openapi-sync';
 import workflowsReducer from './slices/workflows';
+import historyReducer from './slices/history';
+import historyMiddleware from './middlewares/history/middleware';
 import { draftDetectMiddleware } from './middlewares/draft/middleware';
 import { autosaveMiddleware } from './middlewares/autosave/middleware';
 
@@ -47,7 +49,7 @@ const isReduxDebugEnabled = () => {
   }
 };
 
-let middleware = [perfActionsMiddleware.middleware, tasksMiddleware.middleware, draftDetectMiddleware, autosaveMiddleware];
+let middleware = [perfActionsMiddleware.middleware, tasksMiddleware.middleware, historyMiddleware.middleware, draftDetectMiddleware, autosaveMiddleware];
 if (isDevEnv() && isReduxDebugEnabled()) {
   middleware = [...middleware, debugMiddleware.middleware];
 }
@@ -64,7 +66,8 @@ export const store = configureStore({
     workspaces: workspacesReducer,
     apiSpec: apiSpecReducer,
     openapiSync: openapiSyncReducer,
-    workflows: workflowsReducer
+    workflows: workflowsReducer,
+    history: historyReducer
   },
   // RTK's dev-only immutableCheck/serializableCheck walk the ENTIRE store
   // on every dispatch. With GSB-scale state (11.7k index nodes + collection

@@ -8,6 +8,7 @@ import { updateLeftSidebarWidth, updateIsDragging, toggleSidebarSearch } from 'p
 import CollectionsSection from './Sections/CollectionsSection/index';
 import ApiSpecsSection from './Sections/ApiSpecsSection/index';
 import WorkflowsSection from './Sections/WorkflowsSection/index';
+import HistorySection from './Sections/HistorySection/index';
 import useKeybinding from 'hooks/useKeybinding';
 
 const MIN_LEFT_SIDEBAR_WIDTH = 220;
@@ -21,6 +22,10 @@ const SIDEBAR_SECTIONS = [
   {
     id: 'workflows',
     component: WorkflowsSection
+  },
+  {
+    id: 'history',
+    component: HistorySection
   },
   {
     id: 'api-specs',
