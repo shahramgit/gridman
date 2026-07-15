@@ -41,7 +41,11 @@ const {
   addGitKnownHost,
   setGitIdentity,
   enableGitGlobalLongPaths,
-  testGitSshConnection
+  testGitSshConnection,
+  createStash,
+  listStashes,
+  applyStash,
+  dropStash
 } = require('../utils/git');
 const { createDirectory, removeDirectory } = require('../utils/filesystem');
 const { beginGitOperation, endGitOperation } = require('../app/git-operation-state');
@@ -61,7 +65,9 @@ const WORKING_TREE_MUTATING_OPERATIONS = new Set([
   'guided Git action',
   'abort merge',
   'continue merge',
-  'resolve conflict'
+  'resolve conflict',
+  'discard changes',
+  'restore discarded changes'
 ]);
 
 const withWorkspaceGitOperationLock = async (gitRootPath, operationName, operation) => {
@@ -311,6 +317,36 @@ const registerGitIpc = (mainWindow) => {
   ipcMain.handle('renderer:get-workspace-git-diff', async (event, { gitRootPath, filePath, staged }) => {
     const fullPath = path.join(gitRootPath, filePath);
     return staged ? getStagedFileDiff(gitRootPath, fullPath) : getUnstagedFileDiff(gitRootPath, fullPath);
+  });
+
+  // "Discard all changes" is STASH-BACKED, not a hard reset (CTO decision
+  // 2026-07-15): the working tree returns to the last commit (untracked files
+  // included via --include-untracked; gitignored files like .env untouched),
+  // but the discarded work stays recoverable from the stash — surfaced in the
+  // Git panel as "Recently discarded" with restore/delete.
+  ipcMain.handle('renderer:discard-workspace-git-changes', async (event, { gitRootPath }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'discard changes', async () => {
+      const label = `Discarded via Gridman on ${new Date().toLocaleString()}`;
+      await createStash(gitRootPath, label);
+      return { label };
+    });
+  });
+
+  ipcMain.handle('renderer:list-workspace-git-discards', async (event, { gitRootPath }) => {
+    return listStashes(gitRootPath);
+  });
+
+  ipcMain.handle('renderer:restore-workspace-git-discard', async (event, { gitRootPath, stashIndex }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'restore discarded changes', async () => {
+      // apply then drop (not pop) so a conflict during apply keeps the stash
+      // intact for another attempt after the user resolves the working tree.
+      await applyStash(gitRootPath, stashIndex);
+      await dropStash(gitRootPath, stashIndex);
+    });
+  });
+
+  ipcMain.handle('renderer:delete-workspace-git-discard', async (event, { gitRootPath, stashIndex }) => {
+    return dropStash(gitRootPath, stashIndex);
   });
 };
 

@@ -19,7 +19,8 @@ import {
   IconEdit,
   IconPlus,
   IconCircleCheck,
-  IconAlertTriangle
+  IconAlertTriangle,
+  IconTrash
 } from '@tabler/icons';
 
 import Button from 'ui/Button';
@@ -251,6 +252,8 @@ const WorkspaceGit = ({ workspace }) => {
   const [remoteUrlInput, setRemoteUrlInput] = useState('');
   const [remoteBranchInput, setRemoteBranchInput] = useState('main');
   const [connectRemoteModalOpen, setConnectRemoteModalOpen] = useState(false);
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const [discards, setDiscards] = useState([]);
   const [connectRemoteTestResult, setConnectRemoteTestResult] = useState(null);
   const [preferredRemoteBranch, setPreferredRemoteBranch] = useState('');
   const [editingRemote, setEditingRemote] = useState(false);
@@ -487,6 +490,68 @@ const WorkspaceGit = ({ workspace }) => {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // "Recently discarded" entries: stashes created by the Discard button. Only
+  // Gridman-labeled stashes are listed so a power user's manual stashes aren't
+  // exposed to accidental restore/delete from the panel.
+  const loadDiscards = useCallback(async () => {
+    if (!gitRootPath) {
+      setDiscards([]);
+      return;
+    }
+    try {
+      const stashes = await window.ipcRenderer.invoke('renderer:list-workspace-git-discards', { gitRootPath });
+      setDiscards((stashes || []).filter((stash) => (stash.message || '').includes('Discarded via Gridman')));
+    } catch (error) {
+      // listing is best-effort; the panel simply shows no entries
+      setDiscards([]);
+    }
+  }, [gitRootPath]);
+
+  useEffect(() => {
+    loadDiscards();
+  }, [loadDiscards]);
+
+  const discardAllChanges = async () => {
+    if (!gitRootPath) return;
+    setDiscardConfirmOpen(false);
+    setOperation('Discard changes');
+    try {
+      await window.ipcRenderer.invoke('renderer:discard-workspace-git-changes', { gitRootPath });
+      toast.success('Local changes discarded — recoverable from "Recently discarded"');
+      await refresh({ silent: true });
+      await loadDiscards();
+    } catch (error) {
+      toast.error(getIpcErrorMessage(error, 'Failed to discard changes'));
+    } finally {
+      setOperation(null);
+    }
+  };
+
+  const restoreDiscard = async (stashIndex) => {
+    if (!gitRootPath) return;
+    setOperation('Restore discarded changes');
+    try {
+      await window.ipcRenderer.invoke('renderer:restore-workspace-git-discard', { gitRootPath, stashIndex });
+      toast.success('Discarded changes restored');
+      await refresh({ silent: true });
+      await loadDiscards();
+    } catch (error) {
+      toast.error(getIpcErrorMessage(error, 'Failed to restore — resolve any conflicting local changes first'));
+    } finally {
+      setOperation(null);
+    }
+  };
+
+  const deleteDiscard = async (stashIndex) => {
+    if (!gitRootPath) return;
+    try {
+      await window.ipcRenderer.invoke('renderer:delete-workspace-git-discard', { gitRootPath, stashIndex });
+      await loadDiscards();
+    } catch (error) {
+      toast.error(getIpcErrorMessage(error, 'Failed to delete the discarded entry'));
+    }
+  };
 
   // Keep the panel in sync with changes made outside it (terminal git commands,
   // file moves/renames): silently re-check status on window focus, when the tab
@@ -2194,6 +2259,46 @@ const WorkspaceGit = ({ workspace }) => {
                   Commit saves a Git snapshot. If nothing is staged, Gridman stages all unstaged files before committing.
                 </div>
               </div>
+
+              <div className="panel">
+                <div className="section-title">Discard</div>
+                <div className="text-muted text-sm">
+                  Throw away all local changes and return to the last commit — for work you no longer want to commit or
+                  push. Discarded changes stay recoverable below; ignored files (like environments with secrets) are
+                  untouched.
+                </div>
+                <div className="flex gap-2 mt-2">
+                  <Button
+                    size="sm"
+                    color="danger"
+                    icon={<IconTrash size={14} />}
+                    disabled={!staged.length && !unstaged.length}
+                    loading={operation === 'Discard changes'}
+                    onClick={() => setDiscardConfirmOpen(true)}
+                  >
+                    Discard all changes…
+                  </Button>
+                </div>
+                {discards.length ? (
+                  <div className="mt-3">
+                    <div className="font-medium text-sm">Recently discarded</div>
+                    {discards.map((stash) => (
+                      <div key={stash.hash || stash.index} className="flex items-center gap-2 mt-1 text-sm">
+                        <span className="text-muted truncate" title={stash.message}>
+                          {stash.message.replace('Discarded via Gridman on ', '')}
+                          {typeof stash.filesChanged === 'number' ? ` — ${stash.filesChanged} file${stash.filesChanged === 1 ? '' : 's'}` : ''}
+                        </span>
+                        <Button size="xs" color="light" loading={operation === 'Restore discarded changes'} onClick={() => restoreDiscard(stash.index)}>
+                          Restore
+                        </Button>
+                        <Button size="xs" color="light" onClick={() => deleteDiscard(stash.index)}>
+                          Delete
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             </div>
           </details>
           {hasConflicts && (
@@ -2241,6 +2346,35 @@ const WorkspaceGit = ({ workspace }) => {
             await refresh();
           }}
         />
+      )}
+      {discardConfirmOpen && (
+        <Portal>
+          <Modal
+            size="md"
+            title="Discard all changes"
+            confirmText="Discard all"
+            handleConfirm={discardAllChanges}
+            handleCancel={() => setDiscardConfirmOpen(false)}
+          >
+            <div style={{ display: 'grid', gap: 12 }}>
+              <p style={{ margin: 0, lineHeight: 1.5 }}>
+                This discards <strong>{tooManyFiles ? totalChangedFiles : staged.length + unstaged.length} changed file{(tooManyFiles ? totalChangedFiles : staged.length + unstaged.length) === 1 ? '' : 's'}</strong> and
+                returns the workspace to the last commit. New (uncommitted) requests are removed too.
+              </p>
+              {!tooManyFiles && (staged.length + unstaged.length) > 0 ? (
+                <div style={{ maxHeight: 180, overflowY: 'auto', fontSize: 12 }} className="text-muted">
+                  {[...staged, ...unstaged].map((file) => (
+                    <div key={file.path} className="truncate" title={file.path}>{file.path}</div>
+                  ))}
+                </div>
+              ) : null}
+              <p style={{ margin: 0, lineHeight: 1.5 }} className="text-muted text-sm">
+                Nothing is lost permanently: the discarded work appears under "Recently discarded", where it can be
+                restored or deleted. Ignored files (e.g. environments with secrets) are not touched.
+              </p>
+            </div>
+          </Modal>
+        </Portal>
       )}
       {connectRemoteModalOpen && (
         <Portal>
