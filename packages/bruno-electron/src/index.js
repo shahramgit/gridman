@@ -200,7 +200,17 @@ if (useSingleInstance && !gotTheLock) {
 app.on('ready', async () => {
   initializeShellEnv();
 
-  if (isDev) {
+  // React/Redux DevTools extensions instrument every fiber commit and
+  // serialize every dispatched action + the whole store to their backends.
+  // On the GSB workspace (116 collections) mounting a search result set became
+  // a single ~3s main-thread stall INSIDE the DevTools backends ([gridman-perf]
+  // LONG-TASK; CPU profile: the Redux DevTools inspectSource/checkForUpdates
+  // module ~2.4s + React DevTools measureHostInstance dominated it — our own
+  // React commit was only ~0.4s). The team evaluates perf on dev runs, so
+  // auto-installing them made every first search feel broken. Consistent with
+  // the redux-debug opt-in in the store, install them only when asked:
+  //   GRIDMAN_DEVTOOLS=1 npm run dev
+  if (isDev && process.env.GRIDMAN_DEVTOOLS) {
     const { installExtension, REDUX_DEVTOOLS, REACT_DEVELOPER_TOOLS } = require('electron-devtools-installer');
     try {
       const extensions = await installExtension([REDUX_DEVTOOLS, REACT_DEVELOPER_TOOLS], {

@@ -3,6 +3,7 @@ import { setAutoFreeze } from 'immer';
 import { initPerfLogging } from 'utils/common/perfLogger';
 import tasksMiddleware from './middlewares/tasks/middleware';
 import debugMiddleware from './middlewares/debug/middleware';
+import perfActionsMiddleware from './middlewares/perfActions/middleware';
 import appReducer from './slices/app';
 import collectionsReducer from './slices/collections';
 import tabsReducer from './slices/tabs';
@@ -46,7 +47,7 @@ const isReduxDebugEnabled = () => {
   }
 };
 
-let middleware = [tasksMiddleware.middleware, draftDetectMiddleware, autosaveMiddleware];
+let middleware = [perfActionsMiddleware.middleware, tasksMiddleware.middleware, draftDetectMiddleware, autosaveMiddleware];
 if (isDevEnv() && isReduxDebugEnabled()) {
   middleware = [...middleware, debugMiddleware.middleware];
 }

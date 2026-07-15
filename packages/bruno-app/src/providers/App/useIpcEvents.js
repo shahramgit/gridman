@@ -104,23 +104,58 @@ const useIpcEvents = () => {
       }
     };
 
+    // Background eager hydration streams addFile/addDir tree updates for ~85s
+    // after warm. Each batch re-renders the sidebar; while a workspace search
+    // is active and its result list is mounted, that was 400-700ms per batch
+    // (measured on GSB) — the "scrolling hangs for a minute" report. So HOLD
+    // hydration adds while a search is active and drain them when it clears;
+    // structural updates (unlink/rename/change) still apply immediately so the
+    // tree stays correct. TREE_FLUSH_CAP also bounds any single flush (incl.
+    // the post-search drain) so applying a large backlog never becomes one
+    // multi-second immer produce.
+    const TREE_FLUSH_CAP = 80;
+    const TREE_HOLD_RECHECK_MS = 400;
     const flushCollectionTreeQueue = () => {
       collectionTreeFlushTimer = null;
-      const updates = collectionTreeQueue.splice(0, collectionTreeQueue.length);
-      if (!updates.length) {
+      if (!collectionTreeQueue.length) {
         return;
       }
+      const searchActive = Boolean(store.getState().app?.workspaceSearchActive);
 
-      const batchableUpdates = updates.filter(({ type }) => type === 'addDir' || type === 'addFile');
-      const otherUpdates = updates.filter(({ type }) => type !== 'addDir' && type !== 'addFile');
-
-      perfCount('treeFiles', updates.length);
-      batch(() => {
-        if (batchableUpdates.length) {
-          dispatch(collectionTreeBatchUpdatedEvent({ updates: batchableUpdates }));
+      const dispatchNow = [];
+      const remaining = [];
+      let addBudget = TREE_FLUSH_CAP;
+      for (const update of collectionTreeQueue) {
+        const isAdd = update.type === 'addFile' || update.type === 'addDir';
+        if (isAdd && (searchActive || addBudget <= 0)) {
+          remaining.push(update);
+        } else {
+          if (isAdd) {
+            addBudget -= 1;
+          }
+          dispatchNow.push(update);
         }
-        otherUpdates.forEach(({ type, val }) => dispatchCollectionTreeUpdate(type, val));
-      });
+      }
+      collectionTreeQueue.length = 0;
+      if (remaining.length) {
+        collectionTreeQueue.push(...remaining);
+      }
+
+      if (dispatchNow.length) {
+        const batchableUpdates = dispatchNow.filter(({ type }) => type === 'addDir' || type === 'addFile');
+        const otherUpdates = dispatchNow.filter(({ type }) => type !== 'addDir' && type !== 'addFile');
+        perfCount('treeFiles', dispatchNow.length);
+        batch(() => {
+          if (batchableUpdates.length) {
+            dispatch(collectionTreeBatchUpdatedEvent({ updates: batchableUpdates }));
+          }
+          otherUpdates.forEach(({ type, val }) => dispatchCollectionTreeUpdate(type, val));
+        });
+      }
+
+      if (collectionTreeQueue.length && !collectionTreeFlushTimer) {
+        collectionTreeFlushTimer = setTimeout(flushCollectionTreeQueue, searchActive ? TREE_HOLD_RECHECK_MS : 50);
+      }
     };
 
     const queueCollectionTreeUpdate = (type, val) => {
@@ -201,7 +236,7 @@ const useIpcEvents = () => {
 
     const removeCollectionTreeUpdateListener = ipcRenderer.on('main:collection-tree-updated', _collectionTreeUpdated);
     const removeCollectionIndexStartedListener = ipcRenderer.on('main:collection-index-started', (val) => {
-      flushIndexBatchBuffer();
+      flushIndexBatchBuffer(true);
       dispatch(collectionIndexStarted(val));
     });
     // Index batches are coalesced before hitting redux: the startup warm
@@ -212,7 +247,13 @@ const useIpcEvents = () => {
     // flush the buffer first so event ordering is preserved.
     let indexBatchBuffer = [];
     let indexBatchFlushTimer = null;
-    const flushIndexBatchBuffer = () => {
+    // Cap the reducer work per flush: an unbounded merge applied a whole
+    // large collection (4k+ nodes) in one dispatch — a multi-second renderer
+    // task in dev when it landed while the user scrolled. Oversized merges
+    // split into <=1200-node dispatches; leftovers re-arm the timer so each
+    // main-thread task stays bounded.
+    const INDEX_FLUSH_NODE_CAP = 1200;
+    const flushIndexBatchBuffer = (drainAll = false) => {
       if (indexBatchFlushTimer) {
         clearTimeout(indexBatchFlushTimer);
         indexBatchFlushTimer = null;
@@ -232,9 +273,24 @@ const useIpcEvents = () => {
           merged.push({ ...event, nodes: [...(event.nodes || [])] });
         }
       }
-      for (const event of merged) {
+      let appliedNodes = 0;
+      while (merged.length) {
+        const event = merged.shift();
+        if (!drainAll && appliedNodes >= INDEX_FLUSH_NODE_CAP) {
+          indexBatchBuffer.unshift(event, ...merged);
+          break;
+        }
+        if (!drainAll && (event.nodes || []).length > INDEX_FLUSH_NODE_CAP) {
+          const rest = { ...event, nodes: event.nodes.slice(INDEX_FLUSH_NODE_CAP) };
+          event.nodes = event.nodes.slice(0, INDEX_FLUSH_NODE_CAP);
+          merged.unshift(rest);
+        }
+        appliedNodes += (event.nodes || []).length;
         perfCount('indexBatchNodes', (event.nodes || []).length);
         dispatch(collectionIndexBatchReceived(event));
+      }
+      if (indexBatchBuffer.length && !indexBatchFlushTimer) {
+        indexBatchFlushTimer = setTimeout(flushIndexBatchBuffer, 120);
       }
     };
     const removeCollectionIndexBatchListener = ipcRenderer.on('main:collection-index-batch', (val) => {
@@ -244,16 +300,16 @@ const useIpcEvents = () => {
       }
     });
     const removeCollectionIndexReadyListener = ipcRenderer.on('main:collection-index-ready', (val) => {
-      flushIndexBatchBuffer();
+      flushIndexBatchBuffer(true);
       perfCount('indexesReady', 1);
       dispatch(collectionIndexReady(val));
     });
     const removeCollectionIndexFailedListener = ipcRenderer.on('main:collection-index-failed', (val) => {
-      flushIndexBatchBuffer();
+      flushIndexBatchBuffer(true);
       dispatch(collectionIndexFailed(val));
     });
     const removeCollectionIndexCancelledListener = ipcRenderer.on('main:collection-index-cancelled', (val) => {
-      flushIndexBatchBuffer();
+      flushIndexBatchBuffer(true);
       dispatch(collectionIndexCancelled(val));
     });
 
@@ -484,7 +540,7 @@ const useIpcEvents = () => {
       removeCollectionIndexReadyListener();
       removeCollectionIndexFailedListener();
       removeCollectionIndexCancelledListener();
-      flushIndexBatchBuffer();
+      flushIndexBatchBuffer(true);
       removeApiSpecTreeUpdateListener();
       removeOpenCollectionListener();
       removeOpenWorkspaceListener();

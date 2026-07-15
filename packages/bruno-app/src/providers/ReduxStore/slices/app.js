@@ -10,6 +10,11 @@ const initialState = {
   leftSidebarWidth: 250,
   sidebarCollapsed: false,
   showSidebarSearch: false,
+  // True while a workspace content search (>= 2 chars) is filtering the
+  // sidebar. Background eager-hydration tree updates are held while this is on
+  // (the filtered view renders from the search index, not the hydrated tree),
+  // so scrolling results never competes with a 400-700ms hydration re-render.
+  workspaceSearchActive: false,
   focusedSidebarPath: null,
   screenWidth: 500,
   showHomePage: false,
@@ -104,14 +109,20 @@ export const appSlice = createSlice({
       // just-opened collection that hydrates/indexes after the dispatch still
       // gets scrolled into view (effects re-attempt as data arrives).
       // `ensureVisible` marks a deliberate reveal (workflow "Show in sidebar",
-      // search) that may expand the sidebar's Collections section; passive
-      // reveals from tab activation leave the accordion alone.
+      // search, save-as) that may expand the sidebar's Collections section;
+      // passive reveals from tab activation leave the accordion alone. Preserve
+      // a still-pending deliberate reveal for the same target so the passive
+      // reveal addTab fires right after (e.g. save-as focusing the new request)
+      // can't downgrade it and leave a never-opened collection collapsed.
+      const prev = state.sidebarReveal;
+      const keepEnsure = Boolean(ensureVisible)
+        || Boolean(prev?.pending && prev.pathname === pathname && prev.collectionUid === collectionUid && prev.ensureVisible);
       state.sidebarReveal = {
         nonce: Date.now(),
         collectionUid,
         pathname,
         pending: true,
-        ensureVisible: Boolean(ensureVisible)
+        ensureVisible: keepEnsure
       };
     },
     clearSidebarReveal: (state) => {
@@ -174,6 +185,9 @@ export const appSlice = createSlice({
     },
     toggleSidebarSearch: (state) => {
       state.showSidebarSearch = !state.showSidebarSearch;
+    },
+    setWorkspaceSearchActive: (state, action) => {
+      state.workspaceSearchActive = Boolean(action.payload);
     },
     setFocusedSidebarPath: (state, action) => {
       state.focusedSidebarPath = action.payload;
@@ -246,6 +260,7 @@ export const {
   updateGenerateCode,
   toggleSidebarCollapse,
   toggleSidebarSearch,
+  setWorkspaceSearchActive,
   setFocusedSidebarPath,
   updateGitOperationProgress,
   removeGitOperationProgress,

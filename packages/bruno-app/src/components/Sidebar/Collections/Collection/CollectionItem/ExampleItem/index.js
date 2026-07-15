@@ -21,7 +21,7 @@ import toast from 'react-hot-toast';
 import StyledWrapper from './StyledWrapper';
 import { useSidebarAccordion } from 'components/Sidebar/SidebarAccordionContext';
 
-const ExampleItem = ({ example, item, collection }) => {
+const ExampleItem = ({ example, item, collection, displayDepth }) => {
   const { dropdownContainerRef } = useSidebarAccordion();
   const dispatch = useDispatch();
   // Check if this example is the active tab
@@ -34,8 +34,10 @@ const ExampleItem = ({ example, item, collection }) => {
   const exampleRef = useRef(null);
   const menuDropdownRef = useRef(null);
 
-  // Calculate indentation: item depth + 1 for examples
-  const indents = range((item.depth || 0) + 1);
+  // Calculate indentation: the request row renders `displayDepth` indent
+  // blocks (index-derived), so its examples sit one level deeper. Falls back to
+  // the hydrated item.depth only if a caller hasn't passed displayDepth.
+  const indents = range((displayDepth != null ? displayDepth : (item.depth || 0)) + 1);
 
   const handleExampleClick = () => {
     dispatch(addTab({

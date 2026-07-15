@@ -26,7 +26,7 @@ import { useDispatch, useSelector, useStore } from 'react-redux';
 import { getEmptyImage } from 'react-dnd-html5-backend';
 import { useDrag, useDrop } from 'react-dnd';
 import { addTab, focusTab, makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
-import { addResponseExample, collectionIndexNodeActivated, collectionIndexNodesResequenced } from 'providers/ReduxStore/slices/collections';
+import { addResponseExample, collectionIndexNodeActivated, collectionIndexNodesActivated, collectionIndexNodesResequenced } from 'providers/ReduxStore/slices/collections';
 import {
   cloneCollectionItemByPath,
   deleteCollectionItemByPath,
@@ -79,6 +79,64 @@ const MAX_LIST_HEIGHT = 520;
 // Filtered (search) views render plain rows; collections whose filtered set
 // exceeds this cap show an explicit "Show N more matches" expander.
 const FILTER_ROW_CAP = 60;
+
+// Cross-row activation coalescer (mount path only). A broad content search
+// mounts hundreds of matched rows in one commit, and each row's mount effect
+// wants to hydrate its ancestor chain. Even batched per-row that was 126
+// dispatches = 126 immer produces over the collections slice in one burst
+// (~1.7s, measured via [gridman-perf] "dispatch cost … collectionIndexNodes
+// Activated"). Buffer every mounting row's chain and flush ONE plural dispatch
+// per collection on a microtask — shared ancestors dedupe by uid, and the work
+// lands AFTER the mount paints instead of blocking it. Only safe for mount-time
+// display hydration; the click/paste
+// paths (ensureNodeHydrated) still activate synchronously because they read the
+// hydrated tree item on the same tick.
+const pendingActivations = new Map(); // collectionUid -> Map<uid, node>
+let activationDispatch = null;
+let activationFlushScheduled = false;
+// Flush a few collections per animation frame rather than all at once:
+// draining 20+ plural dispatches in one task was a single ~0.5s frame while the
+// user scrolled. Spreading across frames yields to paint/scroll between chunks.
+const ACTIVATION_FLUSH_CHUNK = 4;
+const scheduleFrame = typeof requestAnimationFrame === 'function'
+  ? requestAnimationFrame
+  : (cb) => setTimeout(cb, 16);
+const flushPendingActivations = () => {
+  const dispatch = activationDispatch;
+  const keys = [...pendingActivations.keys()].slice(0, ACTIVATION_FLUSH_CHUNK);
+  for (const collectionUid of keys) {
+    const nodesByUid = pendingActivations.get(collectionUid);
+    pendingActivations.delete(collectionUid);
+    const nodes = [...nodesByUid.values()];
+    if (dispatch && nodes.length) {
+      dispatch(collectionIndexNodesActivated({ collectionUid, nodes }));
+    }
+  }
+  if (pendingActivations.size) {
+    scheduleFrame(flushPendingActivations);
+  } else {
+    activationFlushScheduled = false;
+    activationDispatch = null;
+  }
+};
+const queueNodeActivations = (dispatch, collectionUid, nodes) => {
+  if (!nodes || !nodes.length) {
+    return;
+  }
+  let byUid = pendingActivations.get(collectionUid);
+  if (!byUid) {
+    byUid = new Map();
+    pendingActivations.set(collectionUid, byUid);
+  }
+  for (const node of nodes) {
+    byUid.set(node.uid, node);
+  }
+  activationDispatch = dispatch;
+  if (!activationFlushScheduled) {
+    activationFlushScheduled = true;
+    scheduleFrame(flushPendingActivations);
+  }
+};
 
 // A content-search match is already "visible" when the query appears in what
 // identifies the row (name/filename/method/url); otherwise the row grows a
@@ -237,9 +295,7 @@ const IndexedEmptyFolderRow = ({ node, collectionUid }) => {
     if (!folderNode) {
       return;
     }
-    for (const chainNode of getIndexedNodeChain(index, folderNode)) {
-      dispatch(collectionIndexNodeActivated({ collectionUid, node: chainNode }));
-    }
+    queueNodeActivations(dispatch, collectionUid, getIndexedNodeChain(index, folderNode));
   }, [node.folderUid]);
 
   if (!folderNode || !collection) {
@@ -275,7 +331,7 @@ const IndexedEmptyFolderRow = ({ node, collectionUid }) => {
 
 // Rendered only while a row's examples are expanded, so the full-collection
 // subscription (needed by ExampleItem) stays out of the hot row render path.
-const IndexedRowExamples = ({ collectionUid, item }) => {
+const IndexedRowExamples = ({ collectionUid, item, displayDepth }) => {
   const collection = useSelector((state) => state.collections.collections?.find((c) => c.uid === collectionUid), isEqual);
 
   return (
@@ -287,6 +343,7 @@ const IndexedRowExamples = ({ collectionUid, item }) => {
           item={item}
           index={exampleIndex}
           collection={collection}
+          displayDepth={displayDepth}
         />
       ))}
     </div>
@@ -355,20 +412,24 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
     dispatch(setFocusedSidebarPath(null));
   };
 
-  const existingRequestTab = useSelector((state) => {
+  // Select the matching tab's UID (a primitive), not the tab object: the row
+  // only needs presence + whether it's active, and the click handler needs the
+  // uid to focus. Returning the object forced an `isEqual` DEEP compare of the
+  // whole tab (with its request data) for every one of ~122 mounted rows on
+  // EVERY store dispatch — pure waste while a search streams loads.
+  const existingRequestTabUid = useSelector((state) => {
     if (!isRequest) {
       return null;
     }
-
     return state.tabs.tabs.find((tab) => doesTabMatchRequestNode(tab, {
       collectionUid,
       pathname: node.pathname,
       uid: node.uid
-    })) || null;
-  }, isEqual);
-  const isTabForItemPresent = Boolean(existingRequestTab);
+    }))?.uid || null;
+  });
+  const isTabForItemPresent = Boolean(existingRequestTabUid);
   const activeTabUid = useSelector((state) => state.tabs.activeTabUid);
-  const isActiveTabRow = Boolean(existingRequestTab && existingRequestTab.uid === activeTabUid);
+  const isActiveTabRow = Boolean(existingRequestTabUid && existingRequestTabUid === activeTabUid);
   const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
   const [revealFlash, setRevealFlash] = useState(false);
   useEffect(() => {
@@ -393,9 +454,14 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
   );
   // Requests resolve O(1) from loadedRequestsByPath — the same store the
   // request panel renders from, kept consistent on load/change/move/unlink.
+  // Normalize the pathname ONCE per node, not inside the selector: the selector
+  // runs for every mounted row on every dispatch, and an NFC+path.normalize per
+  // run across ~122 rows was a top self-time entry (normalizePath) while a
+  // search streamed request loads.
+  const normalizedNodePathname = useMemo(() => normalizeItemPathname(node.pathname), [node.pathname]);
   const loadedEntry = useSelector((state) => (
     isRequest
-      ? state.collections.loadedRequestsByPath?.[collectionUid]?.[normalizeItemPathname(node.pathname)] || null
+      ? state.collections.loadedRequestsByPath?.[collectionUid]?.[normalizedNodePathname] || null
       : null
   ));
   // Folders need the hydrated tree item (children for folder Run); recompute
@@ -445,9 +511,9 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
     // hydrated sidebar item alone is not enough to skip loading — after a
     // move/clone the tree can be hydrated while the loaded entry is gone.
     const loadedEntry = store.getState().collections.loadedRequestsByPath?.[collectionUid]?.[
-      normalizeItemPathname(node.pathname)
+      normalizedNodePathname
     ];
-    const shouldLoadRequest = !existingRequestTab
+    const shouldLoadRequest = !existingRequestTabUid
       || !loadedEntry
       || !item
       || item.loading
@@ -459,8 +525,8 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
 
     dispatch(collectionIndexNodeActivated({ collectionUid, node }));
 
-    if (existingRequestTab) {
-      dispatch(focusTab({ uid: existingRequestTab.uid }));
+    if (existingRequestTabUid) {
+      dispatch(focusTab({ uid: existingRequestTabUid }));
     } else {
       dispatch(
         addTab({
@@ -481,8 +547,8 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
 
   const activateNodeChain = (targetNode = node) => {
     const chain = getIndexedNodeChain(index, targetNode);
-    for (const chainNode of chain) {
-      dispatch(collectionIndexNodeActivated({ collectionUid, node: chainNode }));
+    if (chain.length) {
+      dispatch(collectionIndexNodesActivated({ collectionUid, nodes: chain }));
     }
   };
 
@@ -491,23 +557,18 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
     return getActionCompatibleItem();
   };
 
-  // A content-search hit inside an example auto-expands the request's example
-  // child rows (hydrating the request so the example names exist) so the
-  // matched example is immediately visible under the filtered row.
   const searchMatchMeta = node.searchMatchMeta;
-  // Two-line row: when the hit is not visible in the row itself (e.g. a body
-  // or header match), show a field badge + snippet under the name.
+  // Two-line row: when the hit is not visible in the row itself (e.g. a body,
+  // header, or EXAMPLE match), show a field badge + snippet under the name.
   const showMatchContext = Boolean(searchMatchMeta?.text) && !isMatchVisibleInRow(node, searchText);
-  useEffect(() => {
-    if (!isRequest || searchMatchMeta?.field !== 'examples') {
-      return;
-    }
-    setExamplesExpanded(true);
-    if (!item?.examples?.length && node.pathname) {
-      activateNodeChain(node);
-      dispatch(loadRequest({ collectionUid, pathname: node.pathname })).catch(() => {});
-    }
-  }, [searchMatchMeta?.field, node.uid]);
+  // A content-search hit inside an example used to AUTO-load + expand the
+  // request's example child rows. On a broad query that loaded ~122 matched
+  // requests over ~45s (each an IPC parse), and the parses landed as 130-390ms
+  // main-thread stalls the whole time the user scrolled results ([gridman-perf]
+  // showed the collectionAddFileEvent trickle with NO sidebar commit — it was
+  // the reducer + GC, not a render). The match badge already tells the user the
+  // hit is in an example; expanding the example child is now lazy, via the
+  // row's own examples chevron (handleExamplesCollapse loads on demand).
 
   const isItemRequestReady = (candidate) => Boolean(
     candidate?.request
@@ -622,8 +683,8 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
       .filter((candidate) => isSameOrDescendantPath(candidate.pathname, node.pathname))
       .sort((a, b) => (a.depth || 0) - (b.depth || 0));
 
-    for (const subtreeNode of subtreeNodes) {
-      dispatch(collectionIndexNodeActivated({ collectionUid, node: subtreeNode }));
+    if (subtreeNodes.length) {
+      dispatch(collectionIndexNodesActivated({ collectionUid, nodes: subtreeNodes }));
     }
 
     const pendingPathnames = [];
@@ -1370,7 +1431,7 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
       </div>
       {hasExamples && examplesExpanded ? (
         item?.examples?.length ? (
-          <IndexedRowExamples collectionUid={collectionUid} item={item} />
+          <IndexedRowExamples collectionUid={collectionUid} item={item} displayDepth={displayDepth} />
         ) : (
           <div className="text-xs text-muted" style={{ paddingLeft: 8 + displayDepth * 16 + 24 }}>
             Loading examples...
@@ -1425,6 +1486,9 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
   ), [multiSelect, selectItemRangeInVisibleOrder]);
   const virtuosoRef = useRef(null);
   const pendingRevealNodeUidRef = useRef(null);
+  // Bounded retries for the bring-block-into-viewport step below, so a
+  // zero-height (unmeasured) container can never loop the reveal forever.
+  const revealScrollRetriesRef = useRef(0);
   const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
 
   // Virtualize against the sidebar's own scroll container instead of giving the
@@ -1485,7 +1549,13 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
       return next;
     });
     pendingRevealNodeUidRef.current = node.uid;
-  }, [sidebarReveal?.nonce, sidebarReveal?.pending, index?.totalNodes]);
+    // Re-attempt on EVERY deferred-index commit while a reveal is pending (not
+    // just when totalNodes changes): the just-saved node lands in the deferred
+    // index a beat after the reveal dispatch, and under load the exact
+    // totalNodes-change tick could be missed — which showed up as save-as
+    // "sometimes" not scrolling to the new row. The body early-returns when
+    // there's nothing pending, so extra runs are a cheap no-op.
+  }, [sidebarReveal?.nonce, sidebarReveal?.pending, index]);
 
   useEffect(() => {
     if (!pendingRevealNodeUidRef.current) {
@@ -1519,6 +1589,41 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
       });
       return () => cancelAnimationFrame(retry);
     }
+    // Virtuoso virtualizes against the sidebar's OUTER scroll container. When
+    // this collection's block is entirely outside that viewport (e.g. save-as
+    // into collection #100 of 116), virtuoso.scrollIntoView silently no-ops —
+    // it has nothing measured to scroll to — and consuming the reveal here ate
+    // it ("target opened but not scrolled; clicking the tab did nothing until
+    // I scrolled the sidebar myself"). Bring the block into the viewport via
+    // the DOM first, then retry next frame WITHOUT consuming; once in range,
+    // virtuoso can do the precise row scroll.
+    const parentEl = scrollParent;
+    const containerEl = containerRef.current;
+    if (revealScrollRetriesRef.current < 30) {
+      // scrollParent is state set by the container's callback ref — when this
+      // collection mounts BECAUSE of the reveal (expanded offscreen), this
+      // effect runs in the same commit, before that state lands. Retry instead
+      // of consuming, exactly like the missing-virtuoso case above.
+      if (!parentEl || !containerEl) {
+        revealScrollRetriesRef.current += 1;
+        const retry = requestAnimationFrame(() => {
+          setExpandedNodeUids((current) => new Set(current));
+        });
+        return () => cancelAnimationFrame(retry);
+      }
+      const parentRect = parentEl.getBoundingClientRect();
+      const containerRect = containerEl.getBoundingClientRect();
+      const blockOffscreen = containerRect.bottom <= parentRect.top || containerRect.top >= parentRect.bottom;
+      if (blockOffscreen) {
+        revealScrollRetriesRef.current += 1;
+        containerEl.scrollIntoView({ block: 'start' });
+        const retry = requestAnimationFrame(() => {
+          setExpandedNodeUids((current) => new Set(current));
+        });
+        return () => cancelAnimationFrame(retry);
+      }
+    }
+    revealScrollRetriesRef.current = 0;
     // scrollIntoView scrolls only when the row is off-screen. Clicking a
     // request also fires a reveal (via tab activation), and centering the
     // row the user just clicked yanked the sidebar around.
@@ -1529,7 +1634,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
     }
     pendingRevealNodeUidRef.current = null;
     dispatch(clearSidebarReveal());
-  }, [visibleRows, filterActive, dispatch]);
+  }, [visibleRows, filterActive, dispatch, scrollParent]);
 
   // Stable identity so memoized rows don't re-render on unrelated parent
   // renders just because the handler was recreated.

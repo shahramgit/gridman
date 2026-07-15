@@ -4,7 +4,6 @@ import { find, map, forOwn, concat, filter, each, cloneDeep, get, set, findIndex
 import { createSlice } from '@reduxjs/toolkit';
 import { hexy as hexdump } from 'hexy';
 import {
-  addDepth,
   areItemsTheSameExceptSeqUpdate,
   collapseAllItemsInCollection,
   deleteItemInCollection,
@@ -257,9 +256,6 @@ const applyCollectionAddFile = (state, file, options = {}) => {
       const existingItem = isReadyLoadedRequest ? null : findItemInCollectionByPathname(collection, file.meta.pathname);
       if (existingItem) {
         applyFileDataToItem(existingItem, file, isTransientFile);
-        if (!options.deferDepth) {
-          addDepth(collection.items);
-        }
         return collection;
       }
     }
@@ -327,10 +323,6 @@ const applyCollectionAddFile = (state, file, options = {}) => {
     }
   }
 
-  if (collection && !options.deferDepth) {
-    addDepth(collection.items);
-  }
-
   return collection;
 };
 
@@ -370,10 +362,6 @@ const applyCollectionAddDirectory = (state, dir, options = {}) => {
       }
       currentSubItems = childItem.items;
     }
-  }
-
-  if (collection && !options.deferDepth) {
-    addDepth(collection.items);
   }
 
   return collection;
@@ -527,7 +515,12 @@ const upsertCollectionIndexNodeFromItem = (state, collectionUid, item) => {
     type: item.type,
     pathname: item.pathname,
     parentUid,
-    depth: item.depth,
+    // Index depth comes from the index itself, never the hydrated tree: keep an
+    // already-indexed node's depth (the authoritative value from the indexer),
+    // and derive a brand-new node's depth from its parent index node — the same
+    // formula collectionIndexNodeAdded uses. This removes the last dependency on
+    // the hydrated item.depth so the O(N^2) addDepth walk can go away.
+    depth: currentNode ? currentNode.depth : (parentNode ? (parentNode.depth || 0) + 1 : 0),
     seq: item.seq,
     filename: item.filename,
     method: request.method || '',
@@ -552,6 +545,15 @@ const upsertCollectionIndexNodeFromItem = (state, collectionUid, item) => {
   }
   setIndexNode(index, nextNode);
   appendChildUid(index, parentUid, item.uid);
+  // A genuinely new node (no prior node at this uid OR pathname) grows the
+  // index — bump totalNodes incrementally (a migration/update reuses an
+  // existing node, so it's net-zero). Reveal effects key on totalNodes to
+  // re-attempt as the index fills; without this, hydrating/loading a single
+  // file (e.g. save-as) never re-ran the ancestor-expand + scroll, so a nested
+  // target folder stayed collapsed and the row was never revealed.
+  if (!existingNode) {
+    index.totalNodes = (index.totalNodes || 0) + 1;
+  }
 };
 
 const removeCollectionIndexNodeByPathname = (state, collectionUid, pathname, options = {}) => {
@@ -853,7 +855,6 @@ export const collectionsSlice = createSlice({
       collection.lastAction = null;
 
       collapseAllItemsInCollection(collection);
-      addDepth(collection.items);
       if (!collectionUids.includes(collection.uid)) {
         state.collections.push(collection);
       }
@@ -1020,7 +1021,6 @@ export const collectionsSlice = createSlice({
             item.items.push(action.payload.item);
           }
         }
-        addDepth(collection.items);
       }
     },
     deleteItem: (state, action) => {
@@ -3396,13 +3396,11 @@ export const collectionsSlice = createSlice({
     },
     collectionTreeBatchUpdatedEvent: (state, action) => {
       const updates = action.payload.updates || [];
-      const touchedCollectionUids = new Set();
 
       for (const update of updates) {
         if (update.type === 'addDir') {
           const collection = applyCollectionAddDirectory(state, update.val, { deferDepth: true });
           if (collection?.uid) {
-            touchedCollectionUids.add(collection.uid);
             const item = findItemInCollectionByPathname(collection, update.val.meta.pathname);
             upsertCollectionIndexNodeFromItem(state, collection.uid, item);
           }
@@ -3412,7 +3410,6 @@ export const collectionsSlice = createSlice({
         if (update.type === 'addFile') {
           const collection = applyCollectionAddFile(state, update.val, { deferDepth: true });
           if (collection?.uid) {
-            touchedCollectionUids.add(collection.uid);
             const item = findItemInCollectionByPathname(collection, update.val.meta.pathname);
             upsertCollectionIndexNodeFromItem(state, collection.uid, item);
             if (isReadyRequestFile(update.val)) {
@@ -3420,13 +3417,6 @@ export const collectionsSlice = createSlice({
             }
           }
           continue;
-        }
-      }
-
-      for (const collectionUid of touchedCollectionUids) {
-        const collection = findCollectionByUid(state.collections, collectionUid);
-        if (collection) {
-          addDepth(collection.items);
         }
       }
     },
@@ -3492,7 +3482,28 @@ export const collectionsSlice = createSlice({
           const item = findItemInCollectionByPathname(collection, node.pathname);
           upsertLoadedRequestByPath(state, collectionUid, item);
         }
-        addDepth(collection.items);
+      }
+    },
+    // Batched activation. Activating an ancestor chain (or a matched-folder
+    // subtree during search) used to dispatch collectionIndexNodeActivated
+    // per node — each running its own immer produce over the collections slice.
+    // On the GSB workspace a single search mounted ~378 of these in one burst =
+    // a ~2.9s main-thread stall ([gridman-perf] "dispatch cost …
+    // collectionIndexNodeActivated x378"). Apply every node in ONE produce.
+    collectionIndexNodesActivated: (state, action) => {
+      const { collectionUid, nodes } = action.payload;
+      if (!Array.isArray(nodes) || !nodes.length) {
+        return;
+      }
+      for (const node of nodes) {
+        const applied = applyCollectionIndexNodeToTree(state, collectionUid, node);
+        if (!applied) {
+          continue;
+        }
+        if (node.type !== 'folder') {
+          const item = findItemInCollectionByPathname(applied, node.pathname);
+          upsertLoadedRequestByPath(state, collectionUid, item);
+        }
       }
     },
     collectionIndexNodeMoved: (state, action) => {
@@ -4650,6 +4661,7 @@ export const {
   collectionIndexStarted,
   collectionIndexBatchReceived,
   collectionIndexNodeActivated,
+  collectionIndexNodesActivated,
   collectionIndexNodeMoved,
   collectionIndexNodeCloned,
   collectionIndexNodeRenamed,

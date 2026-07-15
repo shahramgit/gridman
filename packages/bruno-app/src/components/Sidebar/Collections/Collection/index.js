@@ -843,4 +843,10 @@ const Collection = ({ collection, searchText, searchMatches = null, filterRowAll
   );
 };
 
-export default Collection;
+// Memoized: the sidebar parent re-renders on every collections-slice dispatch
+// (e.g. background hydration), but a Collection's props (collection ref,
+// searchMatches, searchText, filterRowAllowance) are reference-stable unless
+// THAT collection actually changed. Without this, one collection hydrating
+// re-rendered every matched Collection block during a search — the bulk of a
+// 400-700ms per-batch stall on GSB.
+export default React.memo(Collection);
