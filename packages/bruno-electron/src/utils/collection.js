@@ -574,6 +574,12 @@ const parseFileMeta = (data, format = DEFAULT_COLLECTION_FORMAT) => {
 };
 
 const hydrateRequestWithUuid = (request, pathname) => {
+  // Defensive: a partial parse (parseBruFileMeta) returns null for a .yml file,
+  // and callers used to hydrate it before the format-aware full parse ran —
+  // crashing with "Cannot set properties of null (setting 'uid')".
+  if (!request) {
+    return request;
+  }
   request.uid = getRequestUid(pathname);
   const prefix = path.join(os.tmpdir(), 'gridman-');
   request.isTransient = pathname.startsWith(prefix);

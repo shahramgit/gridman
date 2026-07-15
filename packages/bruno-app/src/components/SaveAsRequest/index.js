@@ -53,6 +53,34 @@ const SaveAsRequest = ({ item, collectionUid, onClose }) => {
     setTargetDirname(nextCollection?.pathname);
   };
 
+  // Names already present in the chosen target folder, so we can flag a collision
+  // inline (clear message, submit disabled) instead of letting the write reject.
+  const normForCompare = (p) => String(p || '').normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const existingNames = useMemo(() => {
+    const index = collectionIndexes?.[targetCollectionUid];
+    const set = new Set();
+    if (!index?.nodesByUid || !targetDirname) {
+      return set;
+    }
+    const parentIsRoot = normForCompare(targetDirname) === normForCompare(targetCollection?.pathname);
+    const parentNode = parentIsRoot
+      ? null
+      : Object.values(index.nodesByUid).find((n) => n.type === 'folder' && normForCompare(n.pathname) === normForCompare(targetDirname));
+    const childUids = index.childrenByParentUid?.[parentNode?.uid || 'root'] || [];
+    for (const uid of childUids) {
+      const node = index.nodesByUid[uid];
+      if (node && node.type !== 'folder') {
+        if (node.filename) set.add(normForCompare(node.filename));
+        if (node.name) set.add(normForCompare(node.name));
+      }
+    }
+    return set;
+  }, [collectionIndexes, targetCollectionUid, targetDirname, targetCollection?.pathname]);
+  const existingNamesRef = useRef(existingNames);
+  existingNamesRef.current = existingNames;
+  const targetFormatRef = useRef(targetCollection?.format);
+  targetFormatRef.current = targetCollection?.format || 'bru';
+
   const formik = useFormik({
     enableReinitialize: true,
     initialValues: {
@@ -73,10 +101,23 @@ const SaveAsRequest = ({ item, collectionUid, onClose }) => {
           }
           return validateName(filename) ? true : this.createError({ message: validateNameError(filename) });
         })
+        .test('is-unique-in-folder', function (value) {
+          const filename = sanitizeName(value || '');
+          if (!filename) {
+            return true; // other tests report the empty-name error
+          }
+          const withExt = `${filename}.${targetFormatRef.current}`;
+          const taken = existingNamesRef.current;
+          if (taken.has(normForCompare(withExt)) || taken.has(normForCompare(value || ''))) {
+            return this.createError({ message: 'A request with this name already exists in the target folder' });
+          }
+          return true;
+        })
     }),
     onSubmit: (values) => {
       dispatch(saveRequestAs({
         item,
+        sourceCollectionUid: collectionUid,
         targetCollectionUid,
         targetDirname,
         name: values.name,
@@ -98,6 +139,12 @@ const SaveAsRequest = ({ item, collectionUid, onClose }) => {
       inputRef.current.select();
     }
   }, []);
+
+  // Re-run validation when the target folder/collection changes so the
+  // name-collision check reflects the newly chosen location.
+  useEffect(() => {
+    formik.validateForm();
+  }, [targetDirname, targetCollectionUid]);
 
   if (!item) {
     return null;

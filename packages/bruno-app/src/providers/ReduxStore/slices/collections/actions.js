@@ -8,7 +8,7 @@ import get from 'lodash/get';
 import set from 'lodash/set';
 import trim from 'lodash/trim';
 import path, { normalizePath } from 'utils/common/path';
-import { insertTaskIntoQueue, removeTaskFromQueue, toggleSidebarCollapse } from 'providers/ReduxStore/slices/app';
+import { insertTaskIntoQueue, removeTaskFromQueue, toggleSidebarCollapse, revealRequestInSidebar } from 'providers/ReduxStore/slices/app';
 import toast from 'react-hot-toast';
 import IpcErrorModal from 'components/Errors/IpcErrorModal/index';
 import {
@@ -23,7 +23,8 @@ import {
   getAllVariables,
   transformRequestToSaveToFilesystem,
   transformCollectionRootToSave,
-  flattenItems
+  flattenItems,
+  getDefaultRequestPaneTab
 } from 'utils/collections';
 import { uuid, waitForNextTick } from 'utils/common';
 import { cancelNetworkRequest, connectWS, sendGrpcRequest, sendNetworkRequest, sendWsRequest } from 'utils/network/index';
@@ -69,10 +70,12 @@ import {
   collectionIndexNodeMoved,
   collectionIndexNodeRenamed,
   collectionIndexNodeAdded,
-  collectionIndexNodeRemoved
+  collectionIndexNodeRemoved,
+  deleteRequestDraft
 } from './index';
 
 import { each } from 'lodash';
+import { doesTabMatchRequestNode } from 'utils/tabs';
 import { closeAllCollectionTabs, closeTabs as _closeTabs, focusTab, reopenLastClosedTab } from 'providers/ReduxStore/slices/tabs';
 import { clearOpenApiSyncTabState } from 'providers/ReduxStore/slices/openapi-sync';
 import { removeCollectionFromWorkspace } from 'providers/ReduxStore/slices/workspaces';
@@ -1116,7 +1119,7 @@ export const cloneItem = (newName, newFilename, itemUid, collectionUid) => (disp
 // an arbitrary location: any open collection, any folder. The original
 // request and its unsaved draft are left untouched. Powers the request Save
 // button's "Save As…" and the tab-menu Save As.
-export const saveRequestAs = ({ item, targetCollectionUid, targetDirname, name, filename }) => async (dispatch, getState) => {
+export const saveRequestAs = ({ item, sourceCollectionUid, targetCollectionUid, targetDirname, name, filename }) => async (dispatch, getState) => {
   const state = getState();
   const targetCollection = findCollectionByUid(state.collections.collections, targetCollectionUid);
 
@@ -1164,24 +1167,60 @@ export const saveRequestAs = ({ item, targetCollectionUid, targetDirname, name, 
   const { ipcRenderer } = window;
   await ipcRenderer.invoke('renderer:new-request', fullPathname, itemToSave, targetCollection.format);
 
-  if (targetIndex) {
-    dispatch(collectionIndexNodeAdded({
+  // Focus the saved target. NFC-normalize once so tab identity + reveal matching
+  // agree with the index/tree comparators (they normalize both sides).
+  const revealPathname = String(fullPathname).normalize('NFC');
+
+  // Load the freshly written file, then open + activate its tab DIRECTLY from the
+  // loaded item's on-disk uid. Driving it here (rather than deferring to the
+  // OPEN_REQUEST task middleware) removes every fragile dependency that made the
+  // new request fail to focus: the task only opens a tab when the target
+  // collection is mountStatus==='mounted', so a save-as into a never-opened
+  // collection burned the task without opening anything. loadRequest also
+  // upserts the real (disk-uid) index node, so the reveal below matches it.
+  const loadedFile = await dispatch(
+    loadRequest({ collectionUid: targetCollectionUid, pathname: fullPathname })
+  ).catch(() => null);
+
+  const tabUid = loadedFile?.data?.uid;
+  if (tabUid) {
+    dispatch(addTab({
+      uid: tabUid,
       collectionUid: targetCollectionUid,
-      pathname: fullPathname,
-      name: trim(name),
-      type: itemToSave.type || 'http-request',
-      seq,
-      uid: uuid()
+      requestPaneTab: getDefaultRequestPaneTab(loadedFile.data),
+      preview: false,
+      itemUid: tabUid,
+      itemPathname: revealPathname
     }));
   }
 
-  // Task middleware opens the new request in a tab once the file loads
-  dispatch(insertTaskIntoQueue({
-    uid: uuid(),
-    type: 'OPEN_REQUEST',
+  // Reveal LAST — after the disk-uid node exists and the tab is active — so the
+  // ancestor-expand + scroll effects match the disk uid, not a throwaway one.
+  dispatch(revealRequestInSidebar({
     collectionUid: targetCollectionUid,
-    itemPathname: fullPathname
+    pathname: revealPathname,
+    ensureVisible: true
   }));
+
+  // In-place Save As semantics (CTO decision 2026-07-15): the editing session
+  // TRANSFERS to the copy, like every desktop editor. Close the source tab and
+  // discard the source's unsaved draft — those changes were just written into
+  // the new request, and leaving them on the source invited an accidental
+  // second save onto the original. The source file on disk is untouched.
+  // Done after addTab so the copy is already the active tab.
+  if (sourceCollectionUid) {
+    const sourceTab = getState().tabs.tabs.find((tab) => doesTabMatchRequestNode(tab, {
+      collectionUid: sourceCollectionUid,
+      pathname: item.pathname,
+      uid: item.uid
+    }));
+    if (sourceTab && sourceTab.uid !== tabUid) {
+      dispatch(_closeTabs({ tabUids: [sourceTab.uid] }));
+    }
+    if (item.draft) {
+      dispatch(deleteRequestDraft({ collectionUid: sourceCollectionUid, itemUid: item.uid }));
+    }
+  }
 
   return { pathname: fullPathname };
 };

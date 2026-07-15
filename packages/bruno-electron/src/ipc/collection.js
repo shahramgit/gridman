@@ -42,6 +42,7 @@ const {
   isWindowsOS,
   hasRequestExtension,
   getCollectionFormat,
+  isValidCollectionDirectory,
   searchForRequestFiles,
   validateName,
   getCollectionStats,
@@ -516,14 +517,39 @@ const findCollectionPathByItemPath = (filePath) => {
   // Sort by length descending to find the most specific (deepest) match first
   const sortedPaths = allCollectionPaths.sort((a, b) => b.length - a.length);
 
-  // Normalize the file path for comparison
-  const normalizedFilePath = path.normalize(filePath);
+  // Normalize the file path for comparison. path.normalize only handles
+  // separators and ./.. — it does NOT normalize Unicode form, so a Persian (or
+  // any non-ASCII) collection whose renderer-built path is NFC never matched a
+  // watcher path the filesystem reports as NFD (macOS), and save-as failed with
+  // "Collection not found for the given pathname". Compare in NFC; return the
+  // original path so downstream fs reads use the real on-disk form.
+  const normalizedFilePath = path.normalize(filePath).normalize('NFC');
 
   for (const collectionPath of sortedPaths) {
-    const normalizedCollectionPath = path.normalize(collectionPath);
+    const normalizedCollectionPath = path.normalize(collectionPath).normalize('NFC');
     if (normalizedFilePath.startsWith(normalizedCollectionPath + path.sep) || normalizedFilePath === normalizedCollectionPath) {
       return collectionPath;
     }
+  }
+
+  // Fallback: the target collection may be registered/indexed but not yet
+  // WATCHED. Collections are now watched lazily (eager/after-idle), so a
+  // save-as / new-request into a collection that was never opened this session
+  // matched no active watcher and failed with "Collection not found for the
+  // given pathname". Walk up from the item's directory to the nearest
+  // collection root marker (bruno.json / opencollection.yml); this still proves
+  // the path is inside a real collection, independent of watcher state.
+  let dir = path.dirname(filePath);
+  const { root } = path.parse(dir);
+  while (dir && dir !== root) {
+    if (isValidCollectionDirectory(dir)) {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      break;
+    }
+    dir = parent;
   }
 
   return null;
@@ -1045,7 +1071,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
   ipcMain.handle('renderer:new-request', async (event, pathname, request) => {
     try {
       if (fs.existsSync(pathname)) {
-        throw new Error(`path: ${pathname} already exists`);
+        throw new Error(`A request named "${path.basename(pathname)}" already exists in this folder`);
       }
 
       const collectionPath = findCollectionPathByItemPath(pathname);
@@ -2949,12 +2975,17 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         let bruContent = fs.readFileSync(pathname, 'utf8');
         const format = hasBruExtension(pathname) ? 'bru' : 'yml';
         const metaJson = parseBruFileMeta(bruContent);
-        file.data = metaJson;
-        file.loading = true;
-        file.partial = true;
-        file.size = sizeInMB(fileStats?.size);
-        hydrateRequestWithUuid(file.data, pathname);
-        mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
+        // parseBruFileMeta is a partial (meta-only) parse; it returns null for
+        // a .yml request. Only emit the partial snapshot when it parsed —
+        // otherwise fall straight through to the format-aware full parse below.
+        if (metaJson) {
+          file.data = metaJson;
+          file.loading = true;
+          file.partial = true;
+          file.size = sizeInMB(fileStats?.size);
+          hydrateRequestWithUuid(file.data, pathname);
+          mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
+        }
         file.data = parseRequest(bruContent, { format });
         file.partial = false;
         file.loading = false;
@@ -2973,11 +3004,17 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           }
         };
         let bruContent = fs.readFileSync(pathname, 'utf8');
-        const metaJson = parseBruFileMeta(bruContent);
-        file.data = metaJson;
+        const format = hasBruExtension(pathname) ? 'bru' : 'yml';
+        // Prefer the format-aware full parse; fall back to the meta-only parse.
+        // Either can be null for a malformed/partially-written file — never
+        // hydrate null (that was the "Cannot set properties of null" crash).
+        file.data = parseRequest(bruContent, { format }) || parseBruFileMeta(bruContent);
         file.partial = true;
         file.loading = false;
         file.size = sizeInMB(fileStats?.size);
+        if (!file.data) {
+          return Promise.reject(error);
+        }
         hydrateRequestWithUuid(file.data, pathname);
         mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
         return safeParseJSON(safeStringifyJSON(file));
