@@ -46,6 +46,7 @@ const registerWorkspaceIpc = require('./ipc/workspace');
 const registerWorkspaceCatalogIpc = require('./ipc/workspace-catalog');
 const registerApiSpecIpc = require('./ipc/apiSpec');
 const registerGitIpc = require('./ipc/git');
+const registerTrashIpc = require('./ipc/trash');
 const registerWorkflowsIpc = require('./ipc/workflows');
 const registerOpenAPISyncIpc = require('./ipc/openapi-sync');
 const collectionWatcher = require('./app/collection-watcher');
@@ -500,7 +501,12 @@ app.on('ready', async () => {
   registerFilesystemIpc(mainWindow);
   registerSystemMonitorIpc(mainWindow, systemMonitor);
   registerGitIpc(mainWindow);
+  registerTrashIpc();
   registerWorkflowsIpc(mainWindow);
+  // Purge Gridman-trash entries older than the retention window (30 days).
+  require('./utils/app-trash').purgeAppTrash().catch((err) => {
+    console.warn('Trash purge failed:', err?.message);
+  });
   registerOpenAPISyncIpc(mainWindow);
 });
 

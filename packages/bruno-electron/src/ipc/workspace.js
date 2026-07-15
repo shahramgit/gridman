@@ -6,7 +6,8 @@ const extractZip = require('extract-zip');
 const { ipcMain, dialog } = require('electron');
 const isDev = require('electron-is-dev');
 const { app } = require('electron');
-const { createDirectory, sanitizeName, writeFile, DEFAULT_GITIGNORE, isValidCollectionDirectory, trashPath } = require('../utils/filesystem');
+const { createDirectory, sanitizeName, writeFile, DEFAULT_GITIGNORE, isValidCollectionDirectory } = require('../utils/filesystem');
+const { moveToAppTrash } = require('../utils/app-trash');
 const yaml = require('js-yaml');
 const LastOpenedWorkspaces = require('../store/last-opened-workspaces');
 const { globalEnvironmentsManager } = require('../store/workspace-environments');
@@ -664,7 +665,7 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
       const result = await removeCollectionFromWorkspace(workspacePath, collectionPath);
 
       if (fs.existsSync(absoluteCollectionPath)) {
-        await trashPath(absoluteCollectionPath);
+        await moveToAppTrash(absoluteCollectionPath, { type: 'collection' });
       }
 
       const correctWorkspaceUid = getWorkspaceUid(workspacePath);
@@ -736,7 +737,7 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
       const deletedCollections = [];
       for (const collection of orphanCollections) {
         const absolutePath = assertWorkspaceCollectionFolder(workspacePath, collection.path);
-        await trashPath(absolutePath);
+        await moveToAppTrash(absolutePath, { type: 'collection', displayName: collection.name || undefined });
         deletedCollections.push({
           name: collection.name || path.basename(absolutePath),
           path: absolutePath,

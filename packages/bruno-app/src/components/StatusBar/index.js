@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import find from 'lodash/find';
-import { IconSettings, IconCookie, IconTool, IconSearch, IconPalette, IconBrandGithub } from '@tabler/icons';
+import { IconSettings, IconCookie, IconTool, IconSearch, IconPalette, IconBrandGithub, IconTrash } from '@tabler/icons';
 import Mousetrap from 'mousetrap';
 import { getKeyBindingsForActionAllOS } from 'providers/Hotkeys/keyMappings';
 import ToolHint from 'components/ToolHint';
 import Cookies from 'components/Cookies';
+import Trash from 'components/Trash';
 import Notifications from 'components/Notifications';
 import Portal from 'components/Portal';
 import ThemeDropdown from './ThemeDropdown';
@@ -26,6 +27,7 @@ const StatusBar = () => {
   const activeTab = find(tabs, (t) => t.uid === activeTabUid);
   const logs = useSelector((state) => state.logs.logs);
   const [cookiesOpen, setCookiesOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
   const { version } = useApp();
 
   const activeWorkspace = workspaces.find((w) => w.uid === activeWorkspaceUid);
@@ -68,6 +70,17 @@ const StatusBar = () => {
             role="dialog"
             aria-labelledby="cookies-title"
             aria-describedby="cookies-description"
+          />
+        </Portal>
+      )}
+
+      {trashOpen && (
+        <Portal>
+          <Trash
+            onClose={() => {
+              setTrashOpen(false);
+              document.querySelector('[data-trigger="trash"]')?.focus();
+            }}
           />
         </Portal>
       )}
@@ -144,6 +157,19 @@ const StatusBar = () => {
               <div className="console-button-content">
                 <IconCookie size={16} strokeWidth={1.5} aria-hidden="true" />
                 <span className="console-label">Cookies</span>
+              </div>
+            </button>
+
+            <button
+              className="status-bar-button"
+              data-trigger="trash"
+              onClick={() => setTrashOpen(true)}
+              tabIndex={0}
+              aria-label="Open Trash"
+            >
+              <div className="console-button-content">
+                <IconTrash size={16} strokeWidth={1.5} aria-hidden="true" />
+                <span className="console-label">Trash</span>
               </div>
             </button>
 

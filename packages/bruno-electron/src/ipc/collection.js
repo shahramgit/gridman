@@ -50,7 +50,6 @@ const {
   safeWriteFileSync,
   copyPath,
   removePath,
-  trashPath,
   getPaths,
   winLongPath,
   normalizeAndResolvePath,
@@ -64,6 +63,7 @@ const {
   scanForBrunoFiles
 } = require('../utils/filesystem');
 const { openCollectionsByPathname, registerScratchCollectionPath, isScratchCollectionPath } = require('../app/collections');
+const { moveToAppTrash } = require('../utils/app-trash');
 const { generateUidBasedOnHash, stringifyJson, safeStringifyJSON, safeParseJSON } = require('../utils/common');
 const { getRequestUid, moveRequestUid, deleteRequestUid, syncExampleUidsCache } = require('../cache/requestUids');
 const { deleteCookiesForDomain, getDomainsWithCookies, addCookieForDomain, modifyCookieForDomain, parseCookieString, createCookieString, deleteCookie } = require('../utils/cookies');
@@ -1348,7 +1348,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         throw new Error(`environment: ${envFilePath} does not exist`);
       }
 
-      await trashPath(envFilePath);
+      await moveToAppTrash(envFilePath, { type: 'environment', collectionPathname });
 
       environmentSecretsStore.deleteEnvironment(collectionPathname, environmentName);
     } catch (error) {
@@ -1703,7 +1703,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           deleteRequestUid(requestFile);
         }
 
-        await trashPath(pathname);
+        await moveToAppTrash(pathname, { type: 'folder', collectionPathname });
       } else if (['http-request', 'graphql-request', 'grpc-request', 'ws-request'].includes(type)) {
         if (!fs.existsSync(pathname)) {
           return Promise.reject(new Error('The file does not exist'));
@@ -1711,7 +1711,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
         deleteRequestUid(pathname);
 
-        await trashPath(pathname);
+        await moveToAppTrash(pathname, { type: 'request', collectionPathname });
       } else {
         return Promise.reject();
       }
@@ -1885,7 +1885,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     }
 
     if (shouldDeleteCollectionFiles && fs.existsSync(collectionPath)) {
-      await trashPath(collectionPath);
+      await moveToAppTrash(collectionPath, { type: 'collection' });
     }
 
     // Clean up AppData spec files for this collection
@@ -2304,7 +2304,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       if (kind === 'folder') {
         const requestFilesAtSource = await searchForRequestFiles(sourcePath, collectionPathname);
         requestFilesAtSource.forEach((requestFile) => deleteRequestUid(requestFile));
-        await trashPath(sourcePath);
+        await moveToAppTrash(sourcePath, { type: 'folder', collectionPathname });
         return {
           pathname: sourcePath,
           type: 'folder'
@@ -2316,7 +2316,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       }
       const requestType = getRequestTypeFromPath(sourcePath, collectionPathname);
       deleteRequestUid(sourcePath);
-      await trashPath(sourcePath);
+      await moveToAppTrash(sourcePath, { type: 'request', collectionPathname });
       return {
         pathname: sourcePath,
         type: requestType
