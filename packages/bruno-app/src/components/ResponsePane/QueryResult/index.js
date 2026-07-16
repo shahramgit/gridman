@@ -44,7 +44,11 @@ const formatErrorMessage = (error) => {
 // Content types that say nothing about the actual payload (chunked
 // downloads, generic binary). For these, trust the magic-byte sniffed type
 // so previewable content (images, pdf, audio, video) still opens in preview.
-const GENERIC_CONTENT_TYPE_REGEX = /octet-stream|application\/binary|application\/unknown/i;
+// Content types that don't CLEARLY describe the body: missing, generic binary,
+// or text/plain (which gateways routinely slap on JSON/XML/HTML responses).
+// For these the magic-byte / structured-text sniffer decides the initial
+// format instead. Safe for real prose: the sniffer falls back to text/plain.
+const GENERIC_CONTENT_TYPE_REGEX = /octet-stream|application\/binary|application\/unknown|text\/plain/i;
 
 // Custom hook to determine the initial format and tab based on the data buffer and headers
 export const useInitialResponseFormat = (dataBuffer, headers) => {

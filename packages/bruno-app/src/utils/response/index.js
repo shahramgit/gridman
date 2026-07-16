@@ -272,7 +272,69 @@ export const detectContentTypeFromBase64 = (base64) => {
     return 'image/svg+xml';
   }
 
+  // Structured-text sniffing: servers frequently return JSON/XML/HTML under
+  // text/plain, application/octet-stream or no Content-Type at all. Detect the
+  // real shape from the body head (same spirit as the magic-byte detection for
+  // pdf/images above) so the preview opens as JSON/XML/HTML instead of raw
+  // plain text.
+  const structuredType = detectStructuredTextType(textHead);
+  if (structuredType) {
+    return structuredType;
+  }
+
   if (isLikelyText(textHead)) return 'text/plain';
 
+  return null;
+};
+
+// Classify a text head as JSON / XML / HTML by content. Conservative on
+// purpose: a leading '[' only counts as JSON when what follows could start a
+// JSON value (so log lines like "[INFO] ..." stay plain text).
+export const detectStructuredTextType = (buffer) => {
+  if (!buffer || !buffer.length) {
+    return null;
+  }
+  // Strip a UTF-8 BOM at the byte level BEFORE the text-ratio check — its
+  // three high bytes otherwise drag a short body under the isLikelyText
+  // threshold.
+  let body = buffer;
+  if (body.length >= 3 && body[0] === 0xEF && body[1] === 0xBB && body[2] === 0xBF) {
+    body = body.subarray(3);
+  }
+  if (!body.length || !isLikelyText(body)) {
+    return null;
+  }
+  let text = body.toString('utf8');
+  text = text.replace(/^\s+/, '');
+  if (!text) {
+    return null;
+  }
+
+  const first = text[0];
+  if (first === '{') {
+    return 'application/json';
+  }
+  if (first === '[') {
+    const next = text.slice(1).replace(/^[\s ]+/, '')[0];
+    if (next === undefined) {
+      return null; // just "[" — not enough evidence
+    }
+    if (next === '{' || next === '[' || next === '"' || next === ']' || next === '-'
+      || (next >= '0' && next <= '9') || 'tfn'.includes(next)) {
+      return 'application/json';
+    }
+    return null;
+  }
+  if (/^<\?xml/i.test(text)) {
+    return 'application/xml';
+  }
+  if (/^<!doctype html/i.test(text) || /^<html[\s>]/i.test(text)) {
+    return 'text/html';
+  }
+  // A tag-like start without an XML prolog: treat as XML (covers SOAP/XML
+  // fragments); HTML documents are caught by the doctype/<html> checks above.
+  if (/^<[a-zA-Z][a-zA-Z0-9:_-]*[\s>/]/.test(text) && text.includes('</')) {
+    return 'application/xml';
+  }
   return null;
 };
