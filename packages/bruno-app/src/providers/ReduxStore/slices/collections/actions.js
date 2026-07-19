@@ -1225,6 +1225,25 @@ export const saveRequestAs = ({ item, sourceCollectionUid, targetCollectionUid, 
   return { pathname: fullPathname };
 };
 
+// "Revert to Last Commit" for one request file: git checks it out from HEAD in
+// the main process (trash-backed there — pre-revert content is copied into the
+// app Trash; a never-committed file moves to the Trash entirely). Shared by the
+// request toolbar's Save dropdown and the tab context menu.
+export const revertRequestToLastCommit = ({ item, collectionUid }) => async (dispatch) => {
+  if (!item?.pathname) {
+    throw new Error('This request has no file on disk yet');
+  }
+  const result = await window.ipcRenderer.invoke('renderer:discard-request-git-changes', { pathname: item.pathname });
+  if (!result?.reverted) {
+    return { reverted: false };
+  }
+  dispatch(deleteRequestDraft({ itemUid: item.uid, collectionUid }));
+  if (!result.untracked) {
+    await dispatch(loadRequest({ collectionUid, pathname: item.pathname }));
+  }
+  return result;
+};
+
 export const refreshCollectionIndex = ({ collectionUid, priority = false }) => (dispatch, getState) => {
   const state = getState();
   const collection = findCollectionByUid(state.collections.collections, collectionUid);

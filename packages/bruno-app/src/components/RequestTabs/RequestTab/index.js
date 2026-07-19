@@ -1,7 +1,7 @@
 import React, { useCallback, useState, useRef, Fragment, useMemo, useEffect } from 'react';
 import get from 'lodash/get';
 import { makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
-import { saveRequest, saveCollectionRoot, saveFolderRoot, saveEnvironment, saveCollectionSettings, closeTabs, loadRequest } from 'providers/ReduxStore/slices/collections/actions';
+import { saveRequest, saveCollectionRoot, saveFolderRoot, saveEnvironment, saveCollectionSettings, closeTabs, revertRequestToLastCommit } from 'providers/ReduxStore/slices/collections/actions';
 import useKeybinding from 'hooks/useKeybinding';
 import { deleteRequestDraft, deleteCollectionDraft, deleteFolderDraft, clearEnvironmentsDraft } from 'providers/ReduxStore/slices/collections';
 import { clearGlobalEnvironmentDraft } from 'providers/ReduxStore/slices/global-environments';
@@ -715,18 +715,14 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
       if (!item?.pathname) {
         return;
       }
-      const result = await window.ipcRenderer.invoke('renderer:discard-request-git-changes', { pathname: item.pathname });
+      const result = await dispatch(revertRequestToLastCommit({ item, collectionUid: collection.uid }));
       if (!result?.reverted) {
         toast('No saved changes since the last commit');
         return;
       }
-      dispatch(deleteRequestDraft({ itemUid: item.uid, collectionUid: collection.uid }));
-      if (result.untracked) {
-        toast.success('This request was never committed — it was moved to the Trash');
-      } else {
-        await dispatch(loadRequest({ collectionUid: collection.uid, pathname: item.pathname }));
-        toast.success('Reverted to the last commit — the previous version is in the Trash');
-      }
+      toast.success(result.untracked
+        ? 'This request was never committed — it was moved to the Trash'
+        : 'Reverted to the last commit — the previous version is in the Trash');
     } catch (err) {
       toast.error(err?.message || 'Failed to revert to the last commit');
     }
