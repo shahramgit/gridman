@@ -73,7 +73,21 @@ const registerFilesystemIpc = (mainWindow) => {
 
   ipcMain.handle('renderer:log-renderer-error', async (_, payload) => {
     console.error('Renderer error boundary:', payload);
-    return null;
+    // Persist the crash so packaged-app users can attach it to a report —
+    // console.error alone is lost outside dev. Returns the file path so the
+    // error page can tell the user where it was saved.
+    try {
+      const { app } = require('electron');
+      const path = require('path');
+      const fs = require('fs');
+      const logDir = path.join(app.getPath('userData'), 'logs');
+      fs.mkdirSync(logDir, { recursive: true });
+      const logFile = path.join(logDir, 'renderer-errors.log');
+      fs.appendFileSync(logFile, `${new Date().toISOString()} ${JSON.stringify(payload)}\n`);
+      return { logFile };
+    } catch (err) {
+      return null;
+    }
   });
 };
 

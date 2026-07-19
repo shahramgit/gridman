@@ -31,7 +31,14 @@ class ErrorBoundary extends React.Component {
       return;
     }
 
-    ipcRenderer.invoke('renderer:log-renderer-error', payload).catch(() => {});
+    ipcRenderer
+      .invoke('renderer:log-renderer-error', payload)
+      .then((result) => {
+        if (result?.logFile) {
+          this.setState({ logFile: result.logFile });
+        }
+      })
+      .catch(() => {});
   }
 
   componentDidCatch(error, errorInfo) {
@@ -72,6 +79,29 @@ class ErrorBoundary extends React.Component {
               <br />
               Please report this to your Gridman maintainers.
             </p>
+
+            {this.state.error?.message ? (
+              <div className="text-left m-auto mt-4" style={{ maxWidth: '720px' }}>
+                <div className="text-red-600 font-medium break-words">{String(this.state.error.message)}</div>
+                {(this.state.error?.stack || this.state.errorInfo?.componentStack) ? (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-sm text-gray-500">Technical details (include these in your report)</summary>
+                    <pre
+                      className="text-xs text-gray-600 mt-2 p-3 rounded overflow-auto"
+                      style={{ maxHeight: '220px', background: '#f5f5f5', whiteSpace: 'pre-wrap', userSelect: 'text' }}
+                    >
+                      {String(this.state.error?.stack || '')}
+                      {this.state.errorInfo?.componentStack ? `\n\nComponent stack:${this.state.errorInfo.componentStack}` : ''}
+                    </pre>
+                  </details>
+                ) : null}
+                {this.state.logFile ? (
+                  <div className="text-xs text-gray-500 mt-2 break-all">
+                    Saved to: {this.state.logFile}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <button
               className="bg-red-500 text-white px-4 py-2 mt-4 rounded hover:bg-red-600 transition"
