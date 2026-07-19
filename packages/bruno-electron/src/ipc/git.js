@@ -68,7 +68,8 @@ const WORKING_TREE_MUTATING_OPERATIONS = new Set([
   'continue merge',
   'resolve conflict',
   'discard changes',
-  'restore discarded changes'
+  'restore discarded changes',
+  'discard commits'
 ]);
 
 const withWorkspaceGitOperationLock = async (gitRootPath, operationName, operation) => {
@@ -348,6 +349,37 @@ const registerGitIpc = (mainWindow) => {
 
   ipcMain.handle('renderer:delete-workspace-git-discard', async (event, { gitRootPath, stashIndex }) => {
     return dropStash(gitRootPath, stashIndex);
+  });
+
+  // "Discard local commits": undo commits that were made but NOT pushed —
+  // reset the branch back to its upstream (soft, history only), then run the
+  // same stash-backed discard so all the changes from those commits land in
+  // "Recently discarded" and stay restorable. Nothing is force-pushed and the
+  // remote is never touched.
+  ipcMain.handle('renderer:discard-workspace-git-commits', async (event, { gitRootPath }) => {
+    return withWorkspaceGitOperationLock(gitRootPath, 'discard commits', async () => {
+      const simpleGit = require('simple-git');
+      const git = simpleGit(gitRootPath);
+      let upstream;
+      try {
+        upstream = String(await git.raw(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])).trim();
+      } catch (err) {
+        throw new Error('This branch has no upstream — publish or push it once before local commits can be discarded against it');
+      }
+      const ahead = parseInt(String(await git.raw(['rev-list', '--count', `${upstream}..HEAD`])).trim(), 10) || 0;
+      if (!ahead) {
+        return { discarded: false, reason: 'no local commits ahead of the remote' };
+      }
+      await git.raw(['reset', '--soft', upstream]);
+      const status = String(await git.raw(['status', '--porcelain'])).trim();
+      let stashed = false;
+      if (status) {
+        const label = `Discarded via Gridman on ${new Date().toLocaleString()}`;
+        await createStash(gitRootPath, label);
+        stashed = true;
+      }
+      return { discarded: true, commits: ahead, stashed, upstream };
+    });
   });
 
   // "Revert to Last Commit" for a single request FILE — the saved-changes

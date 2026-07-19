@@ -253,6 +253,7 @@ const WorkspaceGit = ({ workspace }) => {
   const [remoteBranchInput, setRemoteBranchInput] = useState('main');
   const [connectRemoteModalOpen, setConnectRemoteModalOpen] = useState(false);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const [discardCommitsConfirmOpen, setDiscardCommitsConfirmOpen] = useState(false);
   const [discards, setDiscards] = useState([]);
   const [connectRemoteTestResult, setConnectRemoteTestResult] = useState(null);
   const [preferredRemoteBranch, setPreferredRemoteBranch] = useState('');
@@ -523,6 +524,26 @@ const WorkspaceGit = ({ workspace }) => {
       await loadDiscards();
     } catch (error) {
       toast.error(getIpcErrorMessage(error, 'Failed to discard changes'));
+    } finally {
+      setOperation(null);
+    }
+  };
+
+  const discardLocalCommits = async () => {
+    if (!gitRootPath) return;
+    setDiscardCommitsConfirmOpen(false);
+    setOperation('Discard commits');
+    try {
+      const result = await window.ipcRenderer.invoke('renderer:discard-workspace-git-commits', { gitRootPath });
+      if (!result?.discarded) {
+        toast(result?.reason || 'No local commits to discard');
+      } else {
+        toast.success(`Discarded ${result.commits} local commit${result.commits === 1 ? '' : 's'} — changes recoverable from "Recently discarded"`);
+      }
+      await refresh({ silent: true });
+      await loadDiscards();
+    } catch (error) {
+      toast.error(getIpcErrorMessage(error, 'Failed to discard local commits'));
     } finally {
       setOperation(null);
     }
@@ -2278,6 +2299,18 @@ const WorkspaceGit = ({ workspace }) => {
                   >
                     Discard all changes…
                   </Button>
+                  <Button
+                    size="sm"
+                    color="danger"
+                    variant="outline"
+                    icon={<IconTrash size={14} />}
+                    disabled={!hasUpstream || ahead === 0}
+                    loading={operation === 'Discard commits'}
+                    onClick={() => setDiscardCommitsConfirmOpen(true)}
+                    title={!hasUpstream ? 'This branch has no upstream yet' : (ahead === 0 ? 'No committed-but-unpushed changes' : undefined)}
+                  >
+                    Discard local commits…
+                  </Button>
                 </div>
                 {discards.length ? (
                   <div className="mt-3">
@@ -2346,6 +2379,28 @@ const WorkspaceGit = ({ workspace }) => {
             await refresh();
           }}
         />
+      )}
+      {discardCommitsConfirmOpen && (
+        <Portal>
+          <Modal
+            size="md"
+            title="Discard local commits"
+            confirmText="Discard commits"
+            handleConfirm={discardLocalCommits}
+            handleCancel={() => setDiscardCommitsConfirmOpen(false)}
+          >
+            <div style={{ display: 'grid', gap: 12 }}>
+              <p style={{ margin: 0, lineHeight: 1.5 }}>
+                This removes <strong>{ahead} local commit{ahead === 1 ? '' : 's'}</strong> that {ahead === 1 ? 'has' : 'have'} not
+                been pushed, returning this branch to <strong>{remote}/{currentBranch}</strong>. The remote is not touched.
+              </p>
+              <p style={{ margin: 0, lineHeight: 1.5 }} className="text-muted text-sm">
+                All changes from those commits (plus any uncommitted work) move to "Recently discarded",
+                where they can be restored or deleted. Nothing is lost permanently.
+              </p>
+            </div>
+          </Modal>
+        </Portal>
       )}
       {discardConfirmOpen && (
         <Portal>

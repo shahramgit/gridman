@@ -13,7 +13,7 @@ import {
   updateAuth,
   renameAutoTransientRequest
 } from 'providers/ReduxStore/slices/collections';
-import { saveRequest, cancelRequest, revertRequestToLastCommit } from 'providers/ReduxStore/slices/collections/actions';
+import { saveRequest, cancelRequest } from 'providers/ReduxStore/slices/collections/actions';
 import { getRequestFromCurlCommand } from 'utils/curl';
 import HttpMethodSelector from './HttpMethodSelector';
 import { useTheme } from 'providers/Theme';
@@ -63,24 +63,6 @@ const QueryUrl = ({ item, collection, handleRun }) => {
       setTimeout(() => editorRef.current?.editor?.focus(), 0);
     }
   }, [item.uid]);
-
-  // Discard SAVED changes: git-checkout this request file from the last
-  // commit (trash-backed). The draft-only discard stays on the tab menu as
-  // "Revert Changes".
-  const onRevertToLastCommit = async () => {
-    try {
-      const result = await dispatch(revertRequestToLastCommit({ item, collectionUid: collection.uid }));
-      if (!result?.reverted) {
-        toast('No saved changes since the last commit');
-        return;
-      }
-      toast.success(result.untracked
-        ? 'This request was never committed — it was moved to the Trash'
-        : 'Reverted to the last commit — the previous version is in the Trash');
-    } catch (err) {
-      toast.error(err?.message || 'Failed to revert to the last commit');
-    }
-  };
 
   const onSave = () => {
     dispatch(saveRequest(item.uid, collection.uid));
@@ -518,11 +500,6 @@ const QueryUrl = ({ item, collection, handleRun }) => {
                     id: 'save-as',
                     label: 'Save As…',
                     onClick: () => setSaveAsModalOpen(true)
-                  },
-                  {
-                    id: 'revert-to-last-commit',
-                    label: 'Revert to Last Commit',
-                    onClick: onRevertToLastCommit
                   }
                 ]}
               >
