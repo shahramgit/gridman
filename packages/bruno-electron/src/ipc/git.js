@@ -9,6 +9,7 @@ const {
 } = require('../utils/workspace-config');
 const { parseWorkspaceYmlConflict, buildMergedWorkspaceYmlConfig } = require('../utils/workspace-conflict');
 const { cancelGitOperation } = require('../utils/git-progress');
+const { moveToAppTrash, copyToAppTrash } = require('../utils/app-trash');
 const {
   cloneGitRepository,
   getWorkspaceGitData,
@@ -347,6 +348,51 @@ const registerGitIpc = (mainWindow) => {
 
   ipcMain.handle('renderer:delete-workspace-git-discard', async (event, { gitRootPath, stashIndex }) => {
     return dropStash(gitRootPath, stashIndex);
+  });
+
+  // "Revert to Last Commit" for a single request FILE — the saved-changes
+  // counterpart of the draft-only Revert Changes. Trash-backed like every
+  // other destructive action: the pre-revert content is copied into the app
+  // Trash first, so nothing is ever unrecoverable. Deliberately NOT in
+  // WORKING_TREE_MUTATING_OPERATIONS: the watcher should see the single file
+  // change/unlink so the UI updates naturally.
+  ipcMain.handle('renderer:discard-request-git-changes', async (event, { pathname }) => {
+    const path = require('path');
+    const fs = require('fs');
+    // walk up to the nearest git root
+    let gitRootPath = null;
+    let dir = path.dirname(path.resolve(pathname));
+    const { root } = path.parse(dir);
+    while (dir && dir !== root) {
+      if (fs.existsSync(path.join(dir, '.git'))) {
+        gitRootPath = dir;
+        break;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    if (!gitRootPath) {
+      throw new Error('This workspace is not a Git repository');
+    }
+    return withWorkspaceGitOperationLock(gitRootPath, 'revert file', async () => {
+      const simpleGit = require('simple-git');
+      const git = simpleGit(gitRootPath);
+      const relPath = path.relative(gitRootPath, path.resolve(pathname));
+      const status = await git.raw(['status', '--porcelain', '--', relPath]);
+      const line = String(status || '').trim();
+      if (!line) {
+        return { reverted: false, reason: 'clean' };
+      }
+      if (line.startsWith('??')) {
+        // never committed — reverting to last commit means the file goes away
+        await moveToAppTrash(pathname, { type: 'request' });
+        return { reverted: true, untracked: true };
+      }
+      await copyToAppTrash(pathname, { type: 'request' });
+      await git.raw(['checkout', '--', relPath]);
+      return { reverted: true, untracked: false };
+    });
   });
 };
 

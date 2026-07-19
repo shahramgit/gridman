@@ -2267,13 +2267,19 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       }
 
       if (kind === 'folder') {
-        await updateFolderMeta({ folderPathname: oldPath, name: newName, collectionPathname });
         const requestFilesAtSource = await searchForRequestFiles(oldPath, collectionPathname);
         requestFilesAtSource.forEach((requestFile) => {
           const newRequestFilePath = requestFile.replace(oldPath, newPath);
           moveRequestUid(requestFile, newRequestFilePath);
         });
-        await fsExtra.move(oldPath, newPath, { overwrite: false });
+        // Move FIRST, meta after: on Windows the watcher/indexer can hold a
+        // handle on a large folder and a bare fsExtra.move dies with
+        // EPERM/EBUSY (or ENOENT past MAX_PATH) — after updateFolderMeta had
+        // already renamed the display name, leaving a half-renamed folder the
+        // user then retried into errors. movePathWithWindowsFallback retries
+        // via copy+remove and uses extended-length paths.
+        await movePathWithWindowsFallback(oldPath, newPath);
+        await updateFolderMeta({ folderPathname: newPath, name: newName, collectionPathname });
         return {
           pathname: newPath,
           type: 'folder'

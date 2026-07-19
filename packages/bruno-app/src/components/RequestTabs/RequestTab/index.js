@@ -1,7 +1,7 @@
 import React, { useCallback, useState, useRef, Fragment, useMemo, useEffect } from 'react';
 import get from 'lodash/get';
 import { makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
-import { saveRequest, saveCollectionRoot, saveFolderRoot, saveEnvironment, saveCollectionSettings, closeTabs } from 'providers/ReduxStore/slices/collections/actions';
+import { saveRequest, saveCollectionRoot, saveFolderRoot, saveEnvironment, saveCollectionSettings, closeTabs, loadRequest } from 'providers/ReduxStore/slices/collections/actions';
 import useKeybinding from 'hooks/useKeybinding';
 import { deleteRequestDraft, deleteCollectionDraft, deleteFolderDraft, clearEnvironmentsDraft } from 'providers/ReduxStore/slices/collections';
 import { clearGlobalEnvironmentDraft } from 'providers/ReduxStore/slices/global-environments';
@@ -703,6 +703,35 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
     } catch (err) { }
   }
 
+  // "Revert to Last Commit": the SAVED-changes counterpart of Revert Changes.
+  // Git checks the file out from HEAD (untracked files move to the app Trash);
+  // the pre-revert content is always backed up to the Trash first.
+  async function handleRevertToLastCommit() {
+    if (!currentTabUid) {
+      return;
+    }
+    try {
+      const item = findItemForTab(currentTab);
+      if (!item?.pathname) {
+        return;
+      }
+      const result = await window.ipcRenderer.invoke('renderer:discard-request-git-changes', { pathname: item.pathname });
+      if (!result?.reverted) {
+        toast('No saved changes since the last commit');
+        return;
+      }
+      dispatch(deleteRequestDraft({ itemUid: item.uid, collectionUid: collection.uid }));
+      if (result.untracked) {
+        toast.success('This request was never committed — it was moved to the Trash');
+      } else {
+        await dispatch(loadRequest({ collectionUid: collection.uid, pathname: item.pathname }));
+        toast.success('Reverted to the last commit — the previous version is in the Trash');
+      }
+    } catch (err) {
+      toast.error(err?.message || 'Failed to revert to the last commit');
+    }
+  }
+
   async function handleCloseMultipleTabs(tabs) {
     const tabUidsToClose = [];
 
@@ -776,6 +805,12 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
       label: 'Revert Changes',
       onClick: handleRevertChanges,
       disabled: !currentTabItem?.draft
+    },
+    {
+      id: 'revert-to-last-commit',
+      label: 'Revert to Last Commit',
+      onClick: handleRevertToLastCommit,
+      disabled: !currentTabItem?.pathname
     },
     {
       id: 'close',

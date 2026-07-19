@@ -17,7 +17,7 @@ const getTitleText = ({ isResponseTooLarge, isStreamingResponse }) => {
   }
 
   if (isResponseTooLarge) {
-    return 'Response size exceeds 5MB limit. Cannot save as example.';
+    return 'Response size exceeds the 50MB limit. Cannot save as example.';
   }
 
   return 'Save current response as example';
@@ -28,7 +28,10 @@ const ResponseBookmark = forwardRef(({ item, collection, responseSize, children 
   const response = item.response || {};
   const elementRef = useRef(null);
 
-  const isResponseTooLarge = responseSize >= 5 * 1024 * 1024; // 5 MB
+  // Raised from 5MB: examples load lazily now (sidebar and editor), so
+  // large recorded responses no longer weigh down the UI. 50MB guards
+  // against accidentally recording huge downloads into a .bru file.
+  const isResponseTooLarge = responseSize >= 50 * 1024 * 1024; // 50 MB
   const isStreamingResponse = response.stream;
   const isDisabled = isResponseTooLarge || isStreamingResponse ? true : false;
 
@@ -51,7 +54,7 @@ const ResponseBookmark = forwardRef(({ item, collection, responseSize, children 
     }
 
     if (isResponseTooLarge) {
-      toast.error('Response size exceeds 5MB limit. Cannot save as example.');
+      toast.error('Response size exceeds the 50MB limit. Cannot save as example.');
       e.preventDefault();
       e.stopPropagation();
       return;

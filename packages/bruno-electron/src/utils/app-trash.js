@@ -42,6 +42,29 @@ const moveToAppTrash = async (source, meta = {}) => {
   return entryMeta;
 };
 
+// Back up a file's CURRENT content into the trash WITHOUT removing it — used
+// by "Revert to Last Commit" so the pre-revert version stays recoverable.
+const copyToAppTrash = async (source, meta = {}) => {
+  const trashRoot = getTrashRoot();
+  const entryId = `${Date.now()}-${uuid()}`;
+  const entryDir = path.join(trashRoot, entryId);
+  const payloadDir = path.join(entryDir, 'payload');
+  await fsExtra.ensureDir(payloadDir);
+  const basename = path.basename(source);
+  await fsExtra.copy(source, path.join(payloadDir, basename));
+  const entryMeta = {
+    id: entryId,
+    displayName: meta.displayName || basename,
+    type: meta.type || 'item',
+    originalPathname: path.resolve(source),
+    collectionPathname: meta.collectionPathname || null,
+    deletedAt: new Date().toISOString(),
+    basename
+  };
+  await fsExtra.writeJson(path.join(entryDir, 'meta.json'), entryMeta, { spaces: 2 });
+  return entryMeta;
+};
+
 const readEntryMeta = (entryDir) => {
   try {
     return fsExtra.readJsonSync(path.join(entryDir, 'meta.json'));
@@ -108,6 +131,7 @@ const purgeAppTrash = async (days = PURGE_AFTER_DAYS) => {
 
 module.exports = {
   moveToAppTrash,
+  copyToAppTrash,
   listAppTrash,
   restoreAppTrashItem,
   deleteAppTrashItem,

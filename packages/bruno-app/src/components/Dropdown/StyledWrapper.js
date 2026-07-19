@@ -100,6 +100,13 @@ const Wrapper = styled.div`
       background-color: ${(props) => props.theme.dropdown.hoverBg};
     }
 
+    /* Disabled items must LOOK disabled — hover-exclusion alone made e.g. a
+       disabled "Revert Changes" indistinguishable from an active item. */
+    &.disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
     &.selected-focused:not(:disabled):not(.disabled) {
       background-color: ${(props) => props.theme.dropdown.hoverBg};
     }
