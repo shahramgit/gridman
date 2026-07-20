@@ -29,7 +29,8 @@ import { useDispatch, useSelector } from 'react-redux';
 
 import { savePreferences, showManageWorkspacePage, toggleSidebarCollapse } from 'providers/ReduxStore/slices/app';
 import { closeConsole, openConsole } from 'providers/ReduxStore/slices/logs';
-import { createWorkspaceWithUniqueName, openWorkspaceDialog, switchWorkspace, exportWorkspaceAction } from 'providers/ReduxStore/slices/workspaces/actions';
+import { createWorkspaceWithUniqueName, openWorkspaceDialog, switchWorkspace } from 'providers/ReduxStore/slices/workspaces/actions';
+import ExportWorkspaceModal from 'components/ExportWorkspaceModal';
 import { sortWorkspaces, toggleWorkspacePin } from 'utils/workspaces';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
 import get from 'lodash/get';
@@ -305,6 +306,7 @@ const AppTitleBar = () => {
   const [cloneGitWorkspaceModalOpen, setCloneGitWorkspaceModalOpen] = useState(false);
   const [exportApiCatalogModalOpen, setExportApiCatalogModalOpen] = useState(false);
   const [workspaceGitData, setWorkspaceGitData] = useState(null);
+  const [exportWorkspaceModalOpen, setExportWorkspaceModalOpen] = useState(false);
   const [workspaceGitLoading, setWorkspaceGitLoading] = useState(false);
   const [workspaceGitOperation, setWorkspaceGitOperation] = useState(null);
   const showGitWorkspaceFeature = get(preferences, 'features.gitWorkspace', get(preferences, 'features.git', true));
@@ -479,13 +481,7 @@ const AppTitleBar = () => {
       toast.error('No active workspace to export');
       return;
     }
-    dispatch(exportWorkspaceAction(activeWorkspaceUid))
-      .then((result) => {
-        if (!result?.canceled) {
-          toast.success('Workspace exported');
-        }
-      })
-      .catch((error) => toast.error(error?.message || 'Failed to export workspace'));
+    setExportWorkspaceModalOpen(true);
   };
 
   const handleExportApiCatalog = () => {
@@ -873,6 +869,12 @@ const AppTitleBar = () => {
           )}
         </div>
       </div>
+      {exportWorkspaceModalOpen && (
+        <ExportWorkspaceModal
+          workspaceUid={activeWorkspaceUid}
+          onClose={() => setExportWorkspaceModalOpen(false)}
+        />
+      )}
     </StyledWrapper>
   );
 };

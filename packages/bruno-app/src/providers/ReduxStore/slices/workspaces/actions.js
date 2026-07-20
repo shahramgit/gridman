@@ -11,6 +11,8 @@ import {
 import { createCollection, openCollection, openMultipleCollections, openScratchCollectionEvent } from '../collections/actions';
 import { removeCollection, addTransientDirectory, updateCollectionMountStatus } from '../collections';
 import { sanitizeName } from 'utils/common/regex';
+import { brunoToPostman } from '@usebruno/converters';
+import { filterTransientItems, transformCollectionToSaveToExportAsFile } from 'utils/collections';
 import { clearCollectionState } from '../openapi-sync';
 import { updateGlobalEnvironments } from '../global-environments';
 import { addTab, focusTab } from '../tabs';
@@ -883,6 +885,61 @@ export const exportWorkspaceAction = (workspaceUid) => {
       throw error;
     }
   };
+};
+
+// Bulk export with format conversion: reads every collection fully from disk
+// (the redux copies are lazily hydrated and would export near-empty), converts
+// per collection, and zips the results behind one save dialog.
+//   format 'json'    -> Bruno collection JSON (importable back into Gridman)
+//   format 'postman' -> Postman Collection v2.1 JSON
+export const exportWorkspaceConvertedAction = (workspaceUid, format) => async (dispatch, getState) => {
+  const state = getState();
+  const workspace = state.workspaces.workspaces.find((w) => w.uid === workspaceUid);
+  if (!workspace?.pathname) {
+    throw new Error('Workspace not found');
+  }
+  const { ipcRenderer } = window;
+  const collectionEntries = (workspace.collections || []).filter((wc) => wc?.path);
+  if (!collectionEntries.length) {
+    throw new Error('This workspace has no collections to export');
+  }
+
+  const files = [];
+  const usedNames = new Set();
+  const failed = [];
+  for (const entry of collectionEntries) {
+    try {
+      const full = await ipcRenderer.invoke('renderer:read-collection-for-export', entry.path);
+      if (!full) {
+        throw new Error('empty read');
+      }
+      const cleaned = { ...full, items: filterTransientItems(full.items || []) };
+      const converted = format === 'postman'
+        ? brunoToPostman(cleaned)
+        : transformCollectionToSaveToExportAsFile(cleaned);
+      let base = sanitizeName(full.name || entry.name || 'collection') || 'collection';
+      let name = `${base}.json`;
+      let counter = 2;
+      while (usedNames.has(name)) {
+        name = `${base} (${counter}).json`;
+        counter += 1;
+      }
+      usedNames.add(name);
+      files.push({ name, content: JSON.stringify(converted, null, 2) });
+    } catch (error) {
+      failed.push(entry.name || entry.path);
+    }
+  }
+  if (!files.length) {
+    throw new Error('No collections could be exported');
+  }
+
+  const suffix = format === 'postman' ? 'postman' : 'json';
+  const result = await ipcRenderer.invoke('renderer:export-workspace-converted', {
+    defaultFileName: `${sanitizeName(workspace.name)}-${suffix}.zip`,
+    files
+  });
+  return { ...result, exported: files.length, failed };
 };
 
 export const exportWorkspaceCatalogAction = (workspaceUid, format) => {

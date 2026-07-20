@@ -387,6 +387,40 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
     }
   });
 
+  // Bulk export with a FORMAT choice (user ask: the plain workspace zip is
+  // always .bru; teams sharing with Postman users need converted output).
+  // The renderer converts each collection (Bruno JSON / Postman v2.1) and
+  // sends the file contents here; this zips them behind one save dialog.
+  ipcMain.handle('renderer:export-workspace-converted', async (event, { defaultFileName, files = [] }) => {
+    try {
+      if (!files.length) {
+        throw new Error('Nothing to export — the workspace has no collections');
+      }
+      const { filePath, canceled } = await dialog.showSaveDialog(mainWindow, {
+        title: 'Export Workspace',
+        defaultPath: defaultFileName || 'workspace-export.zip',
+        filters: [{ name: 'Zip Files', extensions: ['zip'] }]
+      });
+      if (canceled || !filePath) {
+        return { success: false, canceled: true };
+      }
+      await new Promise((resolve, reject) => {
+        const output = fs.createWriteStream(filePath);
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        output.on('close', resolve);
+        archive.on('error', reject);
+        archive.pipe(output);
+        for (const file of files) {
+          archive.append(String(file.content), { name: file.name });
+        }
+        archive.finalize();
+      });
+      return { success: true, filePath };
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
+
   ipcMain.handle('renderer:export-workspace', async (event, workspacePath, workspaceName) => {
     try {
       if (!workspacePath || !fs.existsSync(workspacePath)) {

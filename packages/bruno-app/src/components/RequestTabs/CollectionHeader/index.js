@@ -18,7 +18,8 @@ import {
   IconBrandGit
 } from '@tabler/icons';
 import OpenAPISyncIcon from 'components/Icons/OpenAPISync';
-import { switchWorkspace, renameWorkspaceAction, exportWorkspaceAction, confirmWorkspaceCreation, cancelWorkspaceCreation } from 'providers/ReduxStore/slices/workspaces/actions';
+import { switchWorkspace, renameWorkspaceAction, confirmWorkspaceCreation, cancelWorkspaceCreation } from 'providers/ReduxStore/slices/workspaces/actions';
+import ExportWorkspaceModal from 'components/ExportWorkspaceModal';
 import { updateWorkspace } from 'providers/ReduxStore/slices/workspaces';
 import { showInFolder, renameCollection } from 'providers/ReduxStore/slices/collections/actions';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
@@ -65,6 +66,7 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
   const [isRenamingCollection, setIsRenamingCollection] = useState(false);
   const [collectionNameInput, setCollectionNameInput] = useState('');
   const [exportApiCatalogModalOpen, setExportApiCatalogModalOpen] = useState(false);
+  const [exportWorkspaceModalOpen, setExportWorkspaceModalOpen] = useState(false);
   const [createWorkspaceModalOpen, setCreateWorkspaceModalOpen] = useState(false);
 
   const switcherRef = useRef();
@@ -305,18 +307,8 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
 
   const handleExportWorkspace = () => {
     workspaceActionsRef.current?.hide();
-    const uid = currentWorkspace?.uid;
-    if (!uid) return;
-
-    dispatch(exportWorkspaceAction(uid))
-      .then((result) => {
-        if (!result?.canceled) {
-          toast.success('Workspace exported successfully');
-        }
-      })
-      .catch((error) => {
-        toast.error(error?.message || 'Error exporting workspace');
-      });
+    if (!currentWorkspace?.uid) return;
+    setExportWorkspaceModalOpen(true);
   };
 
   const handleExportApiCatalogClick = () => {
@@ -472,6 +464,12 @@ const CollectionHeader = ({ collection, isScratchCollection }) => {
         <CloseWorkspace
           workspaceUid={currentWorkspace.uid}
           onClose={() => setCloseWorkspaceModalOpen(false)}
+        />
+      )}
+      {exportWorkspaceModalOpen && currentWorkspace?.uid && (
+        <ExportWorkspaceModal
+          workspaceUid={currentWorkspace.uid}
+          onClose={() => setExportWorkspaceModalOpen(false)}
         />
       )}
       {exportApiCatalogModalOpen && currentWorkspace?.uid && (
