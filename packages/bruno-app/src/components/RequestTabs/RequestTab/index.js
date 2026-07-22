@@ -271,7 +271,11 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     } else if (tab.type === 'collection-settings') {
       dispatch(saveCollectionSettings(collection.uid));
     } else if (item && item.uid) {
-      dispatch(saveRequest(tab.uid, tab.collectionUid));
+      // Use the RESOLVED item's uid, not tab.uid: sidebar-opened requests have
+      // synthetic tab uids (indexed-request:<collection>:<pathname>), and
+      // saveRequest(tab.uid) rejected with "Not able to locate item" — Ctrl+S
+      // silently did nothing while the Save button (item.uid) worked.
+      dispatch(saveRequest(item.uid, tab.collectionUid));
     }
     return false;
   }, { enabled: isActive, deps: [isActive, tab, item, collection, folder, globalEnvironmentDraft] });
