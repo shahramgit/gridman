@@ -198,6 +198,9 @@ const Collection = ({ collection, searchText, searchMatches = null, filterRowAll
     // A freshly opened collection needs mounting before its tree exists.
     ensureCollectionIsMounted();
 
+    if (searchViewActive && collectionIsCollapsed) {
+      setFilterCollapse({ key: filterKey, collapsed: false });
+    }
     if (collection.collapsed) {
       dispatch(toggleCollection(collection.uid));
     }
@@ -245,9 +248,18 @@ const Collection = ({ collection, searchText, searchMatches = null, filterRowAll
   // trees committed a stack of ~100 virtualized lists in one render (a 26s+
   // renderer task in dev, per [gridman-perf] LONG-TASK telemetry).
   const hasItemMatches = Boolean(searchMatches?.matchedPathnames?.size);
+  // During a search the expansion is FORCED for item-hit collections — but the
+  // user must still be able to collapse them (report: "opened paths cannot be
+  // closed until the search ends"). A local override, reset when the query
+  // changes, wins over the forced state without touching the user's real
+  // collapsed flag in redux.
+  const searchViewActive = Boolean(searchMatches || hasSearchText);
+  const filterKey = searchViewActive ? String(searchText || '').trim() : null;
+  const [filterCollapse, setFilterCollapse] = useState({ key: null, collapsed: null });
+  const filterCollapsedOverride = filterCollapse.key === filterKey ? filterCollapse.collapsed : null;
   const collectionIsCollapsed = searchMatches
-    ? (!hasItemMatches && collection.collapsed)
-    : (hasSearchText ? false : collection.collapsed);
+    ? (filterCollapsedOverride ?? (!hasItemMatches && collection.collapsed))
+    : (hasSearchText ? (filterCollapsedOverride ?? false) : collection.collapsed);
 
   // Content-search hits target this collection but its index has no data yet
   // (missing entirely, or still queued behind the startup warm-up builds).
@@ -310,6 +322,10 @@ const Collection = ({ collection, searchText, searchMatches = null, filterRowAll
     e.stopPropagation();
     e.preventDefault();
     ensureCollectionIsMounted();
+    if (searchViewActive) {
+      setFilterCollapse({ key: filterKey, collapsed: !collectionIsCollapsed });
+      return;
+    }
     dispatch(toggleCollection(collection.uid));
   };
 

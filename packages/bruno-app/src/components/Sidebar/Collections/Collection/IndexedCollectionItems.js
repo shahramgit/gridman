@@ -273,10 +273,10 @@ export const sortIndexedChildren = async ({ store, dispatch, collectionUid, pare
   }
 };
 
-const useVisibleRows = ({ index, expandedNodeUids, searchText, searchMatches }) => {
+const useVisibleRows = ({ index, expandedNodeUids, searchText, searchMatches, filterCollapsedUids }) => {
   return useMemo(
-    () => buildVisibleRows({ index, expandedNodeUids, searchText, searchMatches }),
-    [index, expandedNodeUids, searchText, searchMatches]
+    () => buildVisibleRows({ index, expandedNodeUids, searchText, searchMatches, filterCollapsedUids }),
+    [index, expandedNodeUids, searchText, searchMatches, filterCollapsedUids]
   );
 };
 
@@ -350,7 +350,7 @@ const IndexedRowExamples = ({ collectionUid, item, displayDepth }) => {
   );
 };
 
-const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, expandedNodeUids, onToggleFolder, multiSelect }) => {
+const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, expandedNodeUids, filterCollapsedUids, onToggleFolder, multiSelect }) => {
   const dispatch = useDispatch();
   const store = useStore();
   const { dropdownContainerRef } = useSidebarAccordion();
@@ -359,7 +359,7 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
   const isRequest = node.type !== 'folder';
   const isFolder = !isRequest;
   // While a filter is active the filtered tree is always shown fully expanded.
-  const isExpanded = filterActive ? true : expandedNodeUids.has(node.uid);
+  const isExpanded = filterActive ? !filterCollapsedUids?.has(node.uid) : expandedNodeUids.has(node.uid);
   const [renameItemModalOpen, setRenameItemModalOpen] = useState(false);
   const [examplesExpanded, setExamplesExpanded] = useState(false);
   const [cloneItemModalOpen, setCloneItemModalOpen] = useState(false);
@@ -1459,7 +1459,21 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
   // Per-collection slice of the sidebar-wide row budget (broad queries match
   // dozens of collections; the parent divides ~300 rows among them).
   const rowCap = filterRowAllowance || FILTER_ROW_CAP;
-  const visibleRows = useVisibleRows({ index, expandedNodeUids, searchText, searchMatches: deferredSearchMatches });
+  // User-collapsed folders DURING a search: filtered rows auto-expand as the
+  // initial state, but the chevron must still work (user report: "opened
+  // paths cannot be closed until the search ends"). Reset when the query
+  // changes; render-phase derived so a new query starts fully expanded in the
+  // same render.
+  const filterCollapseKey = searchText?.trim() || '';
+  const [filterCollapse, setFilterCollapse] = useState({ key: '', uids: new Set() });
+  if (filterCollapse.key !== filterCollapseKey) {
+    setFilterCollapse({ key: filterCollapseKey, uids: new Set() });
+  }
+  const filterCollapsedUids = filterCollapse.key === filterCollapseKey ? filterCollapse.uids : new Set();
+  const filterCollapseKeyRef = useRef(filterCollapseKey);
+  filterCollapseKeyRef.current = filterCollapseKey;
+
+  const visibleRows = useVisibleRows({ index, expandedNodeUids, searchText, searchMatches: deferredSearchMatches, filterCollapsedUids });
 
   // A new result set re-collapses an expanded over-cap list.
   useEffect(() => {
@@ -1638,7 +1652,21 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
 
   // Stable identity so memoized rows don't re-render on unrelated parent
   // renders just because the handler was recreated.
+  const filterActiveRef = useRef(false);
+  filterActiveRef.current = filterActive;
   const onToggleFolder = useCallback((uid) => {
+    if (filterActiveRef.current) {
+      setFilterCollapse((current) => {
+        const next = new Set(current.uids);
+        if (next.has(uid)) {
+          next.delete(uid);
+        } else {
+          next.add(uid);
+        }
+        return { key: filterCollapseKeyRef.current, uids: next };
+      });
+      return;
+    }
     setExpandedNodeUids((current) => {
       const next = new Set(current);
       if (next.has(uid)) {
@@ -1683,6 +1711,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
         searchText={searchText}
         filterActive={filterActive}
         expandedNodeUids={expandedNodeUids}
+        filterCollapsedUids={filterActive ? filterCollapsedUids : null}
         onToggleFolder={onToggleFolder}
         multiSelect={rowMultiSelect}
       />

@@ -195,3 +195,32 @@ describe('nodeMatchesSearch', () => {
     expect(nodeMatchesSearch(node, '')).toBe(true);
   });
 });
+
+describe('buildVisibleRows filterCollapsedUids', () => {
+  const index = {
+    nodesByUid: {
+      f1: { uid: 'f1', name: 'Api', type: 'folder', pathname: '/c/Api', parentUid: null },
+      r1: { uid: 'r1', name: 'inquiry-nested', type: 'http-request', pathname: '/c/Api/r1.bru', parentUid: 'f1' },
+      r2: { uid: 'r2', name: 'inquiry-root', type: 'http-request', pathname: '/c/r2.bru', parentUid: null }
+    },
+    childrenByParentUid: { root: ['f1', 'r2'], f1: ['r1'] },
+    uidByPathname: { '/c/Api': 'f1', '/c/Api/r1.bru': 'r1', '/c/r2.bru': 'r2' }
+  };
+  const searchMatches = {
+    matchedPathnames: new Set(['/c/Api/r1.bru', '/c/r2.bru']),
+    matchMeta: new Map()
+  };
+
+  it('hides a collapsed folder\'s children but keeps the folder row', () => {
+    const rows = buildVisibleRows({ index, searchText: 'inquiry', searchMatches, filterCollapsedUids: new Set(['f1']) });
+    const names = rows.map((r) => r.name);
+    expect(names).toContain('Api');
+    expect(names).toContain('inquiry-root');
+    expect(names).not.toContain('inquiry-nested');
+  });
+
+  it('shows everything when no folders are collapsed', () => {
+    const rows = buildVisibleRows({ index, searchText: 'inquiry', searchMatches });
+    expect(rows.map((r) => r.name)).toEqual(expect.arrayContaining(['Api', 'inquiry-nested', 'inquiry-root']));
+  });
+});

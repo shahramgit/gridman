@@ -47,7 +47,7 @@ export const nodeMatchesSearch = (node, searchText) => {
 //   set) browses normally so the user can drill into it.
 // - searchText only (short renderer-side filter): same shape, matched by
 //   folded name/method/url/pathname.
-export const buildVisibleRows = ({ index, expandedNodeUids = new Set(), searchText, searchMatches = null }) => {
+export const buildVisibleRows = ({ index, expandedNodeUids = new Set(), searchText, searchMatches = null, filterCollapsedUids = null }) => {
   if (!index?.nodesByUid) {
     return [];
   }
@@ -129,7 +129,9 @@ export const buildVisibleRows = ({ index, expandedNodeUids = new Set(), searchTe
         // Shallow-clone matched rows to carry their match context; index
         // nodes are immutable redux state and must not be mutated.
         searchRows.push(meta ? { ...child, searchMatchMeta: meta } : child);
-        if (child.type === 'folder') {
+        // Filtered rows auto-expand as the INITIAL state, but the user can
+        // collapse a folder during the search (its row stays, children hide).
+        if (child.type === 'folder' && !filterCollapsedUids?.has(child.uid)) {
           walkFiltered(child.uid);
         }
       }
