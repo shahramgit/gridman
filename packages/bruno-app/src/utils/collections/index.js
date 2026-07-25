@@ -897,8 +897,14 @@ export const deleteItemInCollectionByPathname = (pathname, collection) => {
   });
 };
 
+// `!item.items` was too strict: the YAML (.yml) parser emits `items: []` on
+// REQUESTS as well, so every request in a yml-format collection failed this
+// check and was silently dropped — folder/collection export produced a file
+// with no requests at all. Only a NON-EMPTY items array means "not a request".
 export const isItemARequest = (item) => {
-  return item.hasOwnProperty('request') && ['http-request', 'graphql-request', 'grpc-request', 'ws-request'].includes(item.type) && !item.items;
+  return item.hasOwnProperty('request')
+    && ['http-request', 'graphql-request', 'grpc-request', 'ws-request'].includes(item.type)
+    && !(Array.isArray(item.items) && item.items.length);
 };
 
 export const isItemAFolder = (item) => {
