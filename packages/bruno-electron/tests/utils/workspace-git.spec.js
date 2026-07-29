@@ -13,7 +13,8 @@ const {
   getGitStatus,
   getCurrentGitBranch,
   abortConflictResolution,
-  continueMerge
+  continueMerge,
+  resolveConflictFile
 } = require('../../src/utils/git');
 
 // Git workflow tests against real repositories in temp dirs: init/remote
@@ -189,6 +190,74 @@ describe('workspace git workflows', () => {
       const status = await getGitStatus(workspacePath);
       expect(status.conflicted).toEqual([]);
       expect(status.files).toEqual([]);
+    });
+  });
+  // Modify/delete conflicts: one side deleted the file while the other
+  // changed it. Only ONE conflict stage exists, so `git checkout
+  // --ours|--theirs` fails with "path '<file>' does not have their/our
+  // version" (reported by a user whose folder.bru was deleted/renamed on one
+  // side and edited on the other). Choosing the deleting side must accept the
+  // deletion instead of erroring.
+  describe('resolveConflictFile with modify/delete conflicts', () => {
+    // Persian path on purpose: this is what the real workspaces look like.
+    const relPath = 'collections/002/انتشار ازدواج و طلاق/folder.bru';
+    const absPath = () => path.join(workspacePath, relPath);
+
+    const commitBase = () => {
+      git(['init']);
+      configureIdentity();
+      fs.mkdirSync(path.dirname(absPath()), { recursive: true });
+      fs.writeFileSync(absPath(), 'meta {\n  name: base\n}\n');
+      git(['add', '.']);
+      git(['commit', '-m', 'base']);
+    };
+
+    it('accepts the deletion when THEIRS deleted the file (modified by us)', async () => {
+      commitBase();
+      git(['checkout', '-b', 'feature']);
+      git(['rm', '-q', '--', relPath]);
+      git(['commit', '-m', 'delete on feature']);
+      git(['checkout', '-']);
+      fs.writeFileSync(absPath(), 'meta {\n  name: edited-locally\n}\n');
+      git(['commit', '-am', 'edit on main']);
+      expect(() => git(['merge', 'feature'])).toThrow();
+
+      await expect(resolveConflictFile(workspacePath, relPath, 'theirs')).resolves.toMatchObject({ deleted: true });
+
+      expect(git(['ls-files', '-u', '--', relPath]).trim()).toBe('');
+      expect(fs.existsSync(absPath())).toBe(false);
+    });
+
+    it('keeps our version when OURS is the surviving side', async () => {
+      commitBase();
+      git(['checkout', '-b', 'feature']);
+      git(['rm', '-q', '--', relPath]);
+      git(['commit', '-m', 'delete on feature']);
+      git(['checkout', '-']);
+      fs.writeFileSync(absPath(), 'meta {\n  name: edited-locally\n}\n');
+      git(['commit', '-am', 'edit on main']);
+      expect(() => git(['merge', 'feature'])).toThrow();
+
+      await expect(resolveConflictFile(workspacePath, relPath, 'ours')).resolves.toMatchObject({ deleted: false });
+
+      expect(git(['ls-files', '-u', '--', relPath]).trim()).toBe('');
+      expect(fs.readFileSync(absPath(), 'utf8')).toContain('edited-locally');
+    });
+
+    it('accepts the deletion when WE deleted the file (modified by them)', async () => {
+      commitBase();
+      git(['checkout', '-b', 'feature']);
+      fs.writeFileSync(absPath(), 'meta {\n  name: edited-remotely\n}\n');
+      git(['commit', '-am', 'edit on feature']);
+      git(['checkout', '-']);
+      git(['rm', '-q', '--', relPath]);
+      git(['commit', '-m', 'delete on main']);
+      expect(() => git(['merge', 'feature'])).toThrow();
+
+      await expect(resolveConflictFile(workspacePath, relPath, 'ours')).resolves.toMatchObject({ deleted: true });
+
+      expect(git(['ls-files', '-u', '--', relPath]).trim()).toBe('');
+      expect(fs.existsSync(absPath())).toBe(false);
     });
   });
 });

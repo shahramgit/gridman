@@ -721,6 +721,11 @@ const WorkspaceGit = ({ workspace }) => {
           setOutput(`${label} completed.${protectedBackupNote}${localBackupNote}`);
         } else if (result.localFilesBackedUp) {
           setOutput(`${label} completed.${localBackupNote}`);
+        } else if (result.deleted && result.path) {
+          // Modify/delete conflict: the chosen side had removed the file, so
+          // resolving in its favour means accepting the deletion. Say so —
+          // otherwise "Accept remote" looks like it silently dropped the file.
+          setOutput(`${label}: ${result.path} was deleted on that side, so the deletion was accepted.`);
         } else {
           setOutput(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
         }

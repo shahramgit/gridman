@@ -1076,14 +1076,48 @@ const unstageChanges = async (gitRootPath, files) => {
   });
 };
 
+// Which conflict stages exist for a path: 2 = "ours", 3 = "theirs". A plain
+// content conflict has both; a modify/delete conflict has only one.
+const getConflictStages = async (git, filePath) => {
+  let raw = '';
+  try {
+    raw = String(await git.raw(['ls-files', '-u', '--', filePath]) || '');
+  } catch (_err) {
+    return new Set();
+  }
+  const stages = new Set();
+  for (const line of raw.split('\n')) {
+    // format: "<mode> <sha> <stage>\t<path>"
+    const stage = line.trim().split(/\s+/)[2];
+    if (stage) {
+      stages.add(stage);
+    }
+  }
+  return stages;
+};
+
 const resolveConflictFile = async (gitRootPath, filePath, side) => {
   if (side !== 'ours' && side !== 'theirs') {
     throw new Error('Invalid conflict resolution side');
   }
 
   const git = getSimpleGitInstanceForPath(gitRootPath);
+
+  // MODIFY/DELETE conflicts (one side deleted the file, the other changed it)
+  // have no blob for the deleting side, and `git checkout --ours|--theirs`
+  // fails with "path '<file>' does not have their/our version" — reported by a
+  // user after a folder was deleted/renamed on one side while edited on the
+  // other. Choosing the side that deleted the file means ACCEPT THE DELETION.
+  const stages = await getConflictStages(git, filePath);
+  const wantedStage = side === 'ours' ? '2' : '3';
+  if (stages.size && !stages.has(wantedStage)) {
+    await git.raw(['rm', '-f', '--', filePath]);
+    return { path: filePath, side, deleted: true };
+  }
+
   await git.raw(['checkout', `--${side}`, '--', filePath]);
-  return stageChanges(gitRootPath, [path.join(gitRootPath, filePath)]);
+  await stageChanges(gitRootPath, [path.join(gitRootPath, filePath)]);
+  return { path: filePath, side, deleted: false };
 };
 
 const discardChanges = async (gitRootPath, filePaths) => {
