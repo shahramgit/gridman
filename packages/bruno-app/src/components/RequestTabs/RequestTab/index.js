@@ -27,6 +27,23 @@ import { getInvalidVariableNames } from 'utils/common/variables';
 import ExampleTab from '../ExampleTab';
 import toast from 'react-hot-toast';
 
+const requestTabTypes = ['request', 'http-request', 'grpc-request', 'ws-request', 'graphql-request'];
+
+const REQUEST_NOT_LOADED_MESSAGE = 'This request isn\'t loaded yet — nothing was saved';
+
+// The SAME readiness predicate RequestTabPanel uses. A stub (index-only
+// placeholder, unparsed large file, still loading) carries placeholder request
+// data — parseBruFileMeta hands a partial item a non-empty request — so a
+// weaker predicate here lets a stub win over the hydrated by-path snapshot and
+// the tab strip and the panel end up disagreeing about which item is open.
+const isHydratedItem = (item) => Boolean(
+  item?.request
+  && !item.loading
+  && !item.partial
+  && !item.gridmanIndexOnly
+  && !item.request?.gridmanIndexOnly
+);
+
 const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUid, hasOverflow, setHasOverflow, dropdownContainerRef, showCollectionHint }) => {
   const dispatch = useDispatch();
   const { theme } = useTheme();
@@ -70,8 +87,11 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     (tab.itemPathname ? findItemInCollectionByPathname(collection, tab.itemPathname) : null)
     || findItemInCollection(collection, tab.itemUid || tab.uid)
   );
-  const isTreeItemReady = Boolean(treeItem?.request && !treeItem.gridmanIndexOnly && !treeItem.request?.gridmanIndexOnly);
+  const isTreeItemReady = isHydratedItem(treeItem);
   const item = isSpecialTab ? null : (isTreeItemReady ? treeItem : (loadedRequestItem || treeItem));
+  // Neither candidate may be hydrated: saving a stub would write its
+  // placeholder request to disk.
+  const isItemHydrated = isHydratedItem(item);
 
   const method = useMemo(() => {
     if (!item) return;
@@ -271,11 +291,22 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     } else if (tab.type === 'collection-settings') {
       dispatch(saveCollectionSettings(collection.uid));
     } else if (item && item.uid) {
+      if (!isItemHydrated) {
+        // Ctrl+S lands here before the file is read (huge collections hydrate
+        // lazily); saving the placeholder would blank the request on disk.
+        toast.error(REQUEST_NOT_LOADED_MESSAGE);
+        return false;
+      }
       // Use the RESOLVED item's uid, not tab.uid: sidebar-opened requests have
       // synthetic tab uids (indexed-request:<collection>:<pathname>), and
       // saveRequest(tab.uid) rejected with "Not able to locate item" — Ctrl+S
       // silently did nothing while the Save button (item.uid) worked.
       dispatch(saveRequest(item.uid, tab.collectionUid));
+    } else if (requestTabTypes.includes(tab.type)) {
+      // The strip renders tabs for collections that aren't loaded, so neither
+      // the tree item nor the by-path snapshot has resolved. Say so instead of
+      // swallowing Ctrl+S — that silence was the original bug report.
+      toast.error(REQUEST_NOT_LOADED_MESSAGE);
     }
     return false;
   }, { enabled: isActive, deps: [isActive, tab, item, collection, folder, globalEnvironmentDraft] });
@@ -660,9 +691,10 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
       (tab.itemPathname ? findItemInCollectionByPathname(tabCollection, tab.itemPathname) : null)
       || findItemInCollection(tabCollection, tab.itemUid || tab.uid)
     );
-    const isTreeItemUsable = Boolean(treeItem?.request && !treeItem.gridmanIndexOnly && !treeItem.request?.gridmanIndexOnly);
-
-    return isTreeItemUsable ? treeItem : (loadedRequestItem || treeItem);
+    // Same predicate as the tab's own resolution above — the menu acts on
+    // (saves, clones, reverts) whatever this returns, so the two must not
+    // disagree about which item the tab is showing.
+    return isHydratedItem(treeItem) ? treeItem : (loadedRequestItem || treeItem);
   };
 
   const currentTab = collectionRequestTabs[tabIndex];
