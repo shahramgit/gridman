@@ -13,7 +13,7 @@ const stripLastLine = (text) => {
 };
 
 const jsonToCollectionBru = (json) => {
-  const { meta, query, headers, auth, script, tests, vars, docs } = json;
+  const { meta, query, headers, auth, script, tests, vars, docs, unknownBlocks } = json;
 
   let bru = '';
 
@@ -453,6 +453,21 @@ ${indentString(docs)}
 }
 
 `;
+  }
+
+  // Collection/folder level blocks a newer Bruno version wrote that we could not interpret
+  // (collectionBruToJson.js "unknownblock" keeps their source text). Written back verbatim
+  // so saving a collection.bru / folder.bru here never deletes them - only their position
+  // moves, they end up after the blocks we do understand. Line endings are normalised to \n
+  // like every other block here (see jsonToBru.js).
+  if (unknownBlocks && unknownBlocks.length) {
+    unknownBlocks.forEach((block) => {
+      const raw = block?.raw;
+      if (!raw || !raw.length) {
+        return;
+      }
+      bru += `${raw.replace(/\r\n/g, '\n').replace(/\n+$/, '')}\n\n`;
+    });
   }
 
   return stripLastLine(bru);

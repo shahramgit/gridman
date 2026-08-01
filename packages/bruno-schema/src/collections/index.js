@@ -683,7 +683,20 @@ const itemSchema = Yup.object({
     otherwise: Yup.array().strip()
   }),
   filename: Yup.string().nullable(),
-  pathname: Yup.string().nullable()
+  pathname: Yup.string().nullable(),
+  // Top-level blocks written by a newer Bruno that we can only keep verbatim.
+  // The schema is noUnknown+strict, so without this the field is rejected on
+  // save and the block is deleted from the user's file.
+  unknownBlocks: Yup.array()
+    .of(
+      Yup.object({
+        name: Yup.string().nullable(),
+        raw: Yup.string().nullable()
+      })
+        .noUnknown(true)
+        .strict()
+    )
+    .nullable()
 })
   .noUnknown(true)
   .strict();

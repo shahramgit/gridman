@@ -740,6 +740,13 @@ export const transformRequestToSaveToFilesystem = (item) => {
     }
   };
 
+  // Blocks a newer Bruno wrote that we only know how to keep verbatim. This is
+  // an allow-list, so anything not named here is deleted from the user's file on
+  // the next save — and these are exactly the blocks we cannot reconstruct.
+  if (Array.isArray(_item.unknownBlocks) && _item.unknownBlocks.length) {
+    itemToSave.unknownBlocks = _item.unknownBlocks;
+  }
+
   if (_item.type === 'grpc-request') {
     itemToSave.request.methodType = _item.request.methodType;
     itemToSave.request.protoPath = _item.request.protoPath;
@@ -1075,8 +1082,17 @@ export const areItemsTheSameExceptSeqUpdate = (_item1, _item2) => {
   delete item2.draft;
 
   // get projection of both items
-  item1 = transformRequestToSaveToFilesystem(item1);
-  item2 = transformRequestToSaveToFilesystem(item2);
+  // a partial/unparseable item has no comparable request projection - transform
+  // dereferences `request.method`/`request.body` and throws on it. This runs inside
+  // immer reducers (collectionChangeFileEvent), so a throw here tears down the
+  // renderer; treat it as changed instead so callers fall back to a full update.
+  // upstream bruno #8545 (81f9a4092)
+  try {
+    item1 = transformRequestToSaveToFilesystem(item1);
+    item2 = transformRequestToSaveToFilesystem(item2);
+  } catch (err) {
+    return false;
+  }
 
   // delete uids from both items
   deleteUidsInItem(item1);

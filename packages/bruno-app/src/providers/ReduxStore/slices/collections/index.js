@@ -210,6 +210,9 @@ const applyFileDataToItem = (item, file, isTransientFile) => {
   item.error = file.error;
   item.isTransient = isTransientFile;
   item.gridmanIndexOnly = Boolean(file.data.gridmanIndexOnly);
+  // Carried so a save can write it back verbatim; dropping it here deletes the
+  // block from the user's file on the next Ctrl+S.
+  item.unknownBlocks = file.data.unknownBlocks;
 };
 
 const applyCollectionAddFile = (state, file, options = {}) => {
@@ -317,7 +320,8 @@ const applyCollectionAddFile = (state, file, options = {}) => {
           loading: file.loading,
           size: file.size,
           error: file.error,
-          isTransient: isTransientFile
+          isTransient: isTransientFile,
+          unknownBlocks: file.data.unknownBlocks
         });
       }
     }
@@ -3672,10 +3676,33 @@ export const collectionsSlice = createSlice({
         const item = findItemInCollectionByPathname(collection, file.meta.pathname);
 
         if (item) {
-          // whenever a user attempts to sort a req within the same folder
-          // the seq is updated, but everything else remains the same
-          // we don't want to lose the draft in this case
-          if (areItemsTheSameExceptSeqUpdate(item, file.data)) {
+          // Refresh the mount flags on every change event. A file that failed to
+          // parse is mounted as a partial item, and without this it stays partial
+          // (and stays listed as "not loaded") forever after the file is fixed on
+          // disk. upstream bruno #8545 (81f9a4092)
+          item.partial = file.partial;
+          item.error = file.error;
+          item.loading = file.loading;
+
+          if (file.partial) {
+            // A partial payload carries no parse result — only the pathname the
+            // watcher could not read. Applying it would rename the row to the
+            // filename and blank seq/method/url on the index node every collection
+            // renders from (upstream has no such exposure — it renders the tree).
+            // Keep the last known values; the flags above already mark it broken.
+            upsertCollectionIndexNodeFromItem(state, file.meta.collectionUid, item);
+            return;
+          }
+
+          // A partial item has a valid type (e.g. http-request) but no parsed
+          // `request` yet, so it must never take the seq-only fast path: that would
+          // leave it with a valid type and an undefined request and crash
+          // RequestMethod once it renders. Send it down the full-update branch so
+          // the parsed request gets assigned. upstream bruno #8558 (b39445314)
+          if (item.request && areItemsTheSameExceptSeqUpdate(item, file.data)) {
+            // whenever a user attempts to sort a req within the same folder
+            // the seq is updated, but everything else remains the same
+            // we don't want to lose the draft in this case
             item.seq = file.data.seq;
             if (item?.draft) {
               item.draft.seq = file.data.seq;
@@ -3693,6 +3720,12 @@ export const collectionsSlice = createSlice({
             item.examples = file.data.examples;
             item.filename = file.meta.name;
             item.pathname = file.meta.pathname;
+            // Only when the payload carries it: 'change' always does, but other
+            // producers of this event don't, and blanking size flips the item back
+            // to "unknown size" (the oversized-request guard reads it).
+            if (file.size !== undefined) {
+              item.size = file.size;
+            }
 
             // Only clear draft if it matches the file content
             // This preserves characters typed during autosave
@@ -3709,10 +3742,13 @@ export const collectionsSlice = createSlice({
           if (requestsByPath?.[loadedKey] && item.request && !item.partial && !item.loading) {
             requestsByPath[loadedKey] = item;
           }
-        } else if (file?.data?.uid) {
+        } else if (file?.data?.uid && !file.partial) {
           // Not hydrated into the tree (the common case on indexed
           // collections) — still refresh the sidebar's index node so external
           // edits to name/method/url/seq don't leave a stale row.
+          // Skipped for a partial payload: it has no parsed request, so writing it
+          // would rename the row to the filename and wipe the method badge and seq
+          // the indexer already scanned out of the file.
           const index = state.collectionIndexes?.[file.meta.collectionUid];
           const existingNode = index ? findIndexNodeByPathname(index, file.meta.pathname) : null;
           if (existingNode) {
@@ -4032,8 +4068,13 @@ export const collectionsSlice = createSlice({
 
         if (type === 'runner-request-skipped') {
           const item = collection.runnerResult.items.findLast((i) => i.uid === request.uid);
-          item.status = 'skipped';
-          item.responseReceived = action.payload.responseReceived;
+          // a skip can arrive for a request that was never pushed into
+          // runnerResult.items; without this the reducer throws and takes the
+          // whole runner UI down. upstream bruno #8406 (e7197d636)
+          if (item) {
+            item.status = 'skipped';
+            item.responseReceived = action.payload.responseReceived;
+          }
         }
 
         if (type === 'post-response-script-execution') {

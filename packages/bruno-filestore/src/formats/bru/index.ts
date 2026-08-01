@@ -108,6 +108,16 @@ export const parseBruRequest = (data: string | any, parsed: boolean = false): an
         transformedJson.request.auth.oauth2.additionalParameters = additionalParameters;
       }
     }
+
+    // Top level blocks written by a newer Bruno version that the parser could not interpret
+    // (@usebruno/lang bruToJson.js "unknownblock"). They are carried on the item so the app
+    // can see them - and so stringifyBruRequest below writes them back verbatim instead of
+    // silently deleting them on the next save.
+    const unknownBlocks = _.get(json, 'unknownBlocks', []);
+    if (unknownBlocks.length) {
+      transformedJson.unknownBlocks = unknownBlocks;
+    }
+
     return transformedJson;
   } catch (error) {
     console.log('parseBruRequest error', error);
@@ -221,6 +231,14 @@ export const stringifyBruRequest = (json: any): string => {
     bruJson.docs = _.get(json, 'request.docs', '');
     bruJson.examples = _.get(json, 'examples', []).map((e: any) => jsonExampleToBru(e));
 
+    // Blocks a newer Bruno version wrote that we could not interpret, carried over by
+    // parseBruRequest. Written back verbatim - losing a block on save is worse than failing
+    // to read it, and these files are git shared with teammates on newer Bruno versions.
+    const unknownBlocks = _.get(json, 'unknownBlocks', []);
+    if (unknownBlocks.length) {
+      bruJson.unknownBlocks = unknownBlocks;
+    }
+
     const bru = jsonToBruV2(bruJson);
     return bru;
   } catch (error) {
@@ -268,6 +286,12 @@ export const parseBruCollection = (data: string | any, parsed: boolean = false):
       }
     }
 
+    // see parseBruRequest - same reason, collection.bru / folder.bru get the same treatment
+    const unknownBlocks = _.get(json, 'unknownBlocks', []);
+    if (unknownBlocks.length) {
+      transformedJson.unknownBlocks = unknownBlocks;
+    }
+
     return transformedJson;
   } catch (error) {
     return Promise.reject(error);
@@ -307,6 +331,13 @@ export const stringifyBruCollection = (json: any, isFolder?: boolean): string =>
 
     if (!isFolder) {
       collectionBruJson.auth = _.get(json, 'request.auth', {});
+    }
+
+    // see stringifyBruRequest - blocks carried over by parseBruCollection are written back
+    // verbatim so a save never deletes what a newer Bruno wrote
+    const unknownBlocks = _.get(json, 'unknownBlocks', []);
+    if (unknownBlocks.length) {
+      collectionBruJson.unknownBlocks = unknownBlocks;
     }
 
     return _jsonToCollectionBru(collectionBruJson);

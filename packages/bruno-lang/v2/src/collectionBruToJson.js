@@ -7,7 +7,7 @@ const { safeParseJson, outdentString } = require('./utils');
 const ANNOTATIONS_KEY = Symbol('annotations');
 
 const grammar = ohm.grammar(`Bru {
-  BruFile = (meta | query | headers | auth | auths | vars | script | tests | docs)*
+  BruFile = (meta | query | headers | auth | auths | vars | script | tests | docs | unknownblock)*
   auths = authawsv4 | authbasic | authbearer | authdigest | authNTLM | authOAuth1 | authOAuth2 | authwsse | authapikey | authOauth2Configs
 
   // Oauth2 additional parameters
@@ -33,8 +33,16 @@ const grammar = ohm.grammar(`Bru {
   annotationchar = ~("(" | ")" | " " | "\\t" | "\\r" | "\\n" | ":") any
   annotationsinglequotedargchar = ~"'" any
   annotationsinglequotedarg = "'" annotationsinglequotedargchar* "'"
+  // Bruno v4 escapes " and \\ inside a double-quoted annotation arg (upstream v4.0.0
+  // packages/bruno-lang/v2/src/bruToJson.js). Same two alternatives as bruToJson.js - see
+  // the full reasoning there. collection.bru and folder.bru carry the same annotations, so
+  // they need the same tolerance: v4's escaped form first (line bounded), then the original
+  // rule so a value our own serializer wrote unescaped still parses. The escape is kept
+  // verbatim in the value because jsonToCollectionBru does not escape on write.
+  annotationdoublequotedargesc = "\\\\" ~nl any
+  annotationdoublequotedargescchar = annotationdoublequotedargesc | ~("\\"" | nl) any
   annotationdoublequotedargchar = ~"\\"" any
-  annotationdoublequotedarg = "\\"" annotationdoublequotedargchar* "\\""
+  annotationdoublequotedarg = "\\"" annotationdoublequotedargescchar* "\\"" | "\\"" annotationdoublequotedargchar* "\\""
   annotationunquotedargchar = ~")" any
   annotationunquotedarg = annotationunquotedargchar*
   annotationargvalue = annotationsinglequotedarg | annotationdoublequotedarg | annotationunquotedarg
@@ -99,6 +107,36 @@ const grammar = ohm.grammar(`Bru {
   scriptres = "script:post-response" st* "{" nl* textblock tagend
   tests = "tests" st* "{" nl* textblock tagend
   docs = "docs" st* "{" nl* textblock tagend
+
+  // Forward compatibility with newer Bruno versions - see bruToJson.js for the full
+  // reasoning. collection.bru / folder.bru hit this too: Bruno v4.0.0 added
+  // "auth:akamai-edgegrid", and a collection level auth block we do not know still fails
+  // the whole file, which takes down every request under that collection.
+  // jsonToCollectionBru re-emits the source text verbatim, so saving never deletes it.
+  unknownblock = ~knownblockname blockname st* unknownblockbody
+  unknownblockbody = "{" unknownblockline* tagend | "[" unknownblockline* listend
+  // Bounded to blank-or-indented lines so an unterminated unknown block cannot absorb the
+  // known blocks that follow it (see bruToJson.js).
+  unknownblockline = ~tagend ~listend nl (st+ (~nl any)*)?
+  listend = nl "]"
+  blockname = blocknamechar+
+  blocknamechar = alnum | ":" | "-" | "_" | "."
+  kb<name> = name ~blocknamechar
+  knownblockname =
+    kb<"meta"> | kb<"query"> | kb<"headers"> | kb<"auth">
+    | kb<"vars:pre-request"> | kb<"vars:post-response">
+    | kb<"auth:awsv4"> | kb<"auth:basic"> | kb<"auth:bearer"> | kb<"auth:digest">
+    | kb<"auth:ntlm"> | kb<"auth:oauth1"> | kb<"auth:oauth2"> | kb<"auth:wsse">
+    | kb<"auth:apikey">
+    | kb<"auth:oauth2:additional_params:auth_req:headers">
+    | kb<"auth:oauth2:additional_params:auth_req:queryparams">
+    | kb<"auth:oauth2:additional_params:access_token_req:headers">
+    | kb<"auth:oauth2:additional_params:access_token_req:queryparams">
+    | kb<"auth:oauth2:additional_params:access_token_req:body">
+    | kb<"auth:oauth2:additional_params:refresh_token_req:headers">
+    | kb<"auth:oauth2:additional_params:refresh_token_req:queryparams">
+    | kb<"auth:oauth2:additional_params:refresh_token_req:body">
+    | kb<"script:pre-request"> | kb<"script:post-response"> | kb<"tests"> | kb<"docs">
 }`);
 
 const mapPairListToKeyValPairs = (pairList = [], parseEnabled = true) => {
@@ -662,6 +700,19 @@ const sem = grammar.createSemantics().addAttribute('ast', {
   docs(_1, _2, _3, _4, textblock, _5) {
     return {
       docs: outdentString(textblock.sourceString)
+    };
+  },
+  // A collection/folder level block from a newer Bruno version. Kept verbatim instead of
+  // failing the file, and written back out by jsonToCollectionBru - the two halves have to
+  // ship together, dropping a block on save is worse than refusing to read it.
+  unknownblock(blockname, _1, _2) {
+    return {
+      unknownBlocks: [
+        {
+          name: blockname.sourceString,
+          raw: this.sourceString
+        }
+      ]
     };
   }
 });

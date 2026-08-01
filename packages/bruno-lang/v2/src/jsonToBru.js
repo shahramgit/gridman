@@ -14,7 +14,7 @@ const stripLastLine = (text) => {
 };
 
 const jsonToBru = (json) => {
-  const { meta, http, grpc, ws, params, headers, metadata, auth, body, script, tests, vars, assertions, settings, docs, examples } = json;
+  const { meta, http, grpc, ws, params, headers, metadata, auth, body, script, tests, vars, assertions, settings, docs, examples, unknownBlocks } = json;
 
   let bru = '';
 
@@ -774,6 +774,23 @@ ${indentString(docs)}
     examples.forEach((example) => {
       const bruExample = jsonToExampleBru(example);
       bru += `example {\n${indentString(bruExample)}\n}\n\n`;
+    });
+  }
+
+  // Top level blocks a newer Bruno version wrote that we could not interpret (bruToJson.js
+  // "unknownblock" keeps their source text). They are written back verbatim: our workspaces
+  // are git shared, so a teammate on stock Bruno would otherwise lose - silently, with no
+  // error anywhere - whatever we do not understand the moment anyone here saves the file.
+  // Only their position moves, they end up after the blocks we do understand. Line endings
+  // are normalised to \n like every other block here, otherwise a CRLF file read on Windows
+  // comes back out with mixed endings.
+  if (unknownBlocks && unknownBlocks.length) {
+    unknownBlocks.forEach((block) => {
+      const raw = block?.raw;
+      if (!raw || !raw.length) {
+        return;
+      }
+      bru += `${raw.replace(/\r\n/g, '\n').replace(/\n+$/, '')}\n\n`;
     });
   }
 

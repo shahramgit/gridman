@@ -34,7 +34,7 @@ const ANNOTATIONS_KEY = Symbol('annotations');
  *
  */
 const grammar = ohm.grammar(`Bru {
-  BruFile = (meta | http | grpc | ws | query | params | headers | metadata | auths | bodies | varsandassert | script | tests | settings | docs | example)*
+  BruFile = (meta | http | grpc | ws | query | params | headers | metadata | auths | bodies | varsandassert | script | tests | settings | docs | example | unknownblock)*
   auths = authawsv4 | authbasic | authbearer | authdigest | authNTLM | authOAuth1 | authOAuth2 | authwsse | authapikey | authOauth2Configs
   bodies = bodyjson | bodytext | bodyxml | bodysparql | bodygraphql | bodygraphqlvars | bodyforms | body | bodygrpc | bodyws
   bodyforms = bodyformurlencoded | bodymultipart | bodyfile
@@ -64,8 +64,30 @@ const grammar = ohm.grammar(`Bru {
   annotationchar = ~("(" | ")" | " " | "\\t" | "\\r" | "\\n" | ":") any
   annotationsinglequotedargchar = ~"'" any
   annotationsinglequotedarg = "'" annotationsinglequotedargchar* "'"
+  // Bruno v4 escapes " and \\ inside a double-quoted annotation arg (upstream v4.0.0
+  // packages/bruno-lang/v2/src/bruToJson.js), so a v4-written
+  // @description("say \\"hi\\" it's me") used to fail the whole file here.
+  //
+  // Two alternatives, tried in order, so BOTH dialects read:
+  //  1. v4: upstream's unguarded "\\" any escape. Bounded to the line because an
+  //     annotation arg is always single line in both dialects (a value with newlines is
+  //     written as a ''' block instead) - unbounded it would run to some later quote in
+  //     the file and mangle everything in between.
+  //  2. ours: the original rule, unchanged. Our serializer does NOT escape, so a value
+  //     ending in a backslash reaches us as @description("it's C:\\") - which alternative
+  //     1 cannot close. Without this fallback that file silently gains a stray quote on
+  //     every save.
+  // A v4 file never has a lone backslash before the closing quote, so alternative 1 always
+  // wins where it matters and alternative 2 only catches what we ourselves wrote.
+  //
+  // The escape is kept VERBATIM in the value (no unescaping) because utils.js
+  // serializeAnnotations writes the value back as-is: verbatim in / verbatim out is what
+  // round-trips today. Unescaping on read without escaping on write would corrupt the file
+  // on the next save.
+  annotationdoublequotedargesc = "\\\\" ~nl any
+  annotationdoublequotedargescchar = annotationdoublequotedargesc | ~("\\"" | nl) any
   annotationdoublequotedargchar = ~"\\"" any
-  annotationdoublequotedarg = "\\"" annotationdoublequotedargchar* "\\""
+  annotationdoublequotedarg = "\\"" annotationdoublequotedargescchar* "\\"" | "\\"" annotationdoublequotedargchar* "\\""
   annotationunquotedargchar = ~")" any
   annotationunquotedarg = annotationunquotedargchar*
   annotationargvalue = annotationsinglequotedarg | annotationdoublequotedarg | annotationunquotedarg
@@ -180,6 +202,56 @@ const grammar = ohm.grammar(`Bru {
   scriptres = "script:post-response" st* "{" nl* textblock tagend
   tests = "tests" st* "{" nl* textblock tagend
   docs = "docs" st* "{" nl* textblock tagend
+
+  // Forward compatibility with newer Bruno versions.
+  //
+  // BruFile is a whitelist, so a top level block we do not know is a hard parse failure
+  // of the WHOLE file, not an ignored block. Bruno v4.0.0 added "app" and
+  // "auth:akamai-edgegrid" (upstream v4.0.0 packages/bruno-lang/v2/src/bruToJson.js), and
+  // our workspaces are git shared, so one teammate saving from stock Bruno would make the
+  // file unreadable for everyone here.
+  //
+  // "unknownblock" is the LAST alternative in BruFile, so every block we do know still
+  // wins. It only matches names outside "knownblockname" so that a *malformed* known block
+  // (say a headers block with a broken pair) stays a parse error instead of being quietly
+  // swallowed. The source text is kept verbatim and jsonToBru re-emits it, so a save from
+  // here never deletes a block a newer Bruno wrote.
+  unknownblock = ~knownblockname blockname st* unknownblockbody
+  unknownblockbody = "{" unknownblockline* tagend | "[" unknownblockline* listend
+  // Every line of an unknown body has to be blank or indented, which is how every Bruno
+  // serializer writes block content. Without that bound the body would run to the next
+  // "\\n}" ANYWHERE in the file, so an unterminated block - or a mistyped known name like
+  // "header {" - would absorb the following known blocks into the unknown block instead of
+  // reporting an error, and they would then only exist inside the verbatim text.
+  unknownblockline = ~tagend ~listend nl (st+ (~nl any)*)?
+  listend = nl "]"
+  blockname = blocknamechar+
+  blocknamechar = alnum | ":" | "-" | "_" | "."
+  kb<name> = name ~blocknamechar
+  knownblockname =
+    kb<"meta"> | kb<"settings">
+    | kb<"grpc"> | kb<"ws">
+    | kb<"get"> | kb<"post"> | kb<"put"> | kb<"delete"> | kb<"patch"> | kb<"options">
+    | kb<"head"> | kb<"connect"> | kb<"trace"> | kb<"http">
+    | kb<"headers"> | kb<"metadata">
+    | kb<"query"> | kb<"params:path"> | kb<"params:query">
+    | kb<"vars:pre-request"> | kb<"vars:post-response"> | kb<"assert">
+    | kb<"auth:awsv4"> | kb<"auth:basic"> | kb<"auth:bearer"> | kb<"auth:digest">
+    | kb<"auth:ntlm"> | kb<"auth:oauth1"> | kb<"auth:oauth2"> | kb<"auth:wsse">
+    | kb<"auth:apikey">
+    | kb<"auth:oauth2:additional_params:auth_req:headers">
+    | kb<"auth:oauth2:additional_params:auth_req:queryparams">
+    | kb<"auth:oauth2:additional_params:access_token_req:headers">
+    | kb<"auth:oauth2:additional_params:access_token_req:queryparams">
+    | kb<"auth:oauth2:additional_params:access_token_req:body">
+    | kb<"auth:oauth2:additional_params:refresh_token_req:headers">
+    | kb<"auth:oauth2:additional_params:refresh_token_req:queryparams">
+    | kb<"auth:oauth2:additional_params:refresh_token_req:body">
+    | kb<"body"> | kb<"body:json"> | kb<"body:text"> | kb<"body:xml"> | kb<"body:sparql">
+    | kb<"body:graphql"> | kb<"body:graphql:vars"> | kb<"body:grpc"> | kb<"body:ws">
+    | kb<"body:form-urlencoded"> | kb<"body:multipart-form"> | kb<"body:file">
+    | kb<"example">
+    | kb<"script:pre-request"> | kb<"script:post-response"> | kb<"tests"> | kb<"docs">
 }`);
 
 const mapPairListToKeyValPairs = (pairList = [], parseEnabled = true) => {
@@ -1175,6 +1247,20 @@ const sem = grammar.createSemantics().addAttribute('ast', {
           }
         ]
       }
+    };
+  },
+  // A top level block from a newer Bruno version. We cannot interpret it, so the source
+  // text is kept verbatim instead of throwing, and jsonToBru writes it back out as-is
+  // (see jsonToBru.js "unknownBlocks"). Dropping a block on save is worse than refusing to
+  // read it, so the two halves have to ship together.
+  unknownblock(blockname, _1, _2) {
+    return {
+      unknownBlocks: [
+        {
+          name: blockname.sourceString,
+          raw: this.sourceString
+        }
+      ]
     };
   },
   example(_1, _2, _3, _4, examplecontent, _5) {

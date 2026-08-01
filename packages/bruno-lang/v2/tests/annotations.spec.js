@@ -802,6 +802,71 @@ headers {
     expect(parsed.headers[0].annotations).toEqual([{ name: 'description', value: 'Token (JWT)' }]);
   });
 
+  // Bruno v4 escapes " and \ inside a double-quoted annotation arg (v4 picks double quotes
+  // whenever the value contains an apostrophe), which used to be a hard parse failure of
+  // the whole file here.
+  // upstream v4.0.0 packages/bruno-lang/v2/src/bruToJson.js (annotationdoublequotedargesc)
+  //
+  // The escape is kept VERBATIM in the value: utils.js serializeAnnotations does not escape
+  // on write, so verbatim in / verbatim out is what round-trips. Every case below therefore
+  // asserts the value AND that saving reproduces the file byte for byte.
+  const v4EscapedArgs = [
+    ['say \\"hi\\" it\'s me', 'say \\"hi\\" it\'s me'],
+    ['it\'s (\\"x\\")', 'it\'s (\\"x\\")'],
+    ['it\'s a \\"quote\\")', 'it\'s a \\"quote\\")'],
+    ['see RFC (\\"7235\\") for it\'s rules', 'see RFC (\\"7235\\") for it\'s rules'],
+    ['it\'s at C:\\\\logs', 'it\'s at C:\\\\logs']
+  ];
+
+  it.each(v4EscapedArgs)('parses a Bruno v4 escaped annotation arg: %s', (arg, expected) => {
+    const input = `headers {
+  @description("${arg}")
+  key: value
+}
+`;
+    const output = parser(input);
+    expect(output.headers[0].annotations).toEqual([{ name: 'description', value: expected }]);
+  });
+
+  it.each(v4EscapedArgs)('round-trips a Bruno v4 escaped annotation arg byte for byte: %s', (arg) => {
+    const input = `headers {
+  @description("${arg}")
+  key: value
+}
+`;
+    expect(jsonToBru(parser(input))).toEqual(input);
+  });
+
+  it('trailing backslash still closes a double-quoted annotation arg', () => {
+    // Our own serializer writes this shape unescaped, so it is not valid v4 - the escape
+    // alternative cannot close it, and the unescaped alternative has to. Without that
+    // fallback the arg reopens at the next quote and the value collects a stray quote on
+    // every save.
+    const input = `headers {
+  @description("it's C:\\")
+  key: value
+}
+`;
+    const output = parser(input);
+    expect(output.headers[0].annotations).toEqual([{ name: 'description', value: 'it\'s C:\\' }]);
+    expect(jsonToBru(output)).toEqual(input);
+  });
+
+  it('trailing backslash still closes a double-quoted annotation arg when the file has later quotes', () => {
+    const input = `headers {
+  @description("it's C:\\")
+  key: value
+}
+
+docs {
+  a "quoted" word
+}
+`;
+    const output = parser(input);
+    expect(output.headers[0].annotations).toEqual([{ name: 'description', value: 'it\'s C:\\' }]);
+    expect(jsonToBru(output)).toEqual(input);
+  });
+
   it('inline annotation on a header is rejected', () => {
     const input = `
 headers {
@@ -1256,5 +1321,31 @@ describe('collection pair annotations', () => {
 }
 `;
     expect(() => collectionParser(input)).toThrow();
+  });
+
+  // collection.bru / folder.bru carry the same annotations, so they need the same tolerance
+  // for Bruno v4's escaped double-quoted args - see the request parser cases above.
+  it('parses a Bruno v4 escaped annotation arg in a collection file', () => {
+    const input = `headers {
+  @description("see RFC (\\"7235\\") for it's rules")
+  content-type: application/json
+}
+`;
+    const parsed = collectionParser(input);
+    expect(parsed.headers[0].annotations).toEqual([
+      { name: 'description', value: 'see RFC (\\"7235\\") for it\'s rules' }
+    ]);
+    expect(jsonToCollectionBru(parsed)).toEqual(input);
+  });
+
+  it('trailing backslash still closes a double-quoted annotation arg in a collection file', () => {
+    const input = `headers {
+  @description("it's C:\\")
+  content-type: application/json
+}
+`;
+    const parsed = collectionParser(input);
+    expect(parsed.headers[0].annotations).toEqual([{ name: 'description', value: 'it\'s C:\\' }]);
+    expect(jsonToCollectionBru(parsed)).toEqual(input);
   });
 });

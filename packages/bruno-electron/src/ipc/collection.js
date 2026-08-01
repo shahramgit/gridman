@@ -109,8 +109,10 @@ const MAX_COLLECTION_FILES_COUNT = 100;
 const INDEXED_COLLECTION_WATCHER_ATTACH_DELAY_MS = 3000;
 
 // The watcher's partial-parse threshold. A sidebar click must classify a file
-// exactly like the watcher's own scan does, so both read the same constant.
-const { MAX_FILE_SIZE } = collectionWatcher;
+// exactly like the watcher's own scan does, so both read the same constant — and
+// name an unparseable file the same way, since the sidebar renders from the index
+// and a name carrying the extension repaints the row.
+const { MAX_FILE_SIZE, buildUnparseableRequestData } = collectionWatcher;
 
 const shouldUseIndexedCollectionLoad = ({ size, filesCount, maxFileSize }) => (
   (size > MAX_COLLECTION_SIZE_IN_MB)
@@ -319,6 +321,23 @@ const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollection
   if (sourceKind === 'request' && sourceFormat !== targetFormat) {
     const sourceContent = await fs.promises.readFile(sourcePathname, 'utf8');
     const parsedRequest = parseRequest(sourceContent, { format: sourceFormat });
+
+    // Converting formats REWRITES the request and then deletes the original, so
+    // anything the target format cannot carry is gone for good. Blocks written
+    // by a newer Bruno survive a .bru round trip only because we keep them
+    // verbatim; the yml serializers have no equivalent. Refuse the move rather
+    // than silently drop them — before the parser learned to tolerate unknown
+    // blocks this failed loudly by throwing, and it must keep failing loudly.
+    const unknownBlocks = Array.isArray(parsedRequest?.unknownBlocks) ? parsedRequest.unknownBlocks : [];
+    if (unknownBlocks.length) {
+      const blockNames = unknownBlocks.map((block) => block?.name).filter(Boolean).join(', ');
+      throw new Error(
+        `"${path.basename(sourcePathname)}" contains blocks this version of Gridman does not understand`
+        + `${blockNames ? ` (${blockNames})` : ''}. Converting it to ${targetFormat} would delete them, `
+        + 'so the move was cancelled. Move it without changing format, or open it in the app that wrote it.'
+      );
+    }
+
     const finalContent = stringifyRequest(parsedRequest, { format: targetFormat });
 
     await writeFile(targetPathname, finalContent);
@@ -2611,7 +2630,29 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         const content = await stringifyJson(transformedBrunoConfig);
         await writeFile(brunoConfigPath, content);
       } else if (format === 'yml') {
-        const content = await stringifyCollection(collectionRoot, transformedBrunoConfig, { format });
+        // opencollection.yml holds both the config AND the collection root, so a
+        // config-only save rewrites the whole file. The renderer passes
+        // `collection.root`, which is empty until the root is hydrated — and we
+        // hydrate lazily, so that window stays open for the whole session on a
+        // collection whose settings were never opened. Recover the root from disk
+        // instead of writing an empty one over request defaults/docs/scripts.
+        // upstream bruno #8424 (acc74745d)
+        // `_.isEmpty` and not just a null check: an un-hydrated collection reaches us
+        // as `{}` just as often as it does `undefined`.
+        let rootToWrite = collectionRoot;
+        if (_.isEmpty(rootToWrite)) {
+          const ocYmlPath = path.join(collectionPath, 'opencollection.yml');
+          if (fs.existsSync(ocYmlPath)) {
+            try {
+              const existing = fs.readFileSync(ocYmlPath, 'utf8');
+              rootToWrite = parseCollection(existing, { format }).collectionRoot;
+            } catch (e) {
+              rootToWrite = collectionRoot;
+            }
+          }
+        }
+
+        const content = await stringifyCollection(rootToWrite, transformedBrunoConfig, { format });
         await writeFile(path.join(collectionPath, 'opencollection.yml'), content);
       } else {
         throw new Error(`Invalid collection format: ${format}`);
@@ -2931,7 +2972,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           // parseBruFileMeta returns null for a .bru with no meta block or one
           // caught half-written; the same fallback as renderer:load-request
           // keeps a null out of the tree the renderer builds from this.
-          file.data = metaJson || { name: path.basename(pathname), type: 'http-request' };
+          file.data = metaJson || buildUnparseableRequestData(pathname);
           file.partial = true;
           file.loading = false;
           file.size = sizeInMB(fileStats?.size);
@@ -2997,7 +3038,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         if (fileStats?.size >= MAX_FILE_SIZE) {
           // A meta parse can still come back null on a malformed file; never
           // hydrate null (that was the "Cannot set properties of null" crash).
-          file.data = parseFileMeta(bruContent, format) || { name: path.basename(pathname), type: 'http-request' };
+          file.data = parseFileMeta(bruContent, format) || buildUnparseableRequestData(pathname);
           file.partial = true;
           file.loading = false;
           file.size = sizeInMB(fileStats?.size);

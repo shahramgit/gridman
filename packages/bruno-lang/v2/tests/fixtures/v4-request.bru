@@ -1,0 +1,52 @@
+meta {
+  name: v4 request
+  type: http
+  seq: 1
+}
+
+get {
+  url: https://example.com/api
+  body: none
+  auth: akamai-edgegrid
+}
+
+headers {
+  @description("say \"hi\" it's me")
+  x-a: 1
+}
+
+auth:akamai-edgegrid {
+  accessToken: akab-access-token
+  clientToken: akab-client-token
+  clientSecret: client-secret
+  nonce: nonce-1
+  timestamp: 1700000000
+  baseURL: https://akab-xxxx.luna.akamaiapis.net
+  headersToSign: x-a
+  maxBodySize: 131072
+}
+
+vars:pre-request {
+  @number
+  port: 8080
+  @boolean
+  @description('admin flag')
+  isAdmin: true
+  @object
+  payload: '''
+    {
+      "a": 1
+    }
+  '''
+}
+
+app {
+  enabled: true
+  code: '''
+    <div>hello</div>
+  '''
+}
+
+docs {
+  some docs
+}
