@@ -1047,3 +1047,98 @@ describe('brunoToPostman item ordering', () => {
     expect(names).toEqual(['Apple', 'Mango', 'Zebra']);
   });
 });
+
+// The yml (OpenCollection) parser emits `items: []` on requests too, which used
+// to make the request classifier drop every request — Bulk Export and folder
+// Export/Share wrote a ~1kb Postman file with an empty item array.
+describe('brunoToPostman yml-format collections', () => {
+  // Mirrors what the yml parser hands the exporter: requests carry an empty
+  // items array alongside their request payload.
+  const makeYmlRequest = (name, seq, type = 'http-request') => ({
+    uid: 'uid-' + name,
+    type,
+    seq,
+    name,
+    tags: [],
+    request: {
+      method: 'GET',
+      url: `https://example.com/${name}`,
+      headers: [],
+      params: [],
+      body: { mode: 'none' },
+      auth: { mode: 'none' }
+    },
+    settings: null,
+    root: null,
+    items: [],
+    examples: []
+  });
+
+  const makeYmlFolder = (name, items) => ({
+    uid: 'uid-' + name,
+    type: 'folder',
+    name,
+    filename: name,
+    pathname: `/collections/کالکشن/${name}`,
+    items
+  });
+
+  it('should keep a yml-format request that carries an empty items array', () => {
+    const collection = {
+      name: 'Yml Collection',
+      items: [makeYmlRequest('Get Users', 1)]
+    };
+
+    const result = brunoToPostman(collection);
+
+    expect(result.item).toHaveLength(1);
+    expect(result.item[0].name).toBe('Get Users');
+    expect(result.item[0].request.url.raw).toBe('https://example.com/Get Users');
+  });
+
+  it('should keep yml-format graphql and websocket requests', () => {
+    const collection = {
+      name: 'Yml Collection',
+      items: [makeYmlRequest('Graph', 1, 'graphql-request'), makeYmlRequest('Socket', 2, 'ws-request')]
+    };
+
+    const result = brunoToPostman(collection);
+
+    expect(result.item.map((i) => i.name)).toEqual(['Graph', 'Socket']);
+  });
+
+  it('should still skip grpc requests', () => {
+    const collection = {
+      name: 'Yml Collection',
+      items: [makeYmlRequest('Get Users', 1), makeYmlRequest('Stream', 2, 'grpc-request')]
+    };
+
+    const result = brunoToPostman(collection);
+
+    expect(result.item.map((i) => i.name)).toEqual(['Get Users']);
+  });
+
+  it('should round-trip a yml folder export with its requests intact', () => {
+    // Shape produced by renderer:read-folder-for-export - the folder subtree
+    // handed to the exporter as a collection.
+    const folderCollection = {
+      uid: 'uid-folder-export',
+      name: 'کاربران',
+      pathname: '/collections/کالکشن/کاربران',
+      type: 'collection',
+      root: {},
+      environments: [],
+      items: [
+        makeYmlRequest('Get Users', 1),
+        makeYmlRequest('Create User', 2),
+        makeYmlFolder('Nested', [makeYmlRequest('Get User', 1)])
+      ]
+    };
+
+    const result = brunoToPostman(folderCollection);
+
+    expect(result.info.name).toBe('کاربران');
+    expect(result.item.map((i) => i.name)).toEqual(['Nested', 'Get Users', 'Create User']);
+    expect(result.item[0].item.map((i) => i.name)).toEqual(['Get User']);
+  });
+});

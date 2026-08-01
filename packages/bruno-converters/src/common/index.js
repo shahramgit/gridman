@@ -29,8 +29,15 @@ export const safeStringifyJSON = (obj, indent = false) => {
   }
 };
 
+// `!item.items` was too strict: the YAML (.yml) parser emits `items: []` on
+// REQUESTS as well, so every request in a yml-format collection failed this
+// check and was dropped — Bulk Export and folder-level Export/Share produced a
+// Postman file with no requests at all. Only a NON-EMPTY items array means
+// "not a request".
 export const isItemARequest = (item) => {
-  return item.hasOwnProperty('request') && ['http-request', 'graphql-request'].includes(item.type) && !item.items;
+  return item.hasOwnProperty('request')
+    && ['http-request', 'graphql-request', 'grpc-request', 'ws-request'].includes(item.type)
+    && !(Array.isArray(item.items) && item.items.length);
 };
 
 // a customized version of nanoid without using _ and -
