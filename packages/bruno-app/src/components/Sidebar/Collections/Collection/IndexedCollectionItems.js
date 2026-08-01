@@ -25,6 +25,7 @@ import {
 import { useDispatch, useSelector, useStore } from 'react-redux';
 import { getEmptyImage } from 'react-dnd-html5-backend';
 import { useDrag, useDrop } from 'react-dnd';
+import path from 'utils/common/path';
 import { addTab, focusTab, makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
 import { addResponseExample, collectionIndexNodeActivated, collectionIndexNodesActivated, collectionIndexNodesResequenced } from 'providers/ReduxStore/slices/collections';
 import {
@@ -40,7 +41,7 @@ import {
   showInFolder,
   updateItemsSequences
 } from 'providers/ReduxStore/slices/collections/actions';
-import { clearSidebarReveal, copyRequest, insertTaskIntoQueue, setFocusedSidebarPath } from 'providers/ReduxStore/slices/app';
+import { clearSidebarReveal, copyRequest, insertTaskIntoQueue, revealRequestInSidebar, setFocusedSidebarPath } from 'providers/ReduxStore/slices/app';
 import useKeybinding from 'hooks/useKeybinding';
 import SearchHighlight from '../SearchHighlight';
 import CollectionItemIcon from './CollectionItem/CollectionItemIcon';
@@ -350,7 +351,7 @@ const IndexedRowExamples = ({ collectionUid, item, displayDepth }) => {
   );
 };
 
-const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, expandedNodeUids, filterCollapsedUids, onToggleFolder, multiSelect }) => {
+const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, expandedNodeUids, filterCollapsedUids, onToggleFolder, onItemDroppedIntoFolder, multiSelect }) => {
   const dispatch = useDispatch();
   const store = useStore();
   const { dropdownContainerRef } = useSidebarAccordion();
@@ -1060,17 +1061,37 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
 
   // After an adjacent drop, persist sibling order the way the classic
   // renderer does. Computed purely from index nodes (pathname + seq), so no
-  // hydration is needed; folder moves trigger a full re-index and are skipped.
-  const resequenceAfterAdjacentDrop = async ({ movedPathname }) => {
+  // hydration is needed; folder drops are skipped (see below).
+  const resequenceAfterAdjacentDrop = async ({ movedPathname, sourcePathname }) => {
     const freshIndex = store.getState().collections.collectionIndexes?.[collectionUid];
     if (!freshIndex || !movedPathname) {
       return;
     }
 
+    // The index has already been updated by the time we get here, so the moved
+    // node's parent is the NEW one — the source pathname is the only thing that
+    // still says where it came from.
+    const changedParent = !sourcePathname
+      || normalizeForPathCompare(path.dirname(sourcePathname)) !== normalizeForPathCompare(path.dirname(movedPathname));
+
     const normalizedMoved = normalizeForPathCompare(movedPathname);
     const movedNode = Object.values(freshIndex.nodesByUid || {})
       .find((candidate) => normalizeForPathCompare(candidate.pathname) === normalizedMoved);
     if (!movedNode) {
+      return;
+    }
+
+    // A folder that changed PARENT is left alone. renderer:resequence-items
+    // WRITES a folder.<fmt> for every folder it is handed, creating the file
+    // when it does not exist — and a cross-parent folder drop hands it every
+    // folder sibling in the destination, dropping N brand new files into the
+    // user's git working tree from a single drag. Such a drop used to reach
+    // this point with a blanked index and bail on the lookup above; now that
+    // folder moves take the targeted index update, it has to bail here.
+    // Reordering a folder among its OWN siblings still resequences: that is
+    // what persists the order the user just set, and it is what the classic
+    // renderer always did.
+    if (movedNode.type === 'folder' && changedParent) {
       return;
     }
 
@@ -1150,7 +1171,18 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
         // already in the right directory), but we still need to persist the new
         // sibling order, so resequence whenever we have a resulting pathname.
         if (nextDropType === 'adjacent' && lastMoveResult?.pathname) {
-          await resequenceAfterAdjacentDrop({ movedPathname: lastMoveResult.pathname });
+          const lastDragged = draggedItems[draggedItems.length - 1];
+          await resequenceAfterAdjacentDrop({
+            movedPathname: lastMoveResult.pathname,
+            sourcePathname: lastDragged?.sourcePathname || lastDragged?.pathname
+          });
+        }
+
+        // A drop into a collapsed folder is invisible — the item lands somewhere
+        // the user cannot see, which reads as "the move did not happen". Open the
+        // destination and scroll the moved row into view.
+        if (nextDropType === 'inside' && lastMoveResult?.pathname) {
+          onItemDroppedIntoFolder({ destinationUid: node.uid, movedPathname: lastMoveResult.pathname });
         }
 
         if (draggedItems.length > 1) {
@@ -1500,6 +1532,9 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
   ), [multiSelect, selectItemRangeInVisibleOrder]);
   const virtuosoRef = useRef(null);
   const pendingRevealNodeUidRef = useRef(null);
+  // Normalized pathname of a reveal that must expand ANCESTORS ONLY (set by a
+  // drag-drop; see onItemDroppedIntoFolder).
+  const revealAncestorsOnlyRef = useRef(null);
   // Bounded retries for the bring-block-into-viewport step below, so a
   // zero-height (unmeasured) container can never loop the reveal forever.
   const revealScrollRetriesRef = useRef(0);
@@ -1556,8 +1591,10 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
         parentUid = index.nodesByUid[parentUid]?.parentUid;
       }
       // If the revealed node is itself a folder, expand it too so its contents
-      // are shown (e.g. revealing a folder matched by name in search).
-      if (node.type === 'folder') {
+      // are shown (e.g. revealing a folder matched by name in search). A reveal
+      // that follows a drag-drop opts out: a moved folder must keep whatever
+      // expanded state the user left it in.
+      if (node.type === 'folder' && revealAncestorsOnlyRef.current !== normalizedTarget) {
         next.add(node.uid);
       }
       return next;
@@ -1588,6 +1625,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
       );
       rowElement?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       pendingRevealNodeUidRef.current = null;
+      revealAncestorsOnlyRef.current = null;
       dispatch(clearSidebarReveal());
       return;
     }
@@ -1647,6 +1685,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
       virtuoso.scrollToIndex?.({ index: rowIndex, align: 'center' });
     }
     pendingRevealNodeUidRef.current = null;
+    revealAncestorsOnlyRef.current = null;
     dispatch(clearSidebarReveal());
   }, [visibleRows, filterActive, dispatch, scrollParent]);
 
@@ -1677,6 +1716,38 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
       return next;
     });
   }, []);
+
+  // A drop into a collapsed folder is invisible, so open the DESTINATION and
+  // scroll the moved row into view. Owned by the parent because only it holds
+  // the expansion set and the reveal bookkeeping.
+  const onItemDroppedIntoFolder = useCallback(({ destinationUid, movedPathname }) => {
+    if (!movedPathname) {
+      return;
+    }
+    // While a filter is active the moved item's NEW pathname is not in the match
+    // set, so its row never renders and the reveal can never be consumed —
+    // a forever-pending reveal keeps Collection/index.js re-mounting (and
+    // re-expanding) this collection every time the index grows. Nothing to
+    // scroll to here, so don't arm one.
+    if (filterActiveRef.current) {
+      return;
+    }
+    // Ensure-expanded, never a toggle: the drop awaits several IPC round trips,
+    // so a decision made from the pre-drop render would collapse a destination
+    // that something else opened while we were awaiting.
+    setExpandedNodeUids((current) => (current.has(destinationUid) ? current : new Set(current).add(destinationUid)));
+    const revealPathname = normalizeItemPathname(movedPathname);
+    // The reveal effect expands a revealed FOLDER on purpose (a folder hit in
+    // global search should show its contents). Opt out for the moved item: a
+    // folder dragged into another folder would otherwise pop its whole subtree
+    // open and shove the sidebar around under the cursor.
+    revealAncestorsOnlyRef.current = normalizeForPathCompare(revealPathname);
+    dispatch(revealRequestInSidebar({
+      collectionUid,
+      pathname: revealPathname,
+      ensureVisible: true
+    }));
+  }, [collectionUid, dispatch]);
 
   if (!index) {
     return null;
@@ -1713,6 +1784,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
         expandedNodeUids={expandedNodeUids}
         filterCollapsedUids={filterActive ? filterCollapsedUids : null}
         onToggleFolder={onToggleFolder}
+        onItemDroppedIntoFolder={onItemDroppedIntoFolder}
         multiSelect={rowMultiSelect}
       />
     )

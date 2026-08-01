@@ -51,7 +51,6 @@ import {
   updateRunnerConfiguration as _updateRunnerConfiguration,
   updateActiveConnections,
   collectionAddFileEvent,
-  collectionUnlinkDirectoryEvent,
   saveRequest as _saveRequest,
   saveEnvironment as _saveEnvironment,
   updateEnvironmentColor as _updateEnvironmentColor,
@@ -1585,7 +1584,18 @@ export const moveCollectionItemByPath = ({
     dropType
   });
 
-  if (sourceCollectionUid === targetCollectionUid && shouldRefreshTargetIndex && result?.pathname && !result?.skipped && result?.type !== 'folder') {
+  // Folders move through the same targeted update as requests — the re-index
+  // fallback they used to take blanks the collection until the (queued, single
+  // slot) rebuild reaches it, so on a large workspace a moved sub-folder only
+  // reappeared after restarting the app.
+  //
+  // That fallback also unlinked the source and destination directories from the
+  // hydrated collection.items tree. It no longer runs for folders, so the
+  // collection watcher's unlinkDir/addDir events are now the SOLE reconciler of
+  // items for a folder move — the same contract renameCollectionItemByPath has
+  // relied on since 56c79730f. Until those events land,
+  // findItemInCollectionByPathname can still resolve the pre-move paths.
+  if (sourceCollectionUid === targetCollectionUid && shouldRefreshTargetIndex && result?.pathname && !result?.skipped) {
     dispatch(collectionIndexNodeMoved({
       collectionUid: targetCollectionUid,
       sourcePathname,
@@ -1620,18 +1630,6 @@ export const moveCollectionItemByPath = ({
     // A skipped same-collection move is a no-op on disk (e.g. reordering within
     // the same folder); the renderer resequences the affected siblings, so a
     // full re-index here is wasteful and can transiently duplicate nodes.
-    if (sourceCollectionUid === targetCollectionUid && result?.pathname && !result?.skipped && result?.type === 'folder') {
-      [sourcePathname, result.pathname].forEach((pathname) => {
-        dispatch(collectionUnlinkDirectoryEvent({
-          directory: {
-            meta: {
-              collectionUid: targetCollectionUid,
-              pathname
-            }
-          }
-        }));
-      });
-    }
     await dispatch(refreshCollectionIndex({ collectionUid: targetCollectionUid }));
   }
   if (sourceCollectionUid !== targetCollectionUid && shouldRefreshSourceIndex && (!result?.pathname || result?.skipped)) {

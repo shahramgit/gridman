@@ -5,6 +5,12 @@ jest.mock('nanoid', () => ({
   ...jest.requireActual('nanoid')
 }));
 
+// moveCollectionItemByPath is the only thing pulled from actions here; stub the
+// IPC bridge so the thunk can be driven without a main process.
+jest.mock('utils/common/ipc', () => ({
+  callIpc: jest.fn()
+}));
+
 import reducer, {
   createCollection,
   collectionAddDirectoryEvent,
@@ -17,6 +23,8 @@ import reducer, {
   collectionIndexNodeAdded,
   collectionIndexNodesResequenced
 } from './index';
+import { callIpc } from 'utils/common/ipc';
+import { moveCollectionItemByPath } from './actions';
 
 const COLLECTION_UID = 'col-1';
 
@@ -71,6 +79,66 @@ describe('collection index reducers (uidByPathname invariants)', () => {
     expect(index.nodesByUid.f1.parentUid).toBe('f2');
     expect(index.childrenByParentUid.f2).toContain('f1');
     expect(index.rootChildUids).not.toContain('f1');
+  });
+
+  it('re-paths a nested sub-folder subtree on a same-collection move', () => {
+    // Reducer coverage only — this passes with or without the thunk change in
+    // actions.js; it pins down the contract that change now depends on, namely
+    // that a targeted move carries a multi-level subtree (paths, parent, depth)
+    // and leaves no stale pathname key. The thunk-side regression is covered by
+    // the 'moveCollectionItemByPath' describe below.
+    const NESTED_NODES = [
+      { uid: 'f1', name: 'users', type: 'folder', pathname: '/ws/collections/api/users', parentUid: null, depth: 0, seq: 1 },
+      { uid: 'f3', name: 'archived', type: 'folder', pathname: '/ws/collections/api/users/archived', parentUid: 'f1', depth: 1, seq: 1 },
+      { uid: 'r3', name: 'old-user', type: 'http', pathname: '/ws/collections/api/users/archived/old-user.bru', parentUid: 'f3', depth: 2, seq: 1 },
+      { uid: 'f4', name: 'deep', type: 'folder', pathname: '/ws/collections/api/users/archived/deep', parentUid: 'f3', depth: 2, seq: 2 },
+      { uid: 'r4', name: 'legacy', type: 'http', pathname: '/ws/collections/api/users/archived/deep/legacy.bru', parentUid: 'f4', depth: 3, seq: 1 },
+      { uid: 'f2', name: 'orders', type: 'folder', pathname: '/ws/collections/api/orders', parentUid: null, depth: 0, seq: 2 },
+      { uid: 'f5', name: '2024', type: 'folder', pathname: '/ws/collections/api/orders/2024', parentUid: 'f2', depth: 1, seq: 1 }
+    ];
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+    state = reducer(
+      state,
+      collectionIndexBatchReceived({
+        collectionUid: COLLECTION_UID,
+        loadSessionId: 's1',
+        nodes: NESTED_NODES,
+        totalScanned: NESTED_NODES.length
+      })
+    );
+
+    state = reducer(
+      state,
+      collectionIndexNodeMoved({
+        collectionUid: COLLECTION_UID,
+        sourcePathname: '/ws/collections/api/users/archived',
+        targetPathname: '/ws/collections/api/orders/2024/archived'
+      })
+    );
+    const index = state.collectionIndexes[COLLECTION_UID];
+
+    // every descendant re-pathed under the new parent
+    expect(index.nodesByUid.f3.pathname).toBe('/ws/collections/api/orders/2024/archived');
+    expect(index.nodesByUid.r3.pathname).toBe('/ws/collections/api/orders/2024/archived/old-user.bru');
+    expect(index.nodesByUid.f4.pathname).toBe('/ws/collections/api/orders/2024/archived/deep');
+    expect(index.nodesByUid.r4.pathname).toBe('/ws/collections/api/orders/2024/archived/deep/legacy.bru');
+    expect(index.uidByPathname['/ws/collections/api/orders/2024/archived/deep/legacy.bru']).toBe('r4');
+
+    // no stale key anywhere under the old subtree path
+    const staleKeys = Object.keys(index.uidByPathname)
+      .filter((pathname) => pathname.startsWith('/ws/collections/api/users/archived'));
+    expect(staleKeys).toEqual([]);
+    expect(Object.keys(index.nodesByUid)).toHaveLength(NESTED_NODES.length);
+
+    // re-parented, and the descendants follow the new depth
+    expect(index.nodesByUid.f3.parentUid).toBe('f5');
+    expect(index.childrenByParentUid.f5).toContain('f3');
+    expect(index.childrenByParentUid.f1).not.toContain('f3');
+    expect(index.nodesByUid.f3.depth).toBe(2);
+    expect(index.nodesByUid.r3.depth).toBe(3);
+    expect(index.nodesByUid.f4.depth).toBe(3);
+    expect(index.nodesByUid.r4.depth).toBe(4);
   });
 
   it('removes a subtree and its map keys on remove', () => {
@@ -528,5 +596,72 @@ describe('folder is not emptied when a hydration event re-indexes it under a new
     expect((index.childrenByParentUid[folderUid] || []).slice().sort()).toEqual(['r1', 'r2']);
     expect(index.nodesByUid.r1.parentUid).toBe(folderUid);
     expect(index.nodesByUid.r2.parentUid).toBe(folderUid);
+  });
+});
+
+describe('moveCollectionItemByPath (index refresh strategy)', () => {
+  const runMove = async ({ moveResult, dropType = 'inside' }) => {
+    callIpc.mockResolvedValue(moveResult);
+    const dispatched = [];
+    // A thunk dispatched here is the full re-index fallback; record it as a
+    // function instead of running it (it would fire more IPC).
+    const dispatch = jest.fn((action) => {
+      dispatched.push(action);
+      return typeof action === 'function' ? Promise.resolve() : action;
+    });
+    const getState = () => ({
+      collections: {
+        collections: [{ uid: COLLECTION_UID, pathname: '/ws/collections/api', items: [] }],
+        collectionIndexes: { [COLLECTION_UID]: { status: 'ready', nodesByUid: {}, uidByPathname: {} } }
+      }
+    });
+
+    await moveCollectionItemByPath({
+      sourceCollectionUid: COLLECTION_UID,
+      targetCollectionUid: COLLECTION_UID,
+      sourcePathname: '/ws/collections/api/users/archived',
+      targetPathname: '/ws/collections/api/orders',
+      dropType
+    })(dispatch, getState);
+
+    return dispatched;
+  };
+
+  it('patches the index in place when a FOLDER is moved within a collection', async () => {
+    // Regression: folders used to be excluded from the targeted update and fall
+    // back to refreshCollectionIndex, which blanks the collection until the
+    // queued single-slot rebuild reaches it — on a large workspace the moved
+    // sub-folder only reappeared after an app restart.
+    const dispatched = await runMove({
+      moveResult: { pathname: '/ws/collections/api/orders/archived', type: 'folder' }
+    });
+
+    const moved = dispatched.find((action) => action?.type === collectionIndexNodeMoved.type);
+    expect(moved).toBeDefined();
+    expect(moved.payload).toMatchObject({
+      collectionUid: COLLECTION_UID,
+      sourcePathname: '/ws/collections/api/users/archived',
+      targetPathname: '/ws/collections/api/orders/archived'
+    });
+    // no full re-index fallback (the only thunk this path would dispatch)
+    expect(dispatched.filter((action) => typeof action === 'function')).toHaveLength(0);
+  });
+
+  it('still patches the index in place when a REQUEST is moved within a collection', async () => {
+    const dispatched = await runMove({
+      moveResult: { pathname: '/ws/collections/api/orders/old-user.bru', type: 'http' }
+    });
+
+    expect(dispatched.find((action) => action?.type === collectionIndexNodeMoved.type)).toBeDefined();
+    expect(dispatched.filter((action) => typeof action === 'function')).toHaveLength(0);
+  });
+
+  it('leaves the index alone for a same-folder reorder (skipped move)', async () => {
+    const dispatched = await runMove({
+      moveResult: { pathname: '/ws/collections/api/users/archived', type: 'folder', skipped: true }
+    });
+
+    expect(dispatched.find((action) => action?.type === collectionIndexNodeMoved.type)).toBeUndefined();
+    expect(dispatched.filter((action) => typeof action === 'function')).toHaveLength(0);
   });
 });

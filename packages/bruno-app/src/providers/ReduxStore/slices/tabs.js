@@ -465,9 +465,21 @@ export const tabsSlice = createSlice({
 
         // Rebuild from the raw payload paths so OS-native separators are
         // preserved (normalized forms are used only for comparison).
+        //
+        // The descendant suffix is taken by SEGMENT COUNT, never by slicing at
+        // sourcePathname.length: the match above is on NFC forms, so when the
+        // tab's path and the payload's differ in Unicode form (a Persian name
+        // with U+0622 is 1 code unit in NFC and 2 in NFD) the raw lengths
+        // disagree and the cut lands mid-name — corrupting itemPathname and the
+        // indexed-request tab uid for every open tab under a moved folder.
+        // Normalization never changes the number of segments, so this does not
+        // drift, and the child segments keep their own on-disk form.
+        const separator = targetPathname.includes('\\') ? '\\' : '/';
+        const rawSegments = String(tab.itemPathname).split(/[\\/]/);
+        const suffixSegments = rawSegments.slice(rawSegments.length - (tabPath.split('/').length - source.split('/').length));
         const nextPathname = tabPath === source
           ? targetPathname
-          : `${targetPathname}${tab.itemPathname.slice(sourcePathname.length)}`;
+          : [targetPathname, ...suffixSegments].join(separator);
         const previousUid = tab.uid;
         tab.itemPathname = nextPathname;
         if (typeof tab.uid === 'string' && tab.uid.startsWith('indexed-request:')) {
