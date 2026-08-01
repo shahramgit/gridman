@@ -308,6 +308,9 @@ const getOAuth2AuthorizationCode = (request, codeChallenge, collectionUid) => {
     const { callbackUrl, clientId, authorizationUrl, scope, state, pkce, accessTokenUrl, additionalParameters } = oauth2;
     const useSystemBrowser = preferencesUtil.shouldUseSystemBrowser();
     const effectiveCallbackUrl = callbackUrl && callbackUrl.length ? callbackUrl : BRUNO_OAUTH2_CALLBACK_URL;
+    // Always send a per-flow unguessable state; it is validated when the callback comes
+    // back so a forged authorization code cannot be injected. Upstream PR #8405.
+    const effectiveState = generateState({ userState: state });
 
     const authorizationUrlWithQueryParams = new URL(authorizationUrl);
     authorizationUrlWithQueryParams.searchParams.append('response_type', 'code');
@@ -324,9 +327,8 @@ const getOAuth2AuthorizationCode = (request, codeChallenge, collectionUid) => {
       authorizationUrlWithQueryParams.searchParams.append('code_challenge', codeChallenge);
       authorizationUrlWithQueryParams.searchParams.append('code_challenge_method', 'S256');
     }
-    if (state) {
-      authorizationUrlWithQueryParams.searchParams.append('state', state);
-    }
+    authorizationUrlWithQueryParams.searchParams.append('state', effectiveState);
+
     if (additionalParameters?.authorization?.length) {
       additionalParameters.authorization.forEach((param) => {
         if (param.enabled && param.name) {
@@ -344,6 +346,7 @@ const getOAuth2AuthorizationCode = (request, codeChallenge, collectionUid) => {
         authorizeUrl,
         callbackUrl: effectiveCallbackUrl,
         session: oauth2Store.getSessionIdOfCollection({ collectionUid, url: accessTokenUrl }),
+        expectedState: effectiveState,
         additionalHeaders: getAdditionalHeaders(additionalParameters?.authorization)
       });
       resolve({ authorizationCode, debugInfo });
@@ -707,6 +710,33 @@ const generateCodeVerifier = () => {
   return crypto.randomBytes(22).toString('hex');
 };
 
+// Build the OAuth2 `state` for a single authorization flow. The value is echoed back on
+// the callback and compared there, which is what stops an attacker-supplied `code` from
+// being accepted (CSRF / authorization code injection) — see upstream bruno PR #8405
+// (7e3009ea5). A user-configured state is static and stored in the .bru file (which in a
+// git-backed workspace is committed and readable), so it is not unguessable on its own:
+// a fresh nonce is always appended.
+//
+// The exact value put on the wire is:
+//   no user state configured -> "<32 hex nonce>"
+//   user state configured    -> "<trimmed user state>.<32 hex nonce>"
+//
+// Consequences of the suffix, deliberately accepted:
+//   - a callback page that reads the state must tolerate it, e.g. split on the LAST '.'
+//     to recover the configured value;
+//   - a state that has to round-trip verbatim (a JSON blob the callback page parses, for
+//     instance) is not supported — per-flow randomness is what makes the check work;
+//   - what gets persisted as credentials.state is normalised back to the configured
+//     value, so the nonce is not surfaced to the user or stored (see the implicit grant).
+const generateState = ({ userState } = {}) => {
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const trimmedUserState = typeof userState === 'string' ? userState.trim() : '';
+  if (trimmedUserState.length > 0) {
+    return `${trimmedUserState}.${nonce}`;
+  }
+  return nonce;
+};
+
 const generateCodeChallenge = (codeVerifier) => {
   const hash = crypto.createHash('sha256');
   hash.update(codeVerifier);
@@ -760,6 +790,9 @@ const getOAuth2TokenUsingImplicitGrant = async ({ request, collectionUid, forceF
   } = oauth2;
   const useSystemBrowser = preferencesUtil.shouldUseSystemBrowser();
   const effectiveCallbackUrl = callbackUrl && callbackUrl.length ? callbackUrl : BRUNO_OAUTH2_CALLBACK_URL;
+  // Always send a per-flow unguessable state; it is validated when the callback comes
+  // back so a forged token response cannot be injected. Upstream PR #8405.
+  const effectiveState = generateState({ userState: state });
 
   // Validate required fields
   if (!authorizationUrl) {
@@ -844,9 +877,8 @@ const getOAuth2TokenUsingImplicitGrant = async ({ request, collectionUid, forceF
   if (scope) {
     authorizationUrlWithQueryParams.searchParams.append('scope', scope);
   }
-  if (state) {
-    authorizationUrlWithQueryParams.searchParams.append('state', state);
-  }
+  authorizationUrlWithQueryParams.searchParams.append('state', effectiveState);
+
   if (additionalParameters?.authorization?.length) {
     additionalParameters.authorization.forEach((param) => {
       if (param.enabled && param.name) {
@@ -866,6 +898,7 @@ const getOAuth2TokenUsingImplicitGrant = async ({ request, collectionUid, forceF
       callbackUrl: effectiveCallbackUrl,
       session: oauth2Store.getSessionIdOfCollection({ collectionUid, url: authorizationUrl }),
       grantType: 'implicit',
+      expectedState: effectiveState,
       additionalHeaders: getAdditionalHeaders(additionalParameters?.authorization)
     });
 
@@ -884,7 +917,11 @@ const getOAuth2TokenUsingImplicitGrant = async ({ request, collectionUid, forceF
     const credentials = {
       access_token: implicitTokens.access_token,
       token_type: implicitTokens.token_type || 'Bearer',
-      state: implicitTokens.state || '',
+      // The echoed state has already been checked to equal effectiveState, so it carries
+      // no information beyond the per-flow nonce generateState appended. Persist the
+      // user-configured value instead, so credentials.state stays what it was before the
+      // state fix rather than leaking the nonce into stored credentials.
+      state,
       ...(implicitTokens.expires_in ? { expires_in: parseInt(implicitTokens.expires_in) } : {}),
       created_at: Date.now()
     };
@@ -954,5 +991,6 @@ module.exports = {
   refreshOauth2Token,
   generateCodeVerifier,
   generateCodeChallenge,
+  generateState,
   updateCollectionOauth2Credentials
 };

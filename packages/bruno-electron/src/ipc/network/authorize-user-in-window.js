@@ -1,5 +1,18 @@
 const { BrowserWindow } = require('electron');
 const { preferencesUtil } = require('../../store/preferences');
+const { getParamFromUrl } = require('../../utils/common');
+
+// Compare the state returned on the callback against the one issued when the flow
+// started. This protects against CSRF / authorization code injection: without it any
+// redirect back to the callback URL with a `code` was accepted and swapped for a token.
+// A state is always issued when a flow is started, so a missing expected or returned
+// state means a forged/invalid callback — fail closed.
+// Upstream bruno PR #8405 (7e3009ea5).
+const matchesExpectedState = (url, expectedState) => {
+  if (!url || !expectedState) return false;
+  // Authorization code flow returns state in the query params, implicit flow in the hash.
+  return getParamFromUrl(url, 'state') === expectedState;
+};
 
 const matchesCallbackUrl = (url, callbackUrl) => {
   if (!url) return false;
@@ -11,7 +24,7 @@ const matchesCallbackUrl = (url, callbackUrl) => {
     && (url.searchParams.has('code') || url.hash.length > 1);
 };
 
-const authorizeUserInWindow = ({ authorizeUrl, callbackUrl, session, additionalHeaders = {}, grantType = 'authorization_code' }) => {
+const authorizeUserInWindow = ({ authorizeUrl, callbackUrl, session, additionalHeaders = {}, grantType = 'authorization_code', expectedState = null }) => {
   return new Promise(async (resolve, reject) => {
     let finalUrl = null;
     let debugInfo = {
@@ -202,6 +215,10 @@ const authorizeUserInWindow = ({ authorizeUrl, callbackUrl, session, additionalH
 
       if (finalUrl) {
         try {
+          if (!matchesExpectedState(new URL(finalUrl), expectedState)) {
+            return reject(new Error('OAuth2 state mismatch: the returned state does not match the issued state.'));
+          }
+
           // Handle different grant types differently
           if (grantType === 'implicit') {
             // For implicit flow, tokens are in the URL hash fragment
@@ -247,4 +264,4 @@ const authorizeUserInWindow = ({ authorizeUrl, callbackUrl, session, additionalH
   });
 };
 
-module.exports = { authorizeUserInWindow, matchesCallbackUrl };
+module.exports = { authorizeUserInWindow, matchesCallbackUrl, matchesExpectedState };

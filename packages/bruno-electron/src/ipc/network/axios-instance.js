@@ -327,6 +327,21 @@ function makeAxiosInstance({
           redirectCount++;
 
           const locationHeader = error.response.headers.location;
+
+          // Save cookies before deciding whether the redirect is followable: a bare 302 from an
+          // enterprise proxy still carries the Set-Cookie that the next attempt needs, and the
+          // `followRedirects === false` branch above already saves them before rejecting.
+          if (preferencesUtil.shouldStoreCookies()) {
+            saveCookies(error.config.url, error.response.headers);
+          }
+
+          // A 3xx without a Location header is not followable — enterprise proxies return bare
+          // 302s on auth failure. Without this we'd build a redirect config with `url: undefined`
+          // and fire a bogus request. Upstream fix: usebruno/bruno#7725 (d4b886006).
+          if (!locationHeader) {
+            return Promise.reject(error);
+          }
+
           let redirectUrl = locationHeader;
 
           // Handle relative URLs by resolving them against the original request URL
@@ -339,10 +354,6 @@ function makeAxiosInstance({
               type: 'info',
               message: `Resolving relative redirect URL: ${locationHeader} → ${redirectUrl}`
             });
-          }
-
-          if (preferencesUtil.shouldStoreCookies()) {
-            saveCookies(error.config.url, error.response.headers);
           }
 
           // Create a new request config for the redirect

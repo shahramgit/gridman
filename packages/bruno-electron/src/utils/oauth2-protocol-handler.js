@@ -1,6 +1,8 @@
+const { getParamFromUrl } = require('./common');
+
 let oauth2AuthorizationRequest = null;
 
-const registerOauth2AuthorizationRequest = (resolve, reject, debugInfo = null) => {
+const registerOauth2AuthorizationRequest = (resolve, reject, debugInfo = null, expectedState = null) => {
   // Cancel any existing pending request
   if (oauth2AuthorizationRequest) {
     oauth2AuthorizationRequest.reject(new Error('Authorization cancelled: new request started'));
@@ -10,6 +12,7 @@ const registerOauth2AuthorizationRequest = (resolve, reject, debugInfo = null) =
     resolve,
     reject,
     debugInfo,
+    expectedState,
     timestamp: Date.now()
   };
 };
@@ -44,8 +47,20 @@ const handleOauth2ProtocolUrl = (url) => {
   try {
     const urlObj = new URL(url);
 
-    // Add callback URL details to debugInfo if available
-    if (oauth2AuthorizationRequest?.debugInfo) {
+    // Validate the state parameter to protect against CSRF / authorization code
+    // injection: without this, any `bruno://` deeplink carrying a `code` was accepted
+    // and swapped for a token. A state is always issued when a flow is started, so a
+    // missing expected or returned state means a forged callback — fail closed.
+    // Upstream bruno PR #8405 (7e3009ea5).
+    const expectedState = oauth2AuthorizationRequest?.expectedState;
+    const returnedState = getParamFromUrl(urlObj, 'state');
+    const stateMatches = Boolean(expectedState) && returnedState === expectedState;
+
+    // Add callback URL details to debugInfo if available. Upstream pushes this before
+    // validating the state, which lets an unsolicited deeplink write an attacker
+    // controlled string into the timeline the legitimate request renders; the check
+    // needs nothing but urlObj, so the push is gated on it here.
+    if (stateMatches && oauth2AuthorizationRequest?.debugInfo) {
       const callbackRequest = {
         request: {
           url: url,
@@ -67,16 +82,26 @@ const handleOauth2ProtocolUrl = (url) => {
     }
 
     // Check for errors in query params (authorization code flow) or hash (implicit flow)
-    const error = urlObj.searchParams.get('error') || (urlObj.hash ? new URLSearchParams(urlObj.hash.substring(1)).get('error') : null);
-    const errorDescription = urlObj.searchParams.get('error_description') || (urlObj.hash ? new URLSearchParams(urlObj.hash.substring(1)).get('error_description') : null);
+    const error = getParamFromUrl(urlObj, 'error');
+    const errorDescription = getParamFromUrl(urlObj, 'error_description');
 
     if (error) {
+      // Provider errors keep precedence over the state check so a user who clicks
+      // "Deny" sees `access_denied` rather than a confusing state mismatch. This path
+      // only ever rejects, so it can never hand back an injected code or token.
       const errorData = {
         message: 'Authorization Failed!',
         error,
         errorDescription
       };
       rejectOauth2AuthorizationRequest(new Error(JSON.stringify(errorData)));
+      return;
+    }
+
+    if (!stateMatches) {
+      rejectOauth2AuthorizationRequest(
+        new Error('OAuth2 state mismatch: the returned state does not match the issued state.')
+      );
       return;
     }
 

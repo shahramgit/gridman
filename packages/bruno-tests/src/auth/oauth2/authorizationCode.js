@@ -25,7 +25,7 @@ const generateCodeChallenge = (codeVerifier) => {
 };
 
 router.get('/authorize', (req, res) => {
-  const { response_type, client_id, redirect_uri, code_challenge } = req.query;
+  const { response_type, client_id, redirect_uri, code_challenge, state } = req.query;
   console.log('authorization code authorize', req.query);
   if (response_type !== 'code') {
     return res.status(401).json({ error: 'Invalid Response type, expected "code"' });
@@ -49,7 +49,11 @@ router.get('/authorize', (req, res) => {
     code_challenge
   });
 
-  const redirectUrl = `${redirect_uri}?code=${authorization_code}`;
+  // The app validates that the callback echoes the `state` it issued (upstream bruno PR
+  // #8405, 7e3009ea5), so this mock IdP has to echo it back like a real one — RFC 6749
+  // section 4.1.2 requires it whenever the request carried a state.
+  const stateParam = state === undefined ? '' : `&state=${encodeURIComponent(state)}`;
+  const redirectUrl = `${redirect_uri}?code=${authorization_code}${stateParam}`;
 
   try {
     // validating redirect URL

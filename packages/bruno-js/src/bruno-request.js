@@ -1,5 +1,31 @@
 const HeaderList = require('./header-list');
 
+/**
+ * A `:segment` may only be substituted when the matching path param row is enabled AND carries a
+ * value. Merely being truthy is not enough (a disabled row substituted, a `0` did not), which made
+ * req.getPath() disagree with the URL actually sent.
+ * Upstream fix: usebruno/bruno#8157 (07c734866, BRU-3246).
+ *
+ * Same rule as interpolate-vars.js in bruno-electron and bruno-cli — keep the three in sync.
+ */
+const hasResolvablePathParamValue = (pathParam) => {
+  if (!pathParam || pathParam.enabled === false) {
+    return false;
+  }
+
+  const { value } = pathParam;
+
+  if (value === null || value === undefined) {
+    return false;
+  }
+
+  if (typeof value === 'string' && value.trim() === '') {
+    return false;
+  }
+
+  return true;
+};
+
 class BrunoRequest {
   /**
    * The following properties are available as shorthand:
@@ -68,7 +94,7 @@ class BrunoRequest {
             if (segment.startsWith(':')) {
               const paramName = segment.slice(1);
               const pathParam = this.req.pathParams.find((param) => param.name === paramName);
-              if (pathParam && pathParam.value) {
+              if (hasResolvablePathParamValue(pathParam)) {
                 return pathParam.value;
               }
             }

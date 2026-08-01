@@ -12,6 +12,30 @@ const hasLength = (str) => {
   return str.length > 0;
 };
 
+/**
+ * A `:segment` may only be substituted when the matching path param row is enabled AND carries a
+ * value. Merely existing is not enough — a disabled or blank row used to collapse `/anything/:id`
+ * into `/anything/`, silently hitting a different endpoint.
+ * Upstream fix: usebruno/bruno#8157 (07c734866, BRU-3246).
+ */
+const hasResolvablePathParamValue = (pathParam) => {
+  if (!pathParam || pathParam.enabled === false) {
+    return false;
+  }
+
+  const { value } = pathParam;
+
+  if (value === null || value === undefined) {
+    return false;
+  }
+
+  if (typeof value === 'string' && !hasLength(value)) {
+    return false;
+  }
+
+  return true;
+};
+
 export const parsePathParams = (url) => {
   let uri = url.slice();
 
@@ -119,7 +143,7 @@ export const interpolateUrlPathParams = (url, params, variables = {}, options = 
         if (segment.startsWith(':')) {
           const name = segment.slice(1);
           const pathParam = params.find((p) => p?.name === name && p?.type === 'path');
-          return pathParam ? pathParam.value : segment;
+          return hasResolvablePathParamValue(pathParam) ? pathParam.value : segment;
         }
 
         // for OData-style parameters (parameters inside parentheses)
@@ -142,7 +166,7 @@ export const interpolateUrlPathParams = (url, params, variables = {}, options = 
           if (!name) continue;
 
           const pathParam = params.find((p) => p?.name === name && p?.type === 'path');
-          if (pathParam) {
+          if (hasResolvablePathParamValue(pathParam)) {
             result = result.replace(':' + match[1], pathParam.value);
           }
         }

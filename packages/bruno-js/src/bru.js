@@ -220,7 +220,15 @@ class Bru {
   }
 
   deleteEnvVar(key) {
+    // `__name__` is internal bookkeeping, not a user variable — deleting it would wipe the
+    // environment's name. Upstream fix: usebruno/bruno#8315 (87f74262b).
+    if (key === '__name__') return;
     delete this.envVariables[key];
+    // A var set with { persist: true } also lives in persistentEnvVariables, and everything left
+    // in that map is written back to the environment file after the run
+    // (mergeAndPersistEnvironment). Leaving the name behind makes the delete a no-op on disk: the
+    // variable reappears on the next open.
+    delete this.persistentEnvVariables[key];
   }
 
   getAllEnvVars() {
@@ -230,14 +238,18 @@ class Bru {
   }
 
   deleteAllEnvVars() {
-    const envName = this.envVariables.__name__;
-    for (let key in this.envVariables) {
-      if (this.envVariables.hasOwnProperty(key)) {
-        delete this.envVariables[key];
-      }
+    // Iterate via Object.keys (own enumerable) and skip `__name__` inline: a user script that sets
+    // a variable literally named `hasOwnProperty` shadows Object.prototype.hasOwnProperty and made
+    // the old `for...in` loop throw. Upstream fix: usebruno/bruno#8315 (87f74262b).
+    for (const key of Object.keys(this.envVariables)) {
+      if (key === '__name__') continue;
+      delete this.envVariables[key];
     }
-    if (envName !== undefined) {
-      this.envVariables.__name__ = envName;
+    // Same reason as deleteEnvVar: anything still listed as persistent is written back to the
+    // environment file, so a "delete all" that skips this map deletes nothing on disk. Keys are
+    // deleted in place because the runtimes read this object by reference after execution.
+    for (const key of Object.keys(this.persistentEnvVariables)) {
+      delete this.persistentEnvVariables[key];
     }
   }
 

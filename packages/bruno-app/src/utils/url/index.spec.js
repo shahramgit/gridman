@@ -412,6 +412,65 @@ describe('Url Utils - interpolateUrl, interpolateUrlPathParams', () => {
 
     expect(result).toEqual(expectedUrl);
   });
+
+  // A `:segment` must only be substituted when the matching row is enabled AND has a value.
+  // Substituting on mere existence collapsed `/anything/:id` to `/anything/`, which silently
+  // hits a different endpoint. Upstream fix: usebruno/bruno#8157 (07c734866, BRU-3246).
+  it('should keep colon path segments when the path param has an empty value', () => {
+    const url = 'https://httpbin.org/anything/:test-segment';
+    const params = [{ name: 'test-segment', type: 'path', enabled: true, value: '' }];
+
+    const result = interpolateUrlPathParams(url, params);
+
+    expect(result).toEqual('https://httpbin.org/anything/:test-segment');
+  });
+
+  it('should keep colon path segments when the path param value is whitespace only', () => {
+    const url = 'https://httpbin.org/anything/:test-segment';
+    const params = [{ name: 'test-segment', type: 'path', enabled: true, value: '   ' }];
+
+    const result = interpolateUrlPathParams(url, params);
+
+    expect(result).toEqual('https://httpbin.org/anything/:test-segment');
+  });
+
+  it('should keep colon path segments when the path param is disabled', () => {
+    const url = 'https://httpbin.org/anything/:test-segment';
+    const params = [{ name: 'test-segment', type: 'path', enabled: false, value: 'replaced' }];
+
+    const result = interpolateUrlPathParams(url, params);
+
+    expect(result).toEqual('https://httpbin.org/anything/:test-segment');
+  });
+
+  it('should keep colon path segments when no path param is defined', () => {
+    const url = 'https://httpbin.org/anything/:analyze-text';
+
+    const result = interpolateUrlPathParams(url, []);
+
+    expect(result).toEqual('https://httpbin.org/anything/:analyze-text');
+  });
+
+  it('should keep odata style params when the matching row is disabled or blank', () => {
+    const url = 'http://example.com/Category(\':CategoryID\')/Item(:ItemId)';
+    const params = [
+      { name: 'CategoryID', type: 'path', enabled: false, value: 'foobar' },
+      { name: 'ItemId', type: 'path', enabled: true, value: '' }
+    ];
+
+    const result = interpolateUrlPathParams(url, params);
+
+    expect(result).toEqual('http://example.com/Category(\':CategoryID\')/Item(:ItemId)');
+  });
+
+  it('should still substitute a falsy but meaningful value like 0', () => {
+    const url = 'http://example.com/item/:id';
+    const params = [{ name: 'id', type: 'path', enabled: true, value: 0 }];
+
+    const result = interpolateUrlPathParams(url, params);
+
+    expect(result).toEqual('http://example.com/item/0');
+  });
 });
 
 describe('Url Utils - interpolateUrlPathParams with { raw: true }', () => {

@@ -150,6 +150,17 @@ const parseDataFromRequest = (request) => {
   return parseDataFromResponse(requestCopy);
 };
 
+// Read a param from the query string, falling back to the URL hash fragment.
+// OAuth2 implicit flow returns its values in the hash rather than in query params,
+// so callback handling has to look in both places.
+// Ported from upstream bruno PR #8405 (7e3009ea5).
+const getParamFromUrl = (urlObj, param) => {
+  return (
+    urlObj.searchParams.get(param)
+    || (urlObj.hash ? new URLSearchParams(urlObj.hash.substring(1)).get(param) : null)
+  );
+};
+
 module.exports = {
   uuid,
   stringifyJson,
@@ -160,5 +171,6 @@ module.exports = {
   generateUidBasedOnHash,
   flattenDataForDotNotation,
   parseDataFromResponse,
-  parseDataFromRequest
+  parseDataFromRequest,
+  getParamFromUrl
 };

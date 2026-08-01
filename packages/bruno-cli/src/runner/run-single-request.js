@@ -339,12 +339,17 @@ const runSingleRequest = async function (
       }
     }
 
-    if (request.settings?.encodeUrl) {
-      request.url = encodeUrl(request.url);
-    }
-
+    // The scheme must be prepended before encoding — a path-encoding encodeUrl mis-parses a
+    // schemeless `host:port` authority as a path segment and percent-encodes the port colon.
+    // Upstream fix: usebruno/bruno#8756 (fd83b0eeb). Our encodeUrl only re-encodes the query
+    // string today, so this reorder is currently a no-op — it is here so the bug cannot come back
+    // if bruno-common ever adopts upstream's path-encoding encoder.
     if (!hasExplicitScheme(request.url)) {
       request.url = `http://${request.url}`;
+    }
+
+    if (request.settings?.encodeUrl) {
+      request.url = encodeUrl(request.url);
     }
 
     const insecure = get(options, 'insecure', false);

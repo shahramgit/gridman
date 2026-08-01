@@ -73,6 +73,92 @@ const hasStreamHeaders = (headers) => {
   return headerSplit.indexOf('text/event-stream') > -1;
 };
 
+// SSE chunks are retained so post-response scripts and tests can read res.getBody()
+// (upstream: usebruno/bruno#8212, 79504ed72). Upstream keeps every chunk for the life of the
+// stream with no ceiling — a long-lived event stream would grow the buffer until the process
+// OOMs. Collection therefore stops at the first of these two limits. The overflow is dropped AND
+// surfaced — a console warning the moment the cap is hit, `truncated` on the stream-end event, and
+// `bodyTruncated` on the response object (post-response scripts and tests read it as
+// `res.res.bodyTruncated`; BrunoResponse has no accessor for it yet). A body that is quietly
+// shorter than the one the server sent is worse than no body at all.
+// 10 MB mirrors the "large response" threshold the response pane already warns at; the chunk cap
+// bounds per-Buffer object overhead when a server flushes many tiny events.
+const MAX_SSE_BODY_BYTES = 10 * 1024 * 1024;
+const MAX_SSE_BODY_CHUNKS = 100000;
+
+// The collector must never travel on the response object: send-http-request's return value is
+// structured-cloned to the renderer, and bru.runRequest / the runner hand the very same object to
+// user scripts. Keying it off the stream means every consumer can find it and no return path has
+// to remember to strip it.
+const streamChunkCollectors = new WeakMap();
+
+const createStreamChunkCollector = ({ onTruncate } = {}) => ({
+  chunks: [],
+  bytes: 0,
+  truncated: false,
+  released: false,
+  onTruncate: onTruncate || null
+});
+
+const describeStreamCapLimit = (collector) =>
+  (collector.bytes >= MAX_SSE_BODY_BYTES
+    ? `${MAX_SSE_BODY_BYTES} byte`
+    : `${MAX_SSE_BODY_CHUNKS} chunk`);
+
+const markStreamChunkCollectorTruncated = (collector) => {
+  collector.truncated = true;
+
+  // Fire once, the moment the cap is hit. A 1/sec monitoring stream reaches the chunk cap after
+  // ~28h and may stay open for days after that; a notice that only lands on close is a notice
+  // nobody ever sees.
+  const { onTruncate } = collector;
+  collector.onTruncate = null;
+  onTruncate?.(collector);
+};
+
+const collectStreamChunk = (collector, chunk) => {
+  if (!collector || collector.truncated || collector.released) {
+    return;
+  }
+
+  const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+
+  if (collector.chunks.length >= MAX_SSE_BODY_CHUNKS) {
+    markStreamChunkCollectorTruncated(collector);
+    return;
+  }
+
+  const remaining = MAX_SSE_BODY_BYTES - collector.bytes;
+  if (buffer.length > remaining) {
+    // Keep the prefix that still fits, then stop collecting entirely.
+    if (remaining > 0) {
+      collector.chunks.push(buffer.subarray(0, remaining));
+      collector.bytes += remaining;
+    }
+    markStreamChunkCollectorTruncated(collector);
+    return;
+  }
+
+  collector.chunks.push(buffer);
+  collector.bytes += buffer.length;
+};
+
+const buildResponseBodyFromStreamChunks = (collector, headers, disableParsingResponseJson) => {
+  const dataBuffer = Buffer.concat(collector?.chunks || []);
+
+  // Release the per-chunk buffers as soon as they are concatenated. Keeping chunks + concatenated
+  // buffer + decoded string alive at the same time put peak usage at ~3x the cap on the main
+  // process, which is the process whose OOM this whole path exists to avoid. It also stops a
+  // stray post-close 'data' event from regrowing the array.
+  if (collector) {
+    collector.chunks = [];
+    collector.released = true;
+  }
+
+  const { data } = parseDataFromResponse({ data: dataBuffer, headers }, disableParsingResponseJson);
+  return { data, dataBuffer };
+};
+
 const promisifyStream = async (stream, abortController, closeOnFirst) => {
   const chunks = [];
 
@@ -586,6 +672,18 @@ const registerNetworkIpc = (mainWindow) => {
     // interpolate variables inside request
     interpolateVars(request, envVars, runtimeVariables, processEnvVars, promptVariables);
 
+    // The scheme must be present before encoding: a path-encoding encodeUrl treats a schemeless
+    // `host:port` authority as a path segment and percent-encodes the port colon (localhost:6000 →
+    // localhost%3A6000), which then resolves to a bogus host once configureRequest prepends http://.
+    // Upstream fix: usebruno/bruno#8756 (fd83b0eeb). Our encodeUrl only re-encodes the query
+    // string today, so this reorder is currently a no-op — it is here so the bug cannot come back
+    // if bruno-common ever adopts upstream's path-encoding encoder.
+    // The `{{` guard mirrors configureRequest below: an unresolved template must stay schemeless so
+    // it fails fast with "Invalid URL" instead of being sent as a host named `%7B%7Bhost%7D%7D`.
+    if (!request.url.startsWith('{{') && !hasExplicitScheme(request.url)) {
+      request.url = `http://${request.url}`;
+    }
+
     if (request.settings?.encodeUrl) {
       request.url = encodeUrl(request.url);
     }
@@ -1028,7 +1126,7 @@ const registerNetworkIpc = (mainWindow) => {
         });
       }
 
-      let response, responseTime, axiosDataStream;
+      let response, responseTime, axiosDataStream, sseBody;
       try {
         /** @type {import('axios').AxiosResponse} */
         response = await axiosInstance(request);
@@ -1082,6 +1180,16 @@ const registerNetworkIpc = (mainWindow) => {
       // Continue with the rest of the request lifecycle - post response vars, script, assertions, tests
       if (isResponseStream) {
         axiosDataStream = response.data;
+        sseBody = createStreamChunkCollector({
+          onTruncate: (collector) => {
+            onConsoleLog('warn', [
+              `[${item.name || request.url}] Stopped capturing the event-stream body at the `
+              + `${describeStreamCapLimit(collector)} limit. The stream itself keeps running, but `
+              + 'res.getBody() in post-response scripts, tests and assertions will see a truncated body.'
+            ]);
+          }
+        });
+        streamChunkCollectors.set(axiosDataStream, sseBody);
       }
 
       const { data, dataBuffer } = isResponseStream
@@ -1258,7 +1366,31 @@ const registerNetworkIpc = (mainWindow) => {
         }
       };
       if (isResponseStream) {
-        axiosDataStream.on('close', () => runPostScripts().then());
+        axiosDataStream.on('close', () => {
+          // Rebuild the body from the collected chunks so res.getBody() is populated for
+          // post-response scripts and tests. Upstream fix: usebruno/bruno#8212 (79504ed72).
+          // Deferred by one event-loop turn: the concat + decode + JSON.parse of up to
+          // MAX_SSE_BODY_BYTES is synchronous, and running it inside the 'close' emit would stall
+          // the main process — including the stream-end IPC the renderer is waiting on.
+          setImmediate(() => {
+            // Scripts read a shortened body when a cap was hit; let them tell the difference.
+            response.bodyTruncated = !!sseBody?.truncated;
+            try {
+              const { data, dataBuffer } = buildResponseBodyFromStreamChunks(
+                sseBody,
+                response.headers,
+                request.__brunoDisableParsingResponseJson
+              );
+              response.data = data;
+              response.dataBuffer = dataBuffer;
+            } catch (error) {
+              console.error('Error rebuilding response body from SSE chunks:', error);
+            }
+            runPostScripts().catch((error) => {
+              console.error('Error running post-response scripts for SSE stream:', error);
+            });
+          });
+        });
       } else {
         await runPostScripts();
       }
@@ -1344,9 +1476,13 @@ const registerNetworkIpc = (mainWindow) => {
     const response = await runRequest({ item, collection, envVars, processEnvVars, runtimeVariables, runInBackground: false });
     if (response.stream) {
       const stream = response.stream;
+      // Lives in the main process only, keyed off the stream — see streamChunkCollectors.
+      const sseBody = streamChunkCollectors.get(stream) || null;
       response.stream = { running: response.status >= 200 && response.status < 300 };
 
       stream.on('data', (newData) => {
+        // Retain the raw chunk (bounded) so runRequest can rebuild the full body on stream close.
+        collectStreamChunk(sseBody, newData);
         seq += 1;
 
         const parsed = parseDataFromResponse({ data: newData, headers: {} });
@@ -1367,7 +1503,9 @@ const registerNetworkIpc = (mainWindow) => {
           collectionUid,
           itemUid: item.uid,
           seq: seq + 1,
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          // The live stream the renderer rendered is complete; the body handed to scripts is not.
+          truncated: !!sseBody?.truncated
         });
 
         deleteCancelToken(response.cancelTokenUid);
@@ -2263,3 +2401,8 @@ module.exports.configureRequest = configureRequest;
 module.exports.getCertsAndProxyConfig = getCertsAndProxyConfig;
 module.exports.fetchGqlSchemaHandler = fetchGqlSchemaHandler;
 module.exports.executeRequestOnFailHandler = executeRequestOnFailHandler;
+module.exports.createStreamChunkCollector = createStreamChunkCollector;
+module.exports.collectStreamChunk = collectStreamChunk;
+module.exports.buildResponseBodyFromStreamChunks = buildResponseBodyFromStreamChunks;
+module.exports.MAX_SSE_BODY_BYTES = MAX_SSE_BODY_BYTES;
+module.exports.MAX_SSE_BODY_CHUNKS = MAX_SSE_BODY_CHUNKS;

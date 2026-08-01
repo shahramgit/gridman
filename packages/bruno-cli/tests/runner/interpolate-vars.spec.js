@@ -100,3 +100,76 @@ describe('interpolate-vars: api key header name sidecar', () => {
     expect(request.apiKeyHeaderName).toEqual('X-API-Key');
   });
 });
+
+// The GUI (bruno-electron) and `bru run` must build the same URL from the same request. A
+// `:segment` is only substituted when the matching path param row is enabled AND carries a value;
+// on mere existence a disabled or blank row collapsed `/anything/:id` to `/anything/`, so the CLI
+// silently hit a different endpoint than the app.
+// Upstream fix: usebruno/bruno#8157 (07c734866, BRU-3246). Mirrors the cases in
+// packages/bruno-electron/tests/network/interpolate-vars.spec.js.
+describe('interpolate-vars: path params must be enabled and non-blank', () => {
+  it('substitutes an enabled path param with a value', () => {
+    const request = {
+      method: 'GET',
+      url: 'https://httpbin.org/anything/:test-segment',
+      pathParams: [{ type: 'path', name: 'test-segment', value: 'foobar' }]
+    };
+
+    expect(interpolateVars(request, null, null, null).url).toBe('https://httpbin.org/anything/foobar');
+  });
+
+  it('keeps the colon segment when the path param value is empty', () => {
+    const request = {
+      method: 'POST',
+      url: 'https://httpbin.org/anything/:test-segment',
+      pathParams: [{ type: 'path', name: 'test-segment', value: '' }]
+    };
+
+    expect(interpolateVars(request, null, null, null).url).toBe('https://httpbin.org/anything/:test-segment');
+  });
+
+  it('keeps the colon segment when the path param value is whitespace only', () => {
+    const request = {
+      method: 'GET',
+      url: 'https://httpbin.org/anything/:test-segment',
+      pathParams: [{ type: 'path', name: 'test-segment', value: '   ' }]
+    };
+
+    expect(interpolateVars(request, null, null, null).url).toBe('https://httpbin.org/anything/:test-segment');
+  });
+
+  it('keeps the colon segment when the path param row is disabled', () => {
+    const request = {
+      method: 'POST',
+      url: 'https://httpbin.org/anything/:test-segment',
+      pathParams: [{ type: 'path', name: 'test-segment', value: 'replaced', enabled: false }]
+    };
+
+    expect(interpolateVars(request, null, null, null).url).toBe('https://httpbin.org/anything/:test-segment');
+  });
+
+  it('keeps odata style params when the matching row is disabled or blank', () => {
+    const request = {
+      method: 'GET',
+      url: 'http://example.com/Category(\':CategoryID\')/Item(:ItemId)',
+      pathParams: [
+        { type: 'path', name: 'CategoryID', value: 'foobar', enabled: false },
+        { type: 'path', name: 'ItemId', value: '' }
+      ]
+    };
+
+    expect(interpolateVars(request, null, null, null).url).toBe(
+      'http://example.com/Category(\':CategoryID\')/Item(:ItemId)'
+    );
+  });
+
+  it('still substitutes a falsy but meaningful value like 0', () => {
+    const request = {
+      method: 'GET',
+      url: 'http://example.com/item/:id',
+      pathParams: [{ type: 'path', name: 'id', value: 0 }]
+    };
+
+    expect(interpolateVars(request, null, null, null).url).toBe('http://example.com/item/0');
+  });
+});
