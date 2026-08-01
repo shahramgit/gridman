@@ -12,7 +12,12 @@ bun.lock
 
 # testing
 coverage
-postman
+# Root-only: a bare `postman` matches EVERY directory of that name at any depth,
+# which shadows three tracked source/test directories (bruno-converters/src,
+# bruno-converters/tests, tests/import). Their files stay tracked, but the
+# pre-commit hook's own `git add` refuses the path, so any commit touching them
+# fails until it is bypassed.
+/postman
 
 # production
 build

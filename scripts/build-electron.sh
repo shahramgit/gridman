@@ -9,6 +9,11 @@ rm -rf packages/bruno-electron/web
 # Create a new web directory
 mkdir packages/bruno-electron/web
 
+# Workspace packages resolve to their gitignored dist/, and nothing here builds
+# them — a fix edited in bruno-common/converters/filestore/requests would ship as
+# whatever dist happened to be on the build machine. Refuse to build blind.
+node scripts/check-package-builds.js --strict || exit 1
+
 # Build the renderer that Electron loads in production.
 npm run build:web
 

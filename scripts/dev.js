@@ -34,6 +34,15 @@ const portRegex = /Local:\s+http:\/\/localhost:(\d+)/;
 
 console.log(`\n${colors.bright}${colors.yellow}🚀 Starting Gridman development environment...${colors.reset}\n`);
 
+// Nothing in the dev flow rebuilds the workspace packages, and they resolve to a
+// gitignored dist — so an edit in bruno-common/converters/filestore/requests can
+// look like it did nothing at all. Warn, never block.
+try {
+  require('./check-package-builds.js');
+} catch (_err) {
+  // the check is a convenience; never let it stop the dev server
+}
+
 // Start the rsbuild dev server
 const webProcess = spawn('npm', ['run', 'dev'], {
   cwd: webDir,

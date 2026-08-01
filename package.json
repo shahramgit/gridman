@@ -56,6 +56,7 @@
     "setup": "node ./scripts/setup.js",
     "watch:converters": "npm run watch --workspace=packages/bruno-converters",
     "dev": "node ./scripts/dev.js",
+    "check:builds": "node scripts/check-package-builds.js",
     "watch": "npm run dev:watch",
     "dev:watch": "node ./scripts/dev-hot-reload.js",
     "dev:web": "npm run dev --workspace=packages/bruno-app",
@@ -95,7 +96,7 @@
   "overrides": {
     "axios": "1.16.0",
     "rollup": "3.30.0",
-    "pbkdf2":"3.1.5",
+    "pbkdf2": "3.1.5",
     "electron-store": {
       "conf": {
         "json-schema-typed": "8.0.1"
