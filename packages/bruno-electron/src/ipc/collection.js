@@ -48,6 +48,7 @@ const {
   getCollectionStats,
   sizeInMB,
   safeWriteFileSync,
+  movePathWithRetry,
   copyPath,
   removePath,
   getPaths,
@@ -72,7 +73,7 @@ const CollectionSecurityStore = require('../store/collection-security');
 const UiStateSnapshotStore = require('../store/ui-state-snapshot');
 const interpolateVars = require('./network/interpolate-vars');
 const { interpolateString } = require('./network/interpolate-string');
-const { getEnvVars, getTreePathFromCollectionToItem, mergeVars, parseBruFileMeta, hydrateRequestWithUuid, transformRequestToSaveToFilesystem } = require('../utils/collection');
+const { getEnvVars, getTreePathFromCollectionToItem, mergeVars, parseBruFileMeta, parseFileMeta, hydrateRequestWithUuid, transformRequestToSaveToFilesystem } = require('../utils/collection');
 const { getProcessEnvVars } = require('../store/process-env');
 const { getOAuth2TokenUsingAuthorizationCode, getOAuth2TokenUsingClientCredentials, getOAuth2TokenUsingPasswordCredentials, getOAuth2TokenUsingImplicitGrant, refreshOauth2Token } = require('../utils/oauth2');
 const { getCertsAndProxyConfig } = require('./network/cert-utils');
@@ -106,6 +107,10 @@ const MAX_COLLECTION_SIZE_IN_MB = 20;
 const MAX_SINGLE_FILE_SIZE_IN_COLLECTION_IN_MB = 5;
 const MAX_COLLECTION_FILES_COUNT = 100;
 const INDEXED_COLLECTION_WATCHER_ATTACH_DELAY_MS = 3000;
+
+// The watcher's partial-parse threshold. A sidebar click must classify a file
+// exactly like the watcher's own scan does, so both read the same constant.
+const { MAX_FILE_SIZE } = collectionWatcher;
 
 const shouldUseIndexedCollectionLoad = ({ size, filesCount, maxFileSize }) => (
   (size > MAX_COLLECTION_SIZE_IN_MB)
@@ -262,28 +267,6 @@ const createFolderByPath = async ({ parentPathname, collectionPathname, folderNa
   return targetPathname;
 };
 
-// Windows can throw EPERM/EBUSY on rename when a watcher or indexer holds a
-// handle on the directory (same issue worked around in renderer:rename-item).
-// Fall back to copy + remove in that case.
-const movePathWithWindowsFallback = async (sourcePathname, targetPathname) => {
-  // Use extended-length paths on Windows so long/non-ASCII nested paths
-  // (which exceed MAX_PATH) don't fail with ENOENT.
-  const source = winLongPath(sourcePathname);
-  const target = winLongPath(targetPathname);
-  try {
-    await fsExtra.move(source, target, { overwrite: false });
-  } catch (error) {
-    const isTransientWindowsError = process.platform === 'win32'
-      && ['EPERM', 'EBUSY', 'EACCES'].includes(error?.code);
-    if (!isTransientWindowsError) {
-      throw error;
-    }
-
-    await fsExtra.copy(source, target, { overwrite: false, errorOnExist: true });
-    await fsExtra.remove(source);
-  }
-};
-
 // Disk-level paste/move helpers (extracted for unit testing).
 const {
   resolveUniqueTargetPathname,
@@ -341,7 +324,7 @@ const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollection
     await writeFile(targetPathname, finalContent);
     await removePath(sourcePathname);
   } else {
-    await movePathWithWindowsFallback(sourcePathname, targetPathname);
+    await movePathWithRetry(sourcePathname, targetPathname);
   }
 
   const pathnamesAfter = pathnamesBefore?.map((p) => p?.replace(sourcePathname, targetPathname));
@@ -630,6 +613,10 @@ const matchWorkspaceSearchEntry = (entry, job) => {
   }
 
   const { field } = match;
+  // A file past the index cap was only indexed up to it, so a miss inside that
+  // file is not proof there is nothing to find. Carry the flag on every result
+  // from such a file rather than letting the cap look like an empty search.
+  const indexTruncated = entry.truncated ? { indexTruncated: true } : null;
   if (SNIPPET_FIELDS.has(field)) {
     // Fold-and-find only a window around the match, not the whole field.
     const { source, truncatedStart } = boundSnippetSource(entry, field, job);
@@ -639,9 +626,9 @@ const matchWorkspaceSearchEntry = (entry, job) => {
       job.matchCase ? { caseSensitive: true } : {},
       { truncatedStart }
     );
-    return { matchField: field, matchText: snippet || entry.raw[field].slice(0, 100) };
+    return { matchField: field, matchText: snippet || entry.raw[field].slice(0, 100), ...indexTruncated };
   }
-  return { matchField: field, matchText: String(entry.raw[field]) };
+  return { matchField: field, matchText: String(entry.raw[field]), ...indexTruncated };
 };
 
 const sendWorkspaceSearchBatch = (event, job, force = false) => {
@@ -2267,18 +2254,22 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       }
 
       if (kind === 'folder') {
+        // Enumerate while the files still live at the old path, but remap the
+        // uids only once the move succeeded: a failed move used to leave every
+        // uid pointing at a path that does not exist.
         const requestFilesAtSource = await searchForRequestFiles(oldPath, collectionPathname);
+        // Move FIRST, meta after: on Windows anything holding a handle in the
+        // subtree (antivirus, Explorer, a terminal) makes a bare fsExtra.move
+        // die with EPERM/EBUSY (or ENOENT past MAX_PATH) — after
+        // updateFolderMeta had already renamed the display name, leaving a
+        // half-renamed folder the user then retried into errors.
+        // movePathWithRetry retries, falls back to copy+remove and uses
+        // extended-length paths.
+        await movePathWithRetry(oldPath, newPath);
         requestFilesAtSource.forEach((requestFile) => {
           const newRequestFilePath = requestFile.replace(oldPath, newPath);
           moveRequestUid(requestFile, newRequestFilePath);
         });
-        // Move FIRST, meta after: on Windows the watcher/indexer can hold a
-        // handle on a large folder and a bare fsExtra.move dies with
-        // EPERM/EBUSY (or ENOENT past MAX_PATH) — after updateFolderMeta had
-        // already renamed the display name, leaving a half-renamed folder the
-        // user then retried into errors. movePathWithWindowsFallback retries
-        // via copy+remove and uses extended-length paths.
-        await movePathWithWindowsFallback(oldPath, newPath);
         await updateFolderMeta({ folderPathname: newPath, name: newName, collectionPathname });
         return {
           pathname: newPath,
@@ -2308,9 +2299,12 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       const kind = type === 'folder' || isDirectory(sourcePath) ? 'folder' : 'request';
 
       if (kind === 'folder') {
+        // Enumerate before the move, drop the uids after it: a delete that
+        // fails (Windows lock) must leave the item exactly as it was, still
+        // addressable by its uid.
         const requestFilesAtSource = await searchForRequestFiles(sourcePath, collectionPathname);
-        requestFilesAtSource.forEach((requestFile) => deleteRequestUid(requestFile));
         await moveToAppTrash(sourcePath, { type: 'folder', collectionPathname });
+        requestFilesAtSource.forEach((requestFile) => deleteRequestUid(requestFile));
         return {
           pathname: sourcePath,
           type: 'folder'
@@ -2321,8 +2315,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         throw new Error('The file does not exist');
       }
       const requestType = getRequestTypeFromPath(sourcePath, collectionPathname);
-      deleteRequestUid(sourcePath);
       await moveToAppTrash(sourcePath, { type: 'request', collectionPathname });
+      deleteRequestUid(sourcePath);
       return {
         pathname: sourcePath,
         type: requestType
@@ -2930,6 +2924,21 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         };
         let bruContent = fs.readFileSync(pathname, 'utf8');
         const metaJson = parseBruFileMeta(bruContent);
+        // Oversized requests stay meta-only, exactly like the watcher's scan
+        // classifies them: parsing one inline froze the app when the user
+        // clicked it in the sidebar. The UI offers "Load Request" instead.
+        if (fileStats?.size >= MAX_FILE_SIZE) {
+          // parseBruFileMeta returns null for a .bru with no meta block or one
+          // caught half-written; the same fallback as renderer:load-request
+          // keeps a null out of the tree the renderer builds from this.
+          file.data = metaJson || { name: path.basename(pathname), type: 'http-request' };
+          file.partial = true;
+          file.loading = false;
+          file.size = sizeInMB(fileStats?.size);
+          hydrateRequestWithUuid(file.data, pathname);
+          mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
+          return;
+        }
         file.data = metaJson;
         file.loading = true;
         file.partial = true;
@@ -2981,6 +2990,21 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         };
         let bruContent = fs.readFileSync(pathname, 'utf8');
         const format = hasBruExtension(pathname) ? 'bru' : 'yml';
+        // This parse is synchronous and runs on the browser process, so a
+        // single sidebar click on a multi-MB request froze (and could kill)
+        // the app. Above the watcher's threshold, hand back the same meta-only
+        // snapshot the watcher produces so the UI shows its "not loaded" card.
+        if (fileStats?.size >= MAX_FILE_SIZE) {
+          // A meta parse can still come back null on a malformed file; never
+          // hydrate null (that was the "Cannot set properties of null" crash).
+          file.data = parseFileMeta(bruContent, format) || { name: path.basename(pathname), type: 'http-request' };
+          file.partial = true;
+          file.loading = false;
+          file.size = sizeInMB(fileStats?.size);
+          hydrateRequestWithUuid(file.data, pathname);
+          mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
+          return safeParseJSON(safeStringifyJSON(file));
+        }
         const metaJson = parseBruFileMeta(bruContent);
         // parseBruFileMeta is a partial (meta-only) parse; it returns null for
         // a .yml request. Only emit the partial snapshot when it parsed —
@@ -3032,9 +3056,14 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
   ipcMain.handle('renderer:load-large-request', async (event, { collectionUid, pathname }) => {
     let fileStats;
-    if (!hasBruExtension(pathname)) {
+    if (!hasRequestExtension(pathname)) {
       return;
     }
+
+    // The redacting parser is bru-only string surgery; in a yml collection this
+    // handler used to bail out here, so the "Load Request" button did nothing
+    // at all. yml goes through the regular parser instead.
+    const format = hasBruExtension(pathname) ? 'bru' : 'yml';
 
     const file = {
       meta: {
@@ -3049,7 +3078,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       fileStats = fs.statSync(pathname);
 
       const bruContent = fs.readFileSync(pathname, 'utf8');
-      const metaJson = parseBruFileMeta(bruContent);
+      const metaJson = parseFileMeta(bruContent, format);
 
       file.data = metaJson;
       file.partial = false;
@@ -3059,7 +3088,9 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       await mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
 
       try {
-        const parsedData = await parseLargeRequestWithRedaction(bruContent, 'bru');
+        const parsedData = format === 'bru'
+          ? await parseLargeRequestWithRedaction(bruContent, 'bru')
+          : await parseRequest(bruContent, { format });
 
         file.data = parsedData;
         file.loading = false;

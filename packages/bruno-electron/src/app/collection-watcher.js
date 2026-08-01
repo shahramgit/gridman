@@ -1077,3 +1077,6 @@ class CollectionWatcher {
 const collectionWatcher = new CollectionWatcher();
 
 module.exports = collectionWatcher;
+// Shared with the load-request IPC handlers so a sidebar click classifies an
+// oversized request exactly like this scan does, instead of parsing it inline.
+module.exports.MAX_FILE_SIZE = MAX_FILE_SIZE;

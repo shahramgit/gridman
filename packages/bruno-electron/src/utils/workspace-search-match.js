@@ -17,6 +17,22 @@ const BRU_BODY_BLOCK_REGEX = /(?:^|\n)body(?::[\w:-]+)?\s*\{([\s\S]*?)\n\}/g;
 // column 0) and close with a column-0 brace.
 const BRU_EXAMPLE_BLOCK_REGEX = /(?:^|\n)example\s*\{([\s\S]*?)\n\}/g;
 
+// A single request can carry megabytes of response examples (a 5 MB folder in
+// a customer collection hung the app on startup: warming the index folded and
+// then retained several full-size copies of that text per file). Fields above
+// this cap are indexed up to the cap only and the entry is marked truncated;
+// name/filename/url — the identity fields a request is usually looked up by —
+// are never capped.
+//
+// The unit is UTF-16 code units (what String.length and String.slice count),
+// NOT bytes. V8 stores any string with a non-Latin1 character as two bytes per
+// code unit, so a capped field costs up to ~2 MB resident for ASCII and up to
+// ~4 MB for Persian — doubled again because an entry keeps both the raw and
+// the folded copy. Counting code units rather than bytes is deliberate: it
+// gives Persian and ASCII collections the same number of searchable
+// characters.
+const SEARCH_INDEX_MAX_FIELD_CHARS = 2 * 1024 * 1024;
+
 const extractSearchBlocks = (content, regex) => {
   const parts = [];
   let match;
@@ -27,28 +43,85 @@ const extractSearchBlocks = (content, regex) => {
   return parts.join('\n');
 };
 
+const extractExampleBlocks = (content) => {
+  const blocks = [];
+  let match;
+  BRU_EXAMPLE_BLOCK_REGEX.lastIndex = 0;
+  while ((match = BRU_EXAMPLE_BLOCK_REGEX.exec(content)) !== null) {
+    blocks.push(match[1] || '');
+  }
+  return blocks;
+};
+
+// A substring keeps its whole parent alive in V8, so a block cut out of a
+// request file pins that file's full text for as long as the cache holds the
+// entry — a 200-char headers block was enough to retain a 5 MB request, and
+// capping a field would otherwise save nothing. Copy what we keep out of the
+// parent. The round trip is exact for well-formed UTF-16, which is what the
+// utf8-decoded file content is — but only as long as nothing hands this a
+// half of a surrogate pair, which utf8 cannot encode and which would come back
+// as U+FFFD. See capIndex: our own slicing is the one place that could.
+const detachSearchText = (text) => (text ? Buffer.from(text).toString() : '');
+
+// Cut at the cap, or one code unit earlier when the cap lands between the two
+// halves of a surrogate pair (an emoji or astral character straddling it).
+const capIndex = (value) => {
+  const code = value.charCodeAt(SEARCH_INDEX_MAX_FIELD_CHARS - 1);
+  const isHighSurrogate = code >= 0xd800 && code <= 0xdbff;
+  return isHighSurrogate ? SEARCH_INDEX_MAX_FIELD_CHARS - 1 : SEARCH_INDEX_MAX_FIELD_CHARS;
+};
+
+// One capped field: { text, truncated }, folded lazily so callers that share
+// a field (yml has no block syntax — headers/body/examples are all the whole
+// file) fold and retain it once instead of three times.
+const createSearchField = (text) => {
+  const value = text || '';
+  return value.length > SEARCH_INDEX_MAX_FIELD_CHARS
+    ? { text: detachSearchText(value.slice(0, capIndex(value))), truncated: true }
+    : { text: detachSearchText(value), truncated: false };
+};
+
+const foldSearchField = (field) => {
+  if (field.folded === undefined) {
+    field.folded = utils.foldSearchText(field.text);
+  }
+  return field.folded;
+};
+
 // Structured per-example entries (name + folded name/content) so examples can
 // be surfaced as their own search results, in file order (index = the
 // example's position, matching the parsed request.examples order).
+const buildExampleEntries = (blocks) => {
+  // The same text is already folded once into the examples field, so a
+  // per-example copy of it is a second full-size retention. Fold example
+  // bodies only until the field cap is spent; past it the example is still
+  // listed and still matchable by name.
+  let foldBudget = SEARCH_INDEX_MAX_FIELD_CHARS;
+  return blocks.map((block, index) => {
+    const nameMatch = block.match(/(?:^|\n)\s*name:\s*(.+?)\s*(?:\n|$)/);
+    const name = detachSearchText(nameMatch ? nameMatch[1].trim() : '');
+    const withinBudget = block.length <= foldBudget;
+    // Only spend what was actually folded. Charging the budget for a block we
+    // refused to fold drove it negative, which silently un-indexed the content
+    // of every LATER example in the file — one oversized example next to
+    // small ones made all of them unsearchable.
+    if (withinBudget) {
+      foldBudget -= block.length;
+    }
+    return {
+      name,
+      index,
+      foldedName: utils.foldSearchText(name),
+      foldedContent: withinBudget ? detachSearchText(utils.foldSearchText(block)) : ''
+    };
+  });
+};
+
 const extractExampleEntries = (content, format) => {
   if (format !== 'bru' || !content) {
     return [];
   }
-  const entries = [];
-  let match;
-  BRU_EXAMPLE_BLOCK_REGEX.lastIndex = 0;
-  while ((match = BRU_EXAMPLE_BLOCK_REGEX.exec(content)) !== null) {
-    const block = match[1] || '';
-    const nameMatch = block.match(/(?:^|\n)\s*name:\s*(.+?)\s*(?:\n|$)/);
-    const name = nameMatch ? nameMatch[1].trim() : '';
-    entries.push({
-      name,
-      index: entries.length,
-      foldedName: utils.foldSearchText(name),
-      foldedContent: utils.foldSearchText(block)
-    });
-  }
-  return entries;
+  return buildExampleEntries(extractExampleBlocks(content));
 };
 
 // Returns matching example entries for a query (name or content), each with
@@ -66,17 +139,19 @@ const matchExampleEntries = (exampleEntries, { foldedQueryCi }) => {
 // not have the bru block syntax, so headers/body/examples fall back to the
 // whole content (still scoped by the checkbox).
 const buildSearchFields = ({ content = '', format = 'bru', name = '', filename = '', url = '' }) => {
-  const headersRaw = format === 'bru' ? extractSearchBlocks(content, BRU_HEADERS_BLOCK_REGEX) : content;
-  const bodyRaw = format === 'bru' ? extractSearchBlocks(content, BRU_BODY_BLOCK_REGEX) : content;
-  const examplesRaw = format === 'bru' ? extractSearchBlocks(content, BRU_EXAMPLE_BLOCK_REGEX) : content;
+  const isBru = format === 'bru';
+  const exampleBlocks = isBru ? extractExampleBlocks(content) : [];
+  const headersField = createSearchField(isBru ? extractSearchBlocks(content, BRU_HEADERS_BLOCK_REGEX) : content);
+  const bodyField = isBru ? createSearchField(extractSearchBlocks(content, BRU_BODY_BLOCK_REGEX)) : headersField;
+  const examplesField = isBru ? createSearchField(exampleBlocks.join('\n')) : headersField;
 
   const raw = {
     name: name || '',
     filename: filename || '',
     url: url || '',
-    headers: headersRaw,
-    body: bodyRaw,
-    examples: examplesRaw
+    headers: headersField.text,
+    body: bodyField.text,
+    examples: examplesField.text
   };
 
   return {
@@ -85,11 +160,12 @@ const buildSearchFields = ({ content = '', format = 'bru', name = '', filename =
       name: utils.foldSearchText(raw.name),
       filename: utils.foldSearchText(raw.filename),
       url: utils.foldSearchText(raw.url),
-      headers: utils.foldSearchText(raw.headers),
-      body: utils.foldSearchText(raw.body),
-      examples: utils.foldSearchText(raw.examples)
+      headers: foldSearchField(headersField),
+      body: foldSearchField(bodyField),
+      examples: foldSearchField(examplesField)
     },
-    exampleEntries: extractExampleEntries(content, format)
+    truncated: headersField.truncated || bodyField.truncated || examplesField.truncated,
+    exampleEntries: isBru ? buildExampleEntries(exampleBlocks) : []
   };
 };
 
@@ -171,7 +247,9 @@ const createSearchSnippet = (content, query, foldOptions = {}, { truncatedStart 
 
 module.exports = {
   SEARCH_FIELD_SCOPES,
+  SEARCH_INDEX_MAX_FIELD_CHARS,
   BRU_EXAMPLE_BLOCK_REGEX,
+  detachSearchText,
   extractSearchBlocks,
   extractExampleEntries,
   matchExampleEntries,

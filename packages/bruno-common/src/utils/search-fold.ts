@@ -41,6 +41,38 @@ const CHAR_FOLD_MAP: Record<string, string> = {
 // alef, tatweel, zero-width non-joiner/joiner, BOM/zero-width no-break.
 const REMOVED_CHARS = /[ً-ٰٟـ‌‍﻿]/;
 
+// Every character the fold touches, derived from the two tables above so it
+// can never drift from them. Used to jump between the characters that
+// actually change instead of visiting all of them.
+const FOLDED_CHARS = new RegExp(`[${REMOVED_CHARS.source.slice(1, -1)}${Object.keys(CHAR_FOLD_MAP).join('')}]`, 'g');
+
+const NON_ASCII_CHARS = /[^\x00-\x7F]/;
+
+// Greek capital sigma lowercases to ς or σ depending on its neighbours, so
+// lowercasing a whole string differs from lowercasing each character of it.
+const FINAL_SIGMA_TRIGGER = /Σ/;
+
+// A surrogate pair is one code point to String.prototype.toLowerCase but two
+// uncased code units to foldSearchTextWithMap, which walks code units — so the
+// two disagree on astral letters that carry a case mapping (Deseret, Osage,
+// Adlam: 260 code points in total). Testing for a high surrogate alone was too
+// blunt: emoji are routine in JSON response examples, and one of them sent a
+// whole multi-MB field down the per-character path the fast path exists to
+// avoid. Emoji and symbols are caseless, so only pairs that actually change
+// under toLowerCase need the exact path.
+const SURROGATE_PAIRS = /[\uD800-\uDBFF][\uDC00-\uDFFF]/g;
+
+const hasCasedSurrogatePair = (source: string): boolean => {
+  SURROGATE_PAIRS.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SURROGATE_PAIRS.exec(source)) !== null) {
+    if (match[0].toLowerCase() !== match[0]) {
+      return true;
+    }
+  }
+  return false;
+};
+
 export interface FoldOptions {
   caseSensitive?: boolean;
 }
@@ -54,9 +86,48 @@ export interface FoldedTextWithMap {
 
 /**
  * Fold text for matching. Lowercases unless options.caseSensitive is true.
+ *
+ * Kept separate from foldSearchTextWithMap: the search index folds whole
+ * request bodies and example blocks and never needs the position map, and
+ * paying a character-sized number array (plus the per-character loop) for
+ * multi-MB fields is what made indexing a 5 MB folder hang the app.
  */
 export const foldSearchText = (text: unknown, options: FoldOptions = {}): string => {
-  return foldSearchTextWithMap(text, options).folded;
+  const raw = String(text ?? '');
+  // ASCII is unchanged by NFC and holds no foldable character, so the whole
+  // fold collapses into one native lowercase. Request bodies are mostly
+  // ASCII, which makes this the index's hot path.
+  if (!NON_ASCII_CHARS.test(raw)) {
+    return options.caseSensitive ? raw : raw.toLowerCase();
+  }
+
+  const source = raw.normalize('NFC');
+  // Only the lowercasing step can disagree with the per-character path, so a
+  // case-sensitive fold never needs the exact fallback.
+  if (!options.caseSensitive && (FINAL_SIGMA_TRIGGER.test(source) || hasCasedSurrogatePair(source))) {
+    return foldSearchTextWithMap(source, options).folded;
+  }
+
+  const parts: string[] = [];
+  let runStart = 0;
+  let match: RegExpExecArray | null;
+  FOLDED_CHARS.lastIndex = 0;
+  while ((match = FOLDED_CHARS.exec(source)) !== null) {
+    const char = match[0];
+    parts.push(source.slice(runStart, match.index));
+    if (!REMOVED_CHARS.test(char)) {
+      parts.push(CHAR_FOLD_MAP[char] || char);
+    }
+    runStart = match.index + 1;
+  }
+
+  if (!parts.length) {
+    return options.caseSensitive ? source : source.toLowerCase();
+  }
+
+  parts.push(source.slice(runStart));
+  const folded = parts.join('');
+  return options.caseSensitive ? folded : folded.toLowerCase();
 };
 
 /**

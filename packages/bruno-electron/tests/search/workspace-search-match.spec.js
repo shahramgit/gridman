@@ -4,7 +4,8 @@ const {
   extractExampleEntries,
   matchExampleEntries,
   boundSnippetSource,
-  createSearchSnippet
+  createSearchSnippet,
+  SEARCH_INDEX_MAX_FIELD_CHARS
 } = require('../../src/utils/workspace-search-match');
 const { utils } = require('@usebruno/common');
 
@@ -121,6 +122,70 @@ example {
 
       const byContent = matchExampleEntries(entries, { foldedQueryCi: utils.foldSearchText('failuretoken') });
       expect(byContent.map((e) => e.index)).toEqual([1]);
+    });
+  });
+
+  describe('oversized fields', () => {
+    it('caps a body past the index limit and reports the entry as truncated', () => {
+      const content = `body:json {\n  ${'a'.repeat(SEARCH_INDEX_MAX_FIELD_CHARS + 5000)}\n}\n`;
+      const fields = buildSearchFields({ content, format: 'bru', name: 'Big Body', filename: 'big.bru', url: 'https://api.example.com/big' });
+
+      expect(fields.truncated).toBe(true);
+      expect(fields.raw.body.length).toBe(SEARCH_INDEX_MAX_FIELD_CHARS);
+      expect(fields.folded.body.length).toBeLessThanOrEqual(SEARCH_INDEX_MAX_FIELD_CHARS);
+      // identity fields are never capped, so the request stays findable
+      expect(fields.raw.name).toBe('Big Body');
+      expect(fields.folded.url).toBe('https://api.example.com/big');
+      expect(matchSearchFields(fields, job('Big Body', { ...ALL_OFF, names: true }))).toEqual({ field: 'name' });
+    });
+
+    it('leaves fields under the limit untruncated', () => {
+      const fields = fieldsFor(BRU);
+      expect(fields.truncated).toBe(false);
+    });
+
+    it('keeps an example past the fold budget matchable by name', () => {
+      const content = `example {\n  name: Huge Example\n  ${'b'.repeat(SEARCH_INDEX_MAX_FIELD_CHARS + 5000)}\n}\n`;
+      const entries = extractExampleEntries(content, 'bru');
+
+      expect(entries[0].name).toBe('Huge Example');
+      expect(entries[0].foldedContent).toBe('');
+      const byName = matchExampleEntries(entries, { foldedQueryCi: utils.foldSearchText('huge example') });
+      expect(byName.map((e) => e.index)).toEqual([0]);
+    });
+
+    it('still indexes the content of examples that FOLLOW an oversized one', () => {
+      // The budget must only be spent on blocks that were actually folded.
+      // Charging it for a block we refused to fold drove it negative, and
+      // every later example in the file lost its content index — a request
+      // with one huge example made all its other examples unsearchable.
+      const content = `example {\n  name: Huge Example\n  ${'b'.repeat(SEARCH_INDEX_MAX_FIELD_CHARS + 5000)}\n}\n\n`
+        + 'example {\n  name: Small Example\n  response: { body: laterneedletoken }\n}\n';
+      const entries = extractExampleEntries(content, 'bru');
+
+      expect(entries.map((e) => e.name)).toEqual(['Huge Example', 'Small Example']);
+      expect(entries[0].foldedContent).toBe('');
+      expect(entries[1].foldedContent).toContain('laterneedletoken');
+
+      const byContent = matchExampleEntries(entries, { foldedQueryCi: utils.foldSearchText('laterneedletoken') });
+      expect(byContent.map((e) => e.index)).toEqual([1]);
+    });
+
+    it('never cuts a surrogate pair in half when capping a field', () => {
+      // A lone surrogate is not encodable as utf8, so detaching the slice
+      // would replace it with U+FFFD — a character the raw text never had.
+      // The captured body block opens with the newline after '{', so this
+      // padding puts the emoji's high surrogate exactly on the cap boundary.
+      const filler = 'a'.repeat(SEARCH_INDEX_MAX_FIELD_CHARS - 2);
+      const content = `body:json {\n${filler}🙂${'z'.repeat(1000)}\n}\n`;
+      const fields = buildSearchFields({ content, format: 'bru', name: 'Emoji', filename: 'emoji.bru', url: '' });
+
+      expect(fields.truncated).toBe(true);
+      expect(fields.raw.body).not.toContain('�');
+      expect(fields.folded.body).not.toContain('�');
+      // the pair was dropped whole rather than split
+      expect(fields.raw.body.length).toBe(SEARCH_INDEX_MAX_FIELD_CHARS - 1);
+      expect(fields.raw.body.endsWith('a')).toBe(true);
     });
   });
 

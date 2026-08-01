@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { buildSearchFields } = require('../utils/workspace-search-match');
+const { buildSearchFields, detachSearchText } = require('../utils/workspace-search-match');
 const { hasRequestExtension, getCollectionFormat } = require('../utils/filesystem');
 const { generateUidBasedOnHash } = require('../utils/common');
 const { getRequestUid } = require('../cache/requestUids');
@@ -80,12 +80,15 @@ const pruneWorkspaceSearchFileCache = (collectionPath, liveEntries) => {
   }
 };
 
+// The name/url/method a result is built from are substrings of the file, and
+// a substring pins the whole file in V8 — the cached result would keep the
+// megabytes it was matched out of alive for the session.
 const cleanSearchMetaValue = (value) => {
   if (!value) {
     return '';
   }
 
-  return String(value).trim().replace(/^['"]|['"]$/g, '');
+  return detachSearchText(String(value).trim().replace(/^['"]|['"]$/g, ''));
 };
 
 const extractSearchLineValue = (content, key) => {
@@ -232,17 +235,44 @@ const FOLD_POOL_SIZE = Math.max(1, Math.min(4, os.cpus().length - 1));
 // single worker while the rest of the pool idles.
 const FOLD_CHUNK_SIZE = 64;
 const FOLD_CHUNK_BYTES = 256 * 1024;
-let foldPool = null; // { workers: [], pending: Map<id, {resolve,reject}>, nextId, nextWorker } | 'unavailable'
+let foldPool = null; // { workers: [], pending: Map<id, {resolve,reject,worker}>, nextId, nextWorker } | 'unavailable'
 
 const FOLD_POOL_IDLE_MS = 30 * 1000;
 
+// When worker death is deterministic — a sandbox that forbids threads, a
+// corrupt worker script, a machine that is out of memory — respawning per
+// chunk means a brand-new thread for every 256 KB of the build, each dying at
+// once, ON TOP of the inline main-thread fold that already has to run. Give up
+// on the pool after this many failures with no reply in between; one worker
+// crashing on one pathological chunk still resets the count and keeps the pool.
+const MAX_CONSECUTIVE_FOLD_WORKER_FAILURES = 6;
+
+// Retire a pool: its threads go away and it is marked so that anything still
+// holding a reference to it stops posting into it (and stops respawning into
+// it — a respawn on a retired pool leaks an isolate for the session).
+const retireFoldPool = (pool, nextState) => {
+  pool.retired = true;
+  for (const worker of pool.workers) {
+    worker?.terminate().catch(() => {});
+  }
+  pool.workers.fill(null);
+  // A chunk still queued on a terminated worker would never hear back and the
+  // collection's build promise would never settle, so settle it here; the
+  // caller folds it inline.
+  const retiredError = new Error('fold pool retired');
+  for (const [id, entry] of pool.pending.entries()) {
+    pool.pending.delete(id);
+    entry.reject(retiredError);
+  }
+  clearTimeout(pool.idleTimer);
+  if (foldPool === pool) {
+    foldPool = nextState;
+  }
+};
+
 const terminateFoldPool = () => {
   if (foldPool && foldPool !== 'unavailable') {
-    for (const worker of foldPool.workers) {
-      worker.terminate().catch(() => {});
-    }
-    clearTimeout(foldPool.idleTimer);
-    foldPool = null;
+    retireFoldPool(foldPool, null);
   }
 };
 
@@ -256,41 +286,73 @@ const scheduleFoldPoolTeardown = (pool) => {
   pool.idleTimer.unref?.();
 };
 
+// Spawn one pool slot. A worker that dies MUST leave the round-robin: its
+// port is closed, so every chunk posted to it afterwards would simply never
+// reply and the collection's build promise would never settle — which is how
+// one oversized folder turned into "the app hangs, then exits" (the build
+// hung, and the inline fallback folded those chunks on the main process).
+const spawnFoldWorker = (pool, index) => {
+  const { Worker } = require('node:worker_threads');
+  const worker = new Worker(pool.scriptPath);
+  worker.unref(); // never keep the process alive for the pool
+  worker.on('message', ({ id, results, error }) => {
+    const entry = pool.pending.get(id);
+    if (entry) {
+      pool.pending.delete(id);
+      // A reply — even an error reply — proves the pool still works, so the
+      // circuit breaker below is only counting a genuine run of dead threads.
+      pool.consecutiveFailures = 0;
+      error ? entry.reject(new Error(error)) : entry.resolve(results);
+    }
+  });
+  // Fail this worker's in-flight requests and free its slot for a respawn on
+  // the next chunk; callers fall back to inline folding.
+  const failWorker = (err) => {
+    if (pool.workers[index] === worker) {
+      pool.workers[index] = null;
+    }
+    for (const [id, entry] of pool.pending.entries()) {
+      if (entry.worker === worker) {
+        pool.pending.delete(id);
+        entry.reject(err);
+      }
+    }
+    pool.consecutiveFailures += 1;
+    if (!pool.retired && pool.consecutiveFailures >= MAX_CONSECUTIVE_FOLD_WORKER_FAILURES) {
+      retireFoldPool(pool, 'unavailable');
+    }
+  };
+  worker.on('error', failWorker);
+  worker.on('exit', (code) => failWorker(new Error(`fold worker exited with code ${code}`)));
+  pool.workers[index] = worker;
+  return worker;
+};
+
 const getFoldPool = () => {
   // Never spawn worker threads under jest: open worker handles keep the test
   // process alive after the run finishes (observed as hung jest processes).
-  // Tests exercise the inline fold path, which is behavior-identical.
-  if (process.env.JEST_WORKER_ID !== undefined) {
+  // Tests exercise the inline fold path, which is behavior-identical; the
+  // ones that need the pool opt back in with GRIDMAN_SEARCH_FOLD_POOL=1 and
+  // inject a fake Worker.
+  if (process.env.JEST_WORKER_ID !== undefined && process.env.GRIDMAN_SEARCH_FOLD_POOL !== '1') {
     return null;
   }
   if (foldPool) {
     return foldPool === 'unavailable' ? null : foldPool;
   }
   try {
-    const { Worker } = require('node:worker_threads');
-    const scriptPath = path.join(__dirname, 'workspace-search-fold-worker.js');
-    const pool = { workers: [], pending: new Map(), nextId: 1, nextWorker: 0, idleTimer: null };
+    const pool = {
+      scriptPath: path.join(__dirname, 'workspace-search-fold-worker.js'),
+      workers: new Array(FOLD_POOL_SIZE).fill(null),
+      pending: new Map(),
+      nextId: 1,
+      nextWorker: 0,
+      idleTimer: null,
+      consecutiveFailures: 0,
+      retired: false
+    };
     for (let i = 0; i < FOLD_POOL_SIZE; i++) {
-      const worker = new Worker(scriptPath);
-      worker.unref(); // never keep the process alive for the pool
-      worker.on('message', ({ id, results, error }) => {
-        const entry = pool.pending.get(id);
-        if (entry) {
-          pool.pending.delete(id);
-          error ? entry.reject(new Error(error)) : entry.resolve(results);
-        }
-      });
-      worker.on('error', (err) => {
-        // Fail all in-flight requests routed to this worker; callers fall
-        // back to inline folding.
-        for (const [id, entry] of pool.pending.entries()) {
-          if (entry.workerIndex === i) {
-            pool.pending.delete(id);
-            entry.reject(err);
-          }
-        }
-      });
-      pool.workers.push(worker);
+      spawnFoldWorker(pool, i);
     }
     foldPool = pool;
     return pool;
@@ -301,11 +363,21 @@ const getFoldPool = () => {
 };
 
 const foldChunkInWorker = (pool, jobs) => new Promise((resolve, reject) => {
-  const id = pool.nextId++;
+  // The idle teardown can retire a pool a build is still holding. Respawning
+  // into it would put live isolates in an object nothing will ever tear down
+  // again, so reject instead and let the caller fold the chunk inline.
+  if (pool.retired) {
+    reject(new Error('fold pool was torn down'));
+    return;
+  }
   const workerIndex = pool.nextWorker;
   pool.nextWorker = (pool.nextWorker + 1) % pool.workers.length;
-  pool.pending.set(id, { resolve, reject, workerIndex });
-  pool.workers[workerIndex].postMessage({ id, jobs });
+  // A slot emptied by a dead worker is respawned here; a respawn that throws
+  // rejects this chunk, which folds it inline.
+  const worker = pool.workers[workerIndex] || spawnFoldWorker(pool, workerIndex);
+  const id = pool.nextId++;
+  pool.pending.set(id, { resolve, reject, worker });
+  worker.postMessage({ id, jobs });
   // Tear the pool down after it sits idle — warm builds are bursty and the
   // threads should not linger for the rest of the session.
   scheduleFoldPoolTeardown(pool);
@@ -353,6 +425,10 @@ const assembleCacheEntry = ({ result, fields, mtimeMs, size, isFolderMeta }) => 
     result,
     raw: fields.raw,
     folded: fields.folded,
+    // A field past the index cap was indexed only up to the cap (see
+    // SEARCH_INDEX_MAX_FIELD_CHARS) — kept on the entry so the result can say
+    // so instead of silently missing a match deep inside a huge body.
+    truncated: Boolean(fields.truncated),
     exampleEntries
   };
 };
@@ -362,6 +438,7 @@ const assembleCacheEntry = ({ result, fields, mtimeMs, size, isFolderMeta }) => 
 // walk is quick; the per-file stat/read/fold is done with a small worker pool
 // (serial stats were the multi-second cost on ~11.5k-file collections).
 const WORKSPACE_SEARCH_BUILD_CONCURRENCY = 32;
+const MAX_INFLIGHT_FOLD_CHUNKS = Math.max(2, FOLD_POOL_SIZE * 2);
 
 const buildCollectionSearchEntries = async (workspacePath, collectionPath, format) => {
   const files = [];
@@ -407,14 +484,21 @@ const buildCollectionSearchEntries = async (workspacePath, collectionPath, forma
   // their result shells. Folding — the CPU-dominant part — is dispatched to
   // the worker pool in chunks AS reads complete, so transient memory stays
   // bounded and the fold runs on other cores while reads continue.
-  const pool = getFoldPool();
   const pendingFold = [];
   let pendingFoldBytes = 0;
   const foldDispatches = [];
+  // Dispatches that have not settled yet, so a reader can wait for ANY of them
+  // (see the backpressure gate below). They never reject: the build-level
+  // Promise.all over foldDispatches owns failures.
+  const inflightFolds = new Set();
 
   const foldChunk = (chunk) => {
     const dispatch = async () => {
       let fieldsList = null;
+      // Re-read the pool per chunk instead of capturing it once: the idle
+      // teardown can retire the pool mid-build, and a build that kept posting
+      // into the retired object respawned threads nothing would ever collect.
+      const pool = getFoldPool();
       if (pool) {
         try {
           fieldsList = await foldChunkInWorker(pool, chunk.map((job) => ({
@@ -464,7 +548,10 @@ const buildCollectionSearchEntries = async (workspacePath, collectionPath, forma
         job.content = null; // release the file text as soon as it is folded
       });
     };
-    foldDispatches.push(dispatch());
+    const dispatched = dispatch();
+    foldDispatches.push(dispatched);
+    const settled = dispatched.catch(() => {}).finally(() => inflightFolds.delete(settled));
+    inflightFolds.add(settled);
   };
 
   const reader = async () => {
@@ -494,8 +581,17 @@ const buildCollectionSearchEntries = async (workspacePath, collectionPath, forma
           pendingFold.push({ index, pathname, isFolderMeta, mtimeMs: stat.mtimeMs, size: stat.size, content, result });
           pendingFoldBytes += content.length;
           if (pendingFold.length >= FOLD_CHUNK_SIZE || pendingFoldBytes >= FOLD_CHUNK_BYTES) {
-            foldChunk(pendingFold.splice(0, pendingFold.length));
+            const chunk = pendingFold.splice(0, pendingFold.length);
             pendingFoldBytes = 0;
+            // Backpressure BEFORE dispatching: 32 readers that dispatch and
+            // never wait let a whole collection's text sit in the workers'
+            // queues at once, on top of the copy each reader is holding.
+            // Waiting AFTER the dispatch only made each reader wait on its own
+            // chunk, so the real ceiling was the reader count, not this one.
+            while (inflightFolds.size >= MAX_INFLIGHT_FOLD_CHUNKS) {
+              await Promise.race(inflightFolds);
+            }
+            foldChunk(chunk);
           }
         } else {
           if (perf) {
@@ -610,6 +706,7 @@ module.exports = {
   createWorkspaceCollectionSearchResult,
   // exposed for eviction and tests
   buildCollectionSearchEntries,
+  MAX_INFLIGHT_FOLD_CHUNKS,
   workspaceSearchIndex,
   workspaceSearchFileCache,
   WORKSPACE_SEARCH_INDEX_TTL_MS
