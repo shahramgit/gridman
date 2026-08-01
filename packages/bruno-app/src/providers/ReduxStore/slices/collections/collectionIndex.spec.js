@@ -15,6 +15,9 @@ import reducer, {
   createCollection,
   collectionAddDirectoryEvent,
   collectionAddFileEvent,
+  collectionChangeFileEvent,
+  requestUrlChanged,
+  runFolderEvent,
   collectionIndexStarted,
   collectionIndexBatchReceived,
   collectionIndexNodeMoved,
@@ -663,5 +666,227 @@ describe('moveCollectionItemByPath (index refresh strategy)', () => {
 
     expect(dispatched.find((action) => action?.type === collectionIndexNodeMoved.type)).toBeUndefined();
     expect(dispatched.filter((action) => typeof action === 'function')).toHaveLength(0);
+  });
+});
+
+describe('collectionChangeFileEvent (partial/unparseable items)', () => {
+  // A file that fails to parse is mounted as a partial item: valid type
+  // (http-request) but no `request`. Every change event for it used to run
+  // through areItemsTheSameExceptSeqUpdate -> transformRequestToSaveToFilesystem,
+  // which dereferences request.method and THREW inside the immer reducer, taking
+  // the renderer down. And even without the throw, the item kept `partial: true`
+  // and an undefined request forever, so RequestMethod crashed once it rendered.
+  // upstream bruno #8545 (81f9a4092) + #8558 (b39445314)
+  const COLLECTION_PATHNAME = '/ws/collections/api';
+  const BROKEN_PATHNAME = '/ws/collections/api/broken.bru';
+
+  const parsedRequest = (url = 'https://api.example.com/users') => ({
+    method: 'GET',
+    url,
+    headers: [],
+    params: [],
+    body: { mode: 'none' },
+    auth: { mode: 'none' },
+    vars: { req: [], res: [] },
+    assertions: [],
+    script: { req: '', res: '' },
+    tests: '',
+    docs: ''
+  });
+
+  const buildStateWithPartialItem = () => {
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, createCollection({
+      uid: COLLECTION_UID,
+      name: 'api',
+      pathname: COLLECTION_PATHNAME,
+      items: [],
+      brunoConfig: { name: 'api' }
+    }));
+
+    // Mount the unparseable file exactly as the watcher reports it: a valid
+    // type, no `request`, partial: true.
+    state = reducer(state, collectionAddFileEvent({
+      file: {
+        meta: { collectionUid: COLLECTION_UID, pathname: BROKEN_PATHNAME, name: 'broken.bru' },
+        data: { uid: 'broken-1', name: 'broken', type: 'http-request', seq: 1 },
+        partial: true,
+        loading: false,
+        error: 'Unexpected token',
+        size: 0.02
+      }
+    }));
+    return state;
+  };
+
+  const changeEventForValidFile = () => collectionChangeFileEvent({
+    file: {
+      meta: { collectionUid: COLLECTION_UID, pathname: BROKEN_PATHNAME, name: 'broken.bru' },
+      data: {
+        uid: 'broken-1',
+        name: 'broken',
+        type: 'http-request',
+        seq: 1,
+        request: parsedRequest(),
+        settings: {},
+        examples: []
+      },
+      partial: false,
+      loading: false,
+      size: 0.02
+    }
+  });
+
+  it('mounts an unparseable file as a partial item with no request', () => {
+    const state = buildStateWithPartialItem();
+    const collection = state.collections.find((c) => c.uid === COLLECTION_UID);
+    const item = collection.items.find((i) => i.pathname === BROKEN_PATHNAME);
+
+    expect(item).toBeDefined();
+    expect(item.partial).toBe(true);
+    expect(item.request).toBeUndefined();
+  });
+
+  it('does not throw when a partial item changes on disk', () => {
+    const state = buildStateWithPartialItem();
+
+    expect(() => reducer(state, changeEventForValidFile())).not.toThrow();
+  });
+
+  it('recovers a partial item once the file re-parses cleanly', () => {
+    let state = buildStateWithPartialItem();
+    state = reducer(state, changeEventForValidFile());
+
+    const collection = state.collections.find((c) => c.uid === COLLECTION_UID);
+    const item = collection.items.find((i) => i.pathname === BROKEN_PATHNAME);
+
+    // Never leave a valid type with an undefined request - RequestMethod reads
+    // item.request.method unguarded.
+    expect(item.type).toBe('http-request');
+    expect(item.request).toBeDefined();
+    expect(item.request.method).toBe('GET');
+    // and it must drop off the "requests not loaded" list
+    expect(item.partial).toBe(false);
+    expect(item.loading).toBe(false);
+    expect(item.error).toBeUndefined();
+  });
+
+  it('still takes the seq-only fast path and preserves an unsaved draft', () => {
+    // Guards the branch restructure: a plain reorder must not clobber a draft.
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, createCollection({
+      uid: COLLECTION_UID,
+      name: 'api',
+      pathname: COLLECTION_PATHNAME,
+      items: [],
+      brunoConfig: { name: 'api' }
+    }));
+    state = reducer(state, collectionAddFileEvent({
+      file: {
+        meta: { collectionUid: COLLECTION_UID, pathname: '/ws/collections/api/ok.bru', name: 'ok.bru' },
+        data: {
+          uid: 'ok-1',
+          name: 'ok',
+          type: 'http-request',
+          seq: 1,
+          request: parsedRequest(),
+          settings: {},
+          examples: []
+        },
+        partial: false,
+        loading: false,
+        size: 0.01
+      }
+    }));
+    state = reducer(state, requestUrlChanged({
+      collectionUid: COLLECTION_UID,
+      itemUid: 'ok-1',
+      url: 'https://api.example.com/users?edited=1'
+    }));
+
+    state = reducer(state, collectionChangeFileEvent({
+      file: {
+        meta: { collectionUid: COLLECTION_UID, pathname: '/ws/collections/api/ok.bru', name: 'ok.bru' },
+        data: {
+          uid: 'ok-1',
+          name: 'ok',
+          type: 'http-request',
+          seq: 7,
+          request: parsedRequest(),
+          settings: {},
+          examples: []
+        },
+        partial: false,
+        loading: false,
+        size: 0.01
+      }
+    }));
+
+    const collection = state.collections.find((c) => c.uid === COLLECTION_UID);
+    const item = collection.items.find((i) => i.pathname === '/ws/collections/api/ok.bru');
+
+    expect(item.seq).toBe(7);
+    expect(item.draft).toBeTruthy();
+    expect(item.draft.seq).toBe(7);
+    expect(item.draft.request.url).toBe('https://api.example.com/users?edited=1');
+  });
+});
+
+describe('runFolderEvent (runner-request-skipped)', () => {
+  // A skip can arrive for a request that was never pushed into
+  // runnerResult.items (nothing queues it), and the unguarded
+  // `item.status = 'skipped'` threw a TypeError inside the reducer.
+  // upstream bruno #8406 (e7197d636) - null guard only.
+  it('ignores a skip for a request missing from runnerResult.items', () => {
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, createCollection({
+      uid: COLLECTION_UID,
+      name: 'api',
+      pathname: '/ws/collections/api',
+      items: [],
+      brunoConfig: { name: 'api' }
+    }));
+    state = reducer(state, collectionAddFileEvent({
+      file: {
+        meta: { collectionUid: COLLECTION_UID, pathname: '/ws/collections/api/skipped.bru', name: 'skipped.bru' },
+        data: {
+          uid: 'skip-1',
+          name: 'skipped',
+          type: 'http-request',
+          seq: 1,
+          request: {
+            method: 'GET',
+            url: 'https://api.example.com/skip',
+            headers: [],
+            params: [],
+            body: { mode: 'none' },
+            auth: { mode: 'none' },
+            vars: { req: [], res: [] },
+            assertions: [],
+            script: { req: '', res: '' },
+            tests: '',
+            docs: ''
+          },
+          settings: {},
+          examples: []
+        },
+        partial: false,
+        loading: false,
+        size: 0.01
+      }
+    }));
+
+    const skipEvent = runFolderEvent({
+      collectionUid: COLLECTION_UID,
+      itemUid: 'skip-1',
+      type: 'runner-request-skipped',
+      responseReceived: {}
+    });
+
+    expect(() => reducer(state, skipEvent)).not.toThrow();
+
+    const next = reducer(state, skipEvent);
+    const collection = next.collections.find((c) => c.uid === COLLECTION_UID);
+    expect(collection.runnerResult.items).toHaveLength(0);
   });
 });

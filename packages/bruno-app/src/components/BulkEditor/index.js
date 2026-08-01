@@ -11,8 +11,20 @@ const BulkEditor = ({ params, onChange, onToggle, onSave, onRun }) => {
 
   const parsedParams = useMemo(() => serializeBulkKeyValue(params), [params]);
 
+  // The bulk text only carries name/value/enabled, so `params` is the only place
+  // descriptions, uids and the other per-row metadata still exist - without
+  // feeding them back in, every keystroke would wipe those fields off disk.
+  //
+  // Read live rather than pinned to the mount-time rows: `params` is whatever
+  // the previous keystroke produced, so a row being typed keeps the uid it was
+  // given, and rows changed from outside while the editor stays mounted (the URL
+  // bar rewrites request.params, the watcher after an external edit or a
+  // `git pull`) are matched against their current state instead of a stale
+  // snapshot that could resurrect deleted rows. CodeEditor reads `onEdit` off
+  // props at call time, so this closure is never stale.
+  // Upstream: bruno #8595 (3c0483852).
   const handleEdit = (value) => {
-    const parsed = parseBulkKeyValue(value);
+    const parsed = parseBulkKeyValue(value, params);
     onChange(parsed);
   };
 
