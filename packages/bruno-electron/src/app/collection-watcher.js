@@ -88,6 +88,16 @@ const envHasSecrets = (environment = {}) => {
   return secrets && secrets.length > 0;
 };
 
+// A request file that will not parse still has to reach the renderer as a partial
+// item, but the only thing we know about it is its path. Name it the way the
+// indexer names an unparseable request (extractRequestMeta's fallbackName: basename
+// WITHOUT the extension) — our sidebar renders from the index, so a name carrying
+// `.yml`/`.bru` repaints the row with the filename. upstream bruno #8545 (81f9a4092)
+const buildUnparseableRequestData = (pathname) => ({
+  name: path.basename(pathname, path.extname(pathname)),
+  type: 'http-request'
+});
+
 const hydrateCollectionRootWithUuid = (collectionRoot) => {
   const params = _.get(collectionRoot, 'request.params', []);
   const headers = _.get(collectionRoot, 'request.headers', []);
@@ -129,7 +139,11 @@ const addEnvironmentFile = async (win, pathname, collectionUid, collectionPath) 
     if (envHasSecrets(file.data)) {
       const envSecrets = environmentSecretsStore.getEnvSecrets(collectionPath, file.data);
       _.each(envSecrets, (secret) => {
-        const variable = _.find(file.data.variables, (v) => v.name === secret.name);
+        // match on `secret` too: a plain variable may share a secret's name, and
+        // without this guard the decrypted secret lands on (and clobbers) the plain
+        // row — leaking it into the UI and blanking the real secret.
+        // upstream bruno #8679 (ef19c6995)
+        const variable = _.find(file.data.variables, (v) => v.name === secret.name && v.secret);
         if (variable && secret.value) {
           const decryptionResult = decryptStringSafe(secret.value);
           variable.value = decryptionResult.value;
@@ -169,7 +183,9 @@ const changeEnvironmentFile = async (win, pathname, collectionUid, collectionPat
     if (envHasSecrets(file.data)) {
       const envSecrets = environmentSecretsStore.getEnvSecrets(collectionPath, file.data);
       _.each(envSecrets, (secret) => {
-        const variable = _.find(file.data.variables, (v) => v.name === secret.name);
+        // see addEnvironmentFile — the `secret` guard keeps a decrypted secret off a
+        // plain variable that happens to share its name. upstream bruno #8679 (ef19c6995)
+        const variable = _.find(file.data.variables, (v) => v.name === secret.name && v.secret);
         if (variable && secret.value) {
           const decryptionResult = decryptStringSafe(secret.value);
           variable.value = decryptionResult.value;
@@ -350,7 +366,17 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
         hydrateRequestWithUuid(file.data, pathname);
         win.webContents.send('main:collection-tree-updated', 'addFile', file);
       } catch (error) {
-        console.error(error);
+        // same partial-item emit as the worker branch below, so an unparseable file
+        // is still listed. upstream bruno #8545 (81f9a4092)
+        file.data = buildUnparseableRequestData(pathname);
+        file.error = {
+          message: error?.message
+        };
+        file.partial = true;
+        file.loading = false;
+        file.size = sizeInMB(fileStats?.size);
+        hydrateRequestWithUuid(file.data, pathname);
+        win.webContents.send('main:collection-tree-updated', 'addFile', file);
       } finally {
         watcher.markFileAsProcessed(win, collectionUid, pathname);
       }
@@ -379,10 +405,7 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
         win.webContents.send('main:collection-tree-updated', 'addFile', file);
       }
     } catch (error) {
-      file.data = {
-        name: path.basename(pathname),
-        type: 'http-request'
-      };
+      file.data = buildUnparseableRequestData(pathname);
       file.error = {
         message: error?.message
       };
@@ -546,29 +569,60 @@ const change = async (win, pathname, collectionUid, collectionPath) => {
 
   const format = getCollectionFormat(collectionPath);
   if (hasRequestExtension(pathname, format)) {
+    const file = {
+      meta: {
+        collectionUid,
+        pathname,
+        name: path.basename(pathname)
+      }
+    };
+
+    let content;
+    let fileStats;
     try {
-      const file = {
-        meta: {
-          collectionUid,
-          pathname,
-          name: path.basename(pathname)
-        }
-      };
+      content = fs.readFileSync(pathname, 'utf8');
+      fileStats = fs.statSync(pathname);
+    } catch (err) {
+      // Reading is kept OUT of the parse try on purpose: a read/stat failure means
+      // "could not look at the file right now", not "this request is broken".
+      // chokidar routinely fires while an atomic-replace save is mid-flight (ENOENT)
+      // and on Windows an AV/indexer holds a brief lock (EPERM/EBUSY) — emitting a
+      // partial item for those would repaint a healthy sidebar row (name -> filename,
+      // no method, no seq). Log and wait for the next event, as before.
+      console.error(err);
+      return;
+    }
 
-      const content = fs.readFileSync(pathname, 'utf8');
-      const fileStats = fs.statSync(pathname);
-
+    try {
       if (fileStats.size >= MAX_FILE_SIZE && format === 'bru') {
         file.data = await parseLargeRequestWithRedaction(content, 'bru');
       } else {
         file.data = await parseRequest(content, { format });
       }
 
+      file.partial = false;
+      file.loading = false;
       file.size = sizeInMB(fileStats?.size);
       hydrateRequestWithUuid(file.data, pathname);
       win.webContents.send('main:collection-tree-updated', 'change', file);
     } catch (err) {
-      console.error(err);
+      // Emit a partial item instead of swallowing the error, so a file that stops
+      // parsing mid-session keeps a row to click on instead of silently going stale.
+      // In-app git operations never reach here (change() returns above on
+      // isPathUnderActiveGitOperation, and reindexCollectionsUnderGitRoot re-runs the
+      // indexer, which emits its own partial+error); what does reach here is an
+      // external writer — the git CLI in a terminal, an editor, or a merge tool
+      // leaving conflict markers behind. Mirrors the worker branch in add().
+      // upstream bruno #8545 (81f9a4092)
+      file.data = buildUnparseableRequestData(pathname);
+      file.error = {
+        message: err?.message
+      };
+      file.partial = true;
+      file.loading = false;
+      file.size = sizeInMB(fileStats.size);
+      hydrateRequestWithUuid(file.data, pathname);
+      win.webContents.send('main:collection-tree-updated', 'change', file);
     }
   }
 };
@@ -1080,3 +1134,15 @@ module.exports = collectionWatcher;
 // Shared with the load-request IPC handlers so a sidebar click classifies an
 // oversized request exactly like this scan does, instead of parsing it inline.
 module.exports.MAX_FILE_SIZE = MAX_FILE_SIZE;
+// Same reason: a sidebar click that cannot parse the file must name the partial
+// item the way this scan (and the indexer) names it, or it repaints the row with
+// the filename.
+module.exports.buildUnparseableRequestData = buildUnparseableRequestData;
+// The chokidar callbacks are module-level functions; the unit tests in
+// tests/collections drive them through here rather than spinning up a real watcher.
+module.exports.__handlers = {
+  add,
+  change,
+  addEnvironmentFile,
+  changeEnvironmentFile
+};

@@ -327,7 +327,11 @@ const useIpcEvents = () => {
       dispatch(workspaceConfigUpdatedEvent(workspacePath, workspaceUid, workspaceConfig));
     });
 
-    const removeWorkspaceEnvironmentAddedListener = ipcRenderer.on('main:workspace-environment-added', (workspaceUid, file) => {
+    // Channel names must match what app/workspace-watcher.js sends
+    // (`main:global-environment-*`). They didn't, so an environment file added,
+    // edited or deleted outside the app never refreshed the global environments —
+    // the listeners below were never called. upstream bruno #8370
+    const removeWorkspaceEnvironmentAddedListener = ipcRenderer.on('main:global-environment-added', (workspaceUid, file) => {
       const state = store.getState();
       const activeWorkspaceUid = state.workspaces?.activeWorkspaceUid;
       if (activeWorkspaceUid === workspaceUid) {
@@ -345,7 +349,7 @@ const useIpcEvents = () => {
       }
     });
 
-    const removeWorkspaceEnvironmentChangedListener = ipcRenderer.on('main:workspace-environment-changed', (workspaceUid, file) => {
+    const removeWorkspaceEnvironmentChangedListener = ipcRenderer.on('main:global-environment-changed', (workspaceUid, file) => {
       const state = store.getState();
       const activeWorkspaceUid = state.workspaces?.activeWorkspaceUid;
       if (activeWorkspaceUid === workspaceUid) {
@@ -363,7 +367,7 @@ const useIpcEvents = () => {
       }
     });
 
-    const removeWorkspaceEnvironmentDeletedListener = ipcRenderer.on('main:workspace-environment-deleted', (workspaceUid, environmentUid) => {
+    const removeWorkspaceEnvironmentDeletedListener = ipcRenderer.on('main:global-environment-deleted', (workspaceUid, environmentUid) => {
       const state = store.getState();
       const activeWorkspaceUid = state.workspaces?.activeWorkspaceUid;
       if (activeWorkspaceUid === workspaceUid) {

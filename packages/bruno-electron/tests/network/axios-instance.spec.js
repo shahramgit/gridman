@@ -5,10 +5,12 @@ jest.mock('electron', () => ({
   }
 }));
 
-// Mock preferences
+// Mock preferences. shouldStoreCookies is switchable so the redirect tests can exercise the
+// cookie-storing path without affecting the rest of the file.
+let mockShouldStoreCookies = false;
 jest.mock('../../src/store/preferences', () => ({
   preferencesUtil: {
-    shouldStoreCookies: () => false,
+    shouldStoreCookies: () => mockShouldStoreCookies,
     shouldSendCookies: () => false,
     isSslSessionCachingEnabled: () => true
   }
@@ -31,6 +33,7 @@ jest.mock('../../src/utils/form-data', () => ({
 }));
 
 const { makeAxiosInstance } = require('../../src/ipc/network/axios-instance');
+const { addCookieToJar } = require('../../src/utils/cookies');
 
 function createStubAdapter() {
   let capturedConfig = null;
@@ -205,5 +208,135 @@ describe('axios-instance: DNS lookup behavior (GitHub #7343)', () => {
     expect(config.lookup).toBeDefined();
     expect(typeof config.lookup).toBe('function');
     expect(config.lookup).not.toBe(inheritedLookup);
+  });
+});
+
+describe('axios-instance: redirect without a Location header (GitHub #7725)', () => {
+  // Builds an adapter that rejects the first call with a redirect status, the way axios' own
+  // http adapter does when validateStatus fails. Later calls resolve, so a bogus follow-up
+  // request is observable as an extra invocation.
+  function createRedirectAdapter({ status = 302, headers = {} } = {}) {
+    const calls = [];
+
+    const adapter = (config) => {
+      calls.push(config);
+
+      if (calls.length > 1) {
+        return Promise.resolve({ data: {}, status: 200, statusText: 'OK', headers: {}, config });
+      }
+
+      const error = new Error(`Request failed with status code ${status}`);
+      error.config = config;
+      error.response = { data: '', status, statusText: 'Found', headers, config };
+      return Promise.reject(error);
+    };
+
+    adapter.getCalls = () => calls;
+
+    return adapter;
+  }
+
+  test('rejects instead of following a 302 that carries no Location header', async () => {
+    const stubAdapter = createRedirectAdapter({ status: 302, headers: {} });
+    const instance = makeAxiosInstance();
+
+    // A bare 302 (enterprise proxies return this on auth failure) is not followable.
+    // Before the fix the interceptor built a redirect config with `url: undefined`.
+    await expect(
+      instance({ url: 'https://api.example.com/protected', method: 'get', adapter: stubAdapter })
+    ).rejects.toMatchObject({ response: { status: 302 } });
+
+    expect(stubAdapter.getCalls()).toHaveLength(1);
+  });
+
+  test('rejects a 301 with an empty-string Location header', async () => {
+    const stubAdapter = createRedirectAdapter({ status: 301, headers: { location: '' } });
+    const instance = makeAxiosInstance();
+
+    await expect(
+      instance({ url: 'https://api.example.com/moved', method: 'get', adapter: stubAdapter })
+    ).rejects.toMatchObject({ response: { status: 301 } });
+
+    expect(stubAdapter.getCalls()).toHaveLength(1);
+  });
+
+  test('still follows a 302 that does carry a Location header', async () => {
+    const stubAdapter = createRedirectAdapter({
+      status: 302,
+      headers: { location: 'https://api.example.com/after-redirect' }
+    });
+    const instance = makeAxiosInstance();
+
+    const response = await instance({
+      url: 'https://api.example.com/protected',
+      method: 'get',
+      adapter: stubAdapter
+    });
+
+    expect(response.status).toEqual(200);
+
+    const calls = stubAdapter.getCalls();
+    expect(calls).toHaveLength(2);
+    expect(calls[1].url).toEqual('https://api.example.com/after-redirect');
+  });
+
+  test('attaches the timeline to the rejected response when Location is missing', async () => {
+    const stubAdapter = createRedirectAdapter({ status: 302, headers: {} });
+    const instance = makeAxiosInstance();
+
+    let caught;
+    try {
+      await instance({ url: 'https://api.example.com/protected', method: 'get', adapter: stubAdapter });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(Array.isArray(caught.response.timeline)).toBe(true);
+  });
+
+  describe('with cookie storage enabled', () => {
+    beforeEach(() => {
+      mockShouldStoreCookies = true;
+      addCookieToJar.mockClear();
+    });
+
+    afterEach(() => {
+      mockShouldStoreCookies = false;
+    });
+
+    test('saves Set-Cookie from a 302 that carries no Location header', async () => {
+      // The enterprise-proxy 302 that motivated the guard usually sets a session cookie the next
+      // attempt needs. Rejecting above saveCookies would silently drop it — and the
+      // `followRedirects: false` branch a few lines up saves cookies before rejecting, so
+      // dropping here would be inconsistent on top of wrong.
+      const stubAdapter = createRedirectAdapter({
+        status: 302,
+        headers: { 'set-cookie': ['session=abc; Path=/'] }
+      });
+      const instance = makeAxiosInstance();
+
+      await expect(
+        instance({ url: 'https://api.example.com/protected', method: 'get', adapter: stubAdapter })
+      ).rejects.toMatchObject({ response: { status: 302 } });
+
+      expect(addCookieToJar).toHaveBeenCalledWith('session=abc; Path=/', 'https://api.example.com/protected');
+    });
+
+    test('still saves Set-Cookie from a 302 that is followed', async () => {
+      const stubAdapter = createRedirectAdapter({
+        status: 302,
+        headers: { 'set-cookie': ['session=abc; Path=/'], 'location': 'https://api.example.com/after-redirect' }
+      });
+      const instance = makeAxiosInstance();
+
+      const response = await instance({
+        url: 'https://api.example.com/protected',
+        method: 'get',
+        adapter: stubAdapter
+      });
+
+      expect(response.status).toEqual(200);
+      expect(addCookieToJar).toHaveBeenCalledWith('session=abc; Path=/', 'https://api.example.com/protected');
+    });
   });
 });

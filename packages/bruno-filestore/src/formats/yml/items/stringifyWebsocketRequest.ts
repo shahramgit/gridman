@@ -1,12 +1,12 @@
 import type { Item as BrunoItem } from '@usebruno/schema-types/collection/item';
 import type { WebSocketRequest as BrunoWebSocketRequest } from '@usebruno/schema-types/requests/websocket';
-import type { WebSocketRequest, WebSocketMessage, WebSocketRequestInfo, WebSocketRequestDetails, WebSocketRequestRuntime } from '@opencollection/types/requests/websocket';
+import type { WebSocketRequest, WebSocketMessage, WebSocketMessageType, WebSocketMessageVariant, WebSocketRequestInfo, WebSocketRequestDetails, WebSocketRequestRuntime } from '@opencollection/types/requests/websocket';
 import type { Auth } from '@opencollection/types/common/auth';
 import type { Scripts } from '@opencollection/types/common/scripts';
 import type { Variable } from '@opencollection/types/common/variables';
 import type { HttpRequestHeader } from '@opencollection/types/requests/http';
 import { stringifyYml } from '../utils';
-import { isNonEmptyString } from '../../../utils';
+import { isNonEmptyString, ensureString } from '../../../utils';
 import { toOpenCollectionAuth } from '../common/auth';
 import { toOpenCollectionHttpHeaders } from '../common/headers';
 import { toOpenCollectionVariables } from '../common/variables';
@@ -42,20 +42,28 @@ const stringifyWebsocketRequest = (item: BrunoItem): string => {
     }
 
     // message
+    // writing only messages[0] silently dropped the rest of a multi message request on
+    // save - same defect the gRPC writer had. Several messages are written as a variant
+    // list; a single message keeps the scalar shape, which is what is already on disk
+    // everywhere and the only shape builds before this change can read.
     if (brunoRequest.body?.mode === 'ws' && brunoRequest.body.ws?.length) {
       const messages = brunoRequest.body.ws;
 
-      // todo: bruno app supports only one message for now
-      // update this when bruno app supports multiple messages
-      if (messages.length) {
-        const msg = messages[0];
-        const message: WebSocketMessage = {
-          type: (msg.type as 'text' | 'json' | 'xml' | 'binary') || 'text',
-          data: msg.content || ''
-        };
+      const toOcMessage = (msg: typeof messages[number]): WebSocketMessage => ({
+        type: (msg.type as WebSocketMessageType) || 'text',
+        data: ensureString(msg.content)
+      });
+
+      if (messages.length === 1) {
+        const message = toOcMessage(messages[0]);
         if (message.data.trim().length) {
           websocket.message = message;
         }
+      } else {
+        websocket.message = messages.map((msg, index): WebSocketMessageVariant => ({
+          title: isNonEmptyString(msg.name) ? msg.name : `message ${index + 1}`,
+          message: toOcMessage(msg)
+        }));
       }
     }
 

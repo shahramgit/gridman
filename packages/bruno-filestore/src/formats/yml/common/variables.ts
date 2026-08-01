@@ -1,7 +1,7 @@
 import { Variable, VariableTypedValue } from '@opencollection/types/common/variables';
 import { FolderRequest as BrunoFolderRequest } from '@usebruno/schema-types/collection/folder';
 import { Variable as BrunoVariable, Variables as BrunoVariables } from '@usebruno/schema-types/common/variables';
-import { uuid, ensureString } from '../../../utils';
+import { uuid, ensureString, isNonEmptyString } from '../../../utils';
 
 export const isTypedValue = (value: unknown): value is VariableTypedValue => {
   return (
@@ -11,6 +11,39 @@ export const isTypedValue = (value: unknown): value is VariableTypedValue => {
     && 'type' in value
     && 'data' in value
   );
+};
+
+/**
+ * Variable values are not always strings - scripts set numbers, booleans, arrays and
+ * objects via bru.setEnvVar()/bru.setVar(). The yml value field is text, so serialize
+ * whatever we are handed instead of dropping it.
+ * Upstream: `serializeVariableValue` in 942f99571 (#8046).
+ *
+ * A value we cannot encode throws, which aborts the save and leaves the previous value on
+ * disk untouched. Writing a '[object Object]' placeholder instead would silently replace
+ * the real value with something unrecoverable and indistinguishable from a genuine string.
+ */
+export const serializeVariableValue = (value: unknown, name?: string | null): string => {
+  if (value === null || typeof value !== 'object') {
+    return ensureString(value);
+  }
+
+  const label = isNonEmptyString(name) ? name : '<unnamed>';
+  let serialized: string | undefined;
+
+  try {
+    serialized = JSON.stringify(value, null, 2);
+  } catch (error) {
+    // circular references and BigInt payloads land here
+    throw new Error(`Unable to save variable "${label}": its value could not be serialized (${(error as Error)?.message}).`);
+  }
+
+  if (serialized === undefined) {
+    // a toJSON() returning undefined leaves us with nothing to write
+    throw new Error(`Unable to save variable "${label}": its value could not be serialized.`);
+  }
+
+  return serialized;
 };
 
 /**
@@ -29,12 +62,18 @@ export const toOpenCollectionVariables = (variables: BrunoFolderRequest['vars'] 
   }
 
   const ocVariables: Variable[] = reqVarsArray.map((v: BrunoVariable): Variable => {
+    // collection / folder / request variables carry script written values just like
+    // environment variables do. `v.value || ''` wrote '' for 0 and false, and
+    // ensureString() wrote '[object Object]' for objects - the value was gone on the next
+    // save. Upstream: 942f99571 (#8046).
+    const valueStr = serializeVariableValue(v.value, v.name);
+
     const variable: Variable = {
       name: v.name || '',
       value:
         v.datatype && v.datatype !== 'string'
-          ? { type: v.datatype, data: ensureString(v.value) }
-          : v.value || ''
+          ? { type: v.datatype, data: valueStr }
+          : valueStr
     };
 
     if (v?.description?.trim().length) {

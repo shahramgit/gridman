@@ -1,13 +1,13 @@
 import type { Item as BrunoItem } from '@usebruno/schema-types/collection/item';
 import type { KeyValue as BrunoKeyValue } from '@usebruno/schema-types/common/key-value';
 import type { GrpcRequest as BrunoGrpcRequest } from '@usebruno/schema-types/requests/grpc';
-import type { GrpcRequest, GrpcMetadata, GrpcMessage, GrpcRequestInfo, GrpcRequestDetails, GrpcRequestRuntime } from '@opencollection/types/requests/grpc';
+import type { GrpcRequest, GrpcMetadata, GrpcMessageVariant, GrpcRequestInfo, GrpcRequestDetails, GrpcRequestRuntime } from '@opencollection/types/requests/grpc';
 import type { Auth } from '@opencollection/types/common/auth';
 import type { Scripts } from '@opencollection/types/common/scripts';
 import type { Variable } from '@opencollection/types/common/variables';
 import type { Assertion } from '@opencollection/types/common/assertions';
 import { stringifyYml } from '../utils';
-import { isNonEmptyString } from '../../../utils';
+import { isNonEmptyString, ensureString } from '../../../utils';
 import { toOpenCollectionAuth } from '../common/auth';
 import { toOpenCollectionVariables } from '../common/variables';
 import { toOpenCollectionScripts } from '../common/scripts';
@@ -72,16 +72,25 @@ const stringifyGrpcRequest = (item: BrunoItem): string => {
     }
 
     // message
+    // writing only messages[0] silently dropped the rest of a streaming request on save,
+    // so several messages are written as a variant list. Upstream: 240826ebc (#8203).
+    // A single message keeps the scalar shape: it is what is already on disk everywhere
+    // (no diff noise across git backed collections), and it is the only shape builds
+    // before this change can read. The variant list is therefore limited to streaming
+    // requests, which those builds could never store more than one message of anyway.
     if (brunoRequest.body?.mode === 'grpc' && brunoRequest.body.grpc?.length) {
       const messages = brunoRequest.body.grpc;
 
-      // todo: bruno app supports only one message for now
-      // update this when bruno app supports multiple messages
-      if (messages.length) {
-        const message: GrpcMessage = messages[0].content || '';
+      if (messages.length === 1) {
+        const message = ensureString(messages[0].content);
         if (message.trim().length) {
           grpc.message = message;
         }
+      } else {
+        grpc.message = messages.map(({ name, content }, index): GrpcMessageVariant => ({
+          title: isNonEmptyString(name) ? name : `message ${index + 1}`,
+          message: ensureString(content)
+        }));
       }
     }
 

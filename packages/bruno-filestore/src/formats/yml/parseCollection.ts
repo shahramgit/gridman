@@ -34,9 +34,11 @@ const parseCollection = (ymlString: string): ParsedCollection => {
     if (brunoExtension?.presets) {
       const presets = brunoExtension.presets as any;
       if (presets.request) {
+        // presets are strings, not lists - defaulting to [] made yml collection presets
+        // non-functional. Upstream: 2d4d4e403 (#8027).
         brunoConfig.presets = {
-          requestType: presets.request.type || [],
-          requestUrl: presets.request.url || []
+          requestType: presets.request.type || '',
+          requestUrl: presets.request.url || ''
         };
       }
     }

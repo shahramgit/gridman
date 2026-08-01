@@ -91,7 +91,10 @@ const parseGlobalEnvironmentFile = async (pathname, workspacePath, workspaceUid)
   if (envHasSecrets(file.data)) {
     const envSecrets = environmentSecretsStore.getEnvSecrets(workspacePath, file.data);
     _.each(envSecrets, (secret) => {
-      const variable = _.find(file.data.variables, (v) => v.name === secret.name);
+      // match on `secret` too — a plain variable may share a secret's name, and
+      // without the guard the decrypted secret lands on (and clobbers) the plain
+      // row. Same fix as the collection watcher. upstream bruno #8679 (ef19c6995)
+      const variable = _.find(file.data.variables, (v) => v.name === secret.name && v.secret);
       if (variable && secret.value) {
         const decryptionResult = decryptStringSafe(secret.value);
         variable.value = decryptionResult.value;

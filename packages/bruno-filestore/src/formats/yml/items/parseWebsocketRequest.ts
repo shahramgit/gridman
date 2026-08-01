@@ -1,6 +1,6 @@
 import type { Item as BrunoItem } from '@usebruno/schema-types/collection/item';
 import type { WebSocketRequest as BrunoWebSocketRequest } from '@usebruno/schema-types/requests/websocket';
-import type { WebSocketRequest, WebSocketMessage } from '@opencollection/types/requests/websocket';
+import type { WebSocketRequest, WebSocketMessage, WebSocketMessageVariant } from '@opencollection/types/requests/websocket';
 import { toBrunoAuth } from '../common/auth';
 import { toBrunoHttpHeaders } from '../common/headers';
 import { toBrunoVariables } from '../common/variables';
@@ -34,8 +34,17 @@ const parseWebsocketRequest = (ocRequest: WebSocketRequest): BrunoItem => {
   };
 
   // message
-  if (websocket?.message) {
-    const message = websocket.message as WebSocketMessage;
+  // a list holds the messages of a multi message request; a bare message object is the
+  // single message shape, still what the writer emits for one message
+  const rawMessage = websocket?.message;
+  if (Array.isArray(rawMessage)) {
+    brunoRequest.body.ws = (rawMessage as WebSocketMessageVariant[]).map(({ title, message }, index) => ({
+      name: title || `message ${index + 1}`,
+      type: message?.type || 'text',
+      content: ensureString(message?.data)
+    }));
+  } else if (rawMessage) {
+    const message = rawMessage as WebSocketMessage;
     const messageData = ensureString(message.data);
     if (messageData.trim().length) {
       brunoRequest.body.ws = [{

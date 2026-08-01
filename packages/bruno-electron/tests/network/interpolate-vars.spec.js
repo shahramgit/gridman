@@ -181,6 +181,101 @@ describe('interpolate-vars: interpolateVars', () => {
         const result = interpolateVars(request, null, null, null);
         expect(result.url).toBe('http://example.com/Category(\'foobar\')/Item(1)/foobar/Tags(%22tag%20test%22)');
       });
+
+      // A `:segment` must only be substituted when the matching row is enabled AND has a value.
+      // Substituting on mere existence collapsed `/anything/:id` to `/anything/`, which silently
+      // hits a different endpoint. Upstream fix: usebruno/bruno#8157 (07c734866, BRU-3246).
+      it('keeps colon path segments when the path param has an empty value', async () => {
+        const request = {
+          method: 'POST',
+          url: 'https://httpbin.org/anything/:test-segment',
+          pathParams: [
+            {
+              type: 'path',
+              name: 'test-segment',
+              value: ''
+            }
+          ]
+        };
+
+        const result = interpolateVars(request, null, null, null);
+        expect(result.url).toBe('https://httpbin.org/anything/:test-segment');
+      });
+
+      it('keeps colon path segments when the path param value is whitespace only', async () => {
+        const request = {
+          method: 'GET',
+          url: 'https://httpbin.org/anything/:test-segment',
+          pathParams: [
+            {
+              type: 'path',
+              name: 'test-segment',
+              value: '   '
+            }
+          ]
+        };
+
+        const result = interpolateVars(request, null, null, null);
+        expect(result.url).toBe('https://httpbin.org/anything/:test-segment');
+      });
+
+      it('keeps colon path segments when the path param is disabled', async () => {
+        const request = {
+          method: 'POST',
+          url: 'https://httpbin.org/anything/:test-segment',
+          pathParams: [
+            {
+              type: 'path',
+              name: 'test-segment',
+              value: 'replaced',
+              enabled: false
+            }
+          ]
+        };
+
+        const result = interpolateVars(request, null, null, null);
+        expect(result.url).toBe('https://httpbin.org/anything/:test-segment');
+      });
+
+      it('keeps odata style params when the matching row is disabled or blank', async () => {
+        const request = {
+          method: 'GET',
+          url: 'http://example.com/Category(\':CategoryID\')/Item(:ItemId)',
+          pathParams: [
+            {
+              type: 'path',
+              name: 'CategoryID',
+              value: 'foobar',
+              enabled: false
+            },
+            {
+              type: 'path',
+              name: 'ItemId',
+              value: ''
+            }
+          ]
+        };
+
+        const result = interpolateVars(request, null, null, null);
+        expect(result.url).toBe('http://example.com/Category(\':CategoryID\')/Item(:ItemId)');
+      });
+
+      it('still substitutes a falsy but meaningful value like 0', async () => {
+        const request = {
+          method: 'GET',
+          url: 'http://example.com/item/:id',
+          pathParams: [
+            {
+              type: 'path',
+              name: 'id',
+              value: 0
+            }
+          ]
+        };
+
+        const result = interpolateVars(request, null, null, null);
+        expect(result.url).toBe('http://example.com/item/0');
+      });
     });
 
     describe('With process environment variables', () => {

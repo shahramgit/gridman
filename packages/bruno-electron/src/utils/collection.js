@@ -778,7 +778,13 @@ const getEnvVars = (environment = {}) => {
   }
 
   const envVars = {};
-  each(variables, (variable) => {
+  // Plain variables first, secrets last. A plain variable and a secret can carry
+  // the same name (they live on separate tabs in the UI), and this is a last-wins
+  // map — so without the ordering the winner is whichever row happens to come last
+  // in the file, and a plain placeholder above a secret sent the request out with
+  // the wrong (usually empty) credential. upstream bruno #8679 (ef19c6995)
+  const orderedVariables = [...filter(variables, (v) => !v.secret), ...filter(variables, (v) => v.secret)];
+  each(orderedVariables, (variable) => {
     if (variable.enabled) {
       envVars[variable.name] = variable.value;
     }
