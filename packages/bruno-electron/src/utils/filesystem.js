@@ -290,12 +290,12 @@ const validateName = (name) => {
 const safeToRename = (oldPath, newPath) => {
   try {
     // If the new path doesn't exist, it's safe to rename
-    if (!fs.existsSync(newPath)) {
+    if (!fs.existsSync(winLongPath(newPath))) {
       return true;
     }
 
-    const oldStat = fs.statSync(oldPath);
-    const newStat = fs.statSync(newPath);
+    const oldStat = fs.statSync(winLongPath(oldPath));
+    const newStat = fs.statSync(winLongPath(newPath));
 
     if (isWindowsOS()) {
       // Windows-specific comparison:
@@ -311,13 +311,97 @@ const safeToRename = (oldPath, newPath) => {
   }
 };
 
+// A workspace scan walks every file of every collection at startup (~11.7k on
+// the largest customer workspace). The walk stays parallel, but the number of
+// in-flight fs calls is capped so it cannot starve the event loop or exhaust
+// file handles while the app is still opening.
+const COLLECTION_STATS_CONCURRENCY = 24;
+
+const createConcurrencyLimiter = (limit) => {
+  let active = 0;
+  // A queue with one entry per directory entry: Array#shift is O(n), so
+  // draining a directory with thousands of files would cost O(n^2). Walk an
+  // index instead and only reset the array once it has been drained.
+  const waiting = [];
+  let next = 0;
+
+  const acquire = () => {
+    if (active < limit) {
+      active += 1;
+      return Promise.resolve();
+    }
+    // The slot is handed over by release(), which keeps counting it as active
+    // while the waiter wakes up — a caller arriving in between must queue
+    // behind us rather than jump the cap.
+    return new Promise((resolve) => waiting.push(resolve));
+  };
+
+  const release = () => {
+    if (next >= waiting.length) {
+      active -= 1;
+      return;
+    }
+    const resume = waiting[next];
+    waiting[next] = null;
+    next += 1;
+    if (next === waiting.length) {
+      waiting.length = 0;
+      next = 0;
+    }
+    resume();
+  };
+
+  return async (task) => {
+    await acquire();
+    try {
+      return await task();
+    } finally {
+      release();
+    }
+  };
+};
+
+// The stats decide eager vs lazy (indexed) collection load and land in
+// brunoConfig.size/filesCount, so they must count exactly what the app treats
+// as a request — the collection format's own request files, minus the
+// collection/folder root files and the environments directory the watcher
+// routes elsewhere. Counting every *.yml made an OpenAPI spec or a
+// docker-compose.yml kept next to a collection count as requests, and a single
+// 6 MB one flipped a small collection onto the lazy path.
+const COLLECTION_ROOT_FILENAMES = ['collection.bru', 'opencollection.yml'];
+const FOLDER_ROOT_FILENAMES = ['folder.bru', 'folder.yml'];
+
 const getCollectionStats = async (directoryPath) => {
   let size = 0;
   let filesCount = 0;
   let maxFileSize = 0;
+  const limit = createConcurrencyLimiter(COLLECTION_STATS_CONCURRENCY);
 
-  async function calculateStats(directory) {
-    const entries = await fsPromises.readdir(directory, { withFileTypes: true });
+  // A directory that is not (yet) a collection has no format; count both
+  // request formats there rather than throwing at callers that only want a
+  // rough size.
+  let format = null;
+  try {
+    format = getCollectionFormat(directoryPath);
+  } catch (_err) {
+    format = null;
+  }
+
+  // Count the collection's own request format, not just .bru: a yml collection
+  // used to report zero files/zero bytes, so it never qualified for the indexed
+  // (lazy) load and was always scanned eagerly on startup.
+  const isRequestFile = (name, isCollectionRoot) => {
+    if (!hasRequestExtension(name, format)) {
+      return false;
+    }
+    if (FOLDER_ROOT_FILENAMES.includes(name)) {
+      return false;
+    }
+    return !(isCollectionRoot && COLLECTION_ROOT_FILENAMES.includes(name));
+  };
+
+  async function calculateStats(directory, isCollectionRoot) {
+    const entries = await limit(() => fsPromises.readdir(winLongPath(directory), { withFileTypes: true }));
 
     const tasks = entries.map(async (entry) => {
       const fullPath = path.join(directory, entry.name);
@@ -327,11 +411,17 @@ const getCollectionStats = async (directoryPath) => {
           return;
         }
 
-        await calculateStats(fullPath);
+        // Environment files are not requests — the watcher routes them to
+        // addEnvironmentFile before its request check ever runs.
+        if (isCollectionRoot && entry.name === 'environments') {
+          return;
+        }
+
+        return calculateStats(fullPath, false);
       }
 
-      if (path.extname(fullPath) === '.bru') {
-        const stats = await fsPromises.stat(fullPath);
+      if (isRequestFile(entry.name, isCollectionRoot)) {
+        const stats = await limit(() => fsPromises.stat(winLongPath(fullPath)));
         size += stats?.size;
         if (maxFileSize < stats?.size) {
           maxFileSize = stats?.size;
@@ -343,7 +433,7 @@ const getCollectionStats = async (directoryPath) => {
     await Promise.all(tasks);
   }
 
-  await calculateStats(directoryPath);
+  await calculateStats(directoryPath, true);
 
   size = sizeInMB(size);
   maxFileSize = sizeInMB(maxFileSize);
@@ -373,7 +463,7 @@ async function safeWriteFile(filePath, data, options) {
 
   try {
     const fsExtra = require('fs-extra');
-    fsExtra.outputFileSync(safePath, data, options);
+    fsExtra.outputFileSync(winLongPath(safePath), data, options);
   } catch (err) {
     console.error(`Error writing file at ${safePath}:`, err);
     return Promise.reject(err);
@@ -382,8 +472,186 @@ async function safeWriteFile(filePath, data, options) {
 
 function safeWriteFileSync(filePath, data) {
   const safePath = getSafePathToWrite(filePath);
-  fs.writeFileSync(safePath, data);
+  fs.writeFileSync(winLongPath(safePath), data);
 }
+
+// Windows refuses a rename with EPERM/EBUSY/EACCES while ANY handle inside the
+// subtree is open without FILE_SHARE_DELETE — antivirus, a sync client, an
+// Explorer window or a terminal sitting in the folder hold it just as often as
+// the app does. Customer symptom: renaming a folder in a Persian collection
+// failed with EPERM and "only worked after closing Gridman". Those holds clear
+// within a second, so retry before paying for a recursive copy of the tree.
+const TRANSIENT_LOCK_CODES = ['EPERM', 'EBUSY', 'EACCES'];
+const MOVE_RETRY_DELAYS_IN_MS = [50, 100, 200, 400, 800];
+const REMOVE_RETRY_OPTIONS = { recursive: true, force: true, maxRetries: 10, retryDelay: 100 };
+
+const isTransientLockError = (error) => TRANSIENT_LOCK_CODES.includes(error?.code);
+
+// fs-extra refuses a non-overwriting move onto an existing destination with a
+// bare `new Error('dest already exists.')` — no `code` to match on.
+const isDestExistsError = (error) => !error?.code && error?.message === 'dest already exists.';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Every error out of movePathWithRetry carries this, because callers delete
+// things based on it (moveToAppTrash removes the trash entry it just created).
+// `true` is only ever set where the source was PROVEN intact — an unflagged
+// error must read as "cannot prove", never as "safe to clean up".
+const withSourceIntact = (error, sourceIntact) => {
+  error.sourceIntact = sourceIntact;
+  return error;
+};
+
+const lockedPathError = (pathname, error) => {
+  const lockedError = new Error(
+    `Could not move "${path.basename(pathname)}" — it is open in another program `
+    + '(antivirus, file sync, Explorer or a terminal) or is not writable. '
+    + 'Close it and try again.'
+  );
+  lockedError.code = error?.code;
+  return withSourceIntact(lockedError, true);
+};
+
+const targetExistsError = (sourcePathname, targetPathname) => {
+  const existsError = new Error(
+    `Could not move "${path.basename(sourcePathname)}" — "${path.basename(targetPathname)}" already exists.`
+  );
+  existsError.code = 'EEXIST';
+  return withSourceIntact(existsError, true);
+};
+
+const partiallyMovedError = (sourcePathname, targetPathname, error) => {
+  const partialError = new Error(
+    `"${path.basename(sourcePathname)}" was copied to "${targetPathname}", but the original could not be removed `
+    + '(it is open in another program) and is now incomplete. The copy has been kept — do not delete it.'
+  );
+  partialError.code = error?.code;
+  // Tells callers the copy at the target is the only COMPLETE copy left, so it
+  // must survive their cleanup (see moveToAppTrash).
+  return withSourceIntact(partialError, false);
+};
+
+// Does `original` still hold every entry of `copy`? fsPromises.rm unlinks
+// depth-first and can reject with descendants ALREADY gone, so this is what
+// tells a removal that failed outright (original untouched, the copy is
+// redundant) from one that failed half way (the copy is now the only complete
+// copy of the user's requests).
+const holdsEveryEntryOf = async (original, copy) => {
+  try {
+    if (!(await exists(original))) {
+      return false;
+    }
+    const copyStats = await fsPromises.lstat(copy);
+    if (!copyStats.isDirectory()) {
+      return true;
+    }
+    const entries = await fsPromises.readdir(copy, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!(await holdsEveryEntryOf(path.join(original, entry.name), path.join(copy, entry.name)))) {
+        return false;
+      }
+    }
+    return true;
+  } catch (_err) {
+    // Cannot prove the original survived — assume it did not and keep the copy.
+    return false;
+  }
+};
+
+// Moves a file/directory, absorbing the transient locks described above: retry
+// with backoff, then copy + remove as a last resort.
+//
+// The contract callers depend on (see app-trash.js):
+//   resolves                     -> everything is at the target, nothing is left at the source
+//   rejects                      -> the source is untouched and no leftover of OURS is at the target
+//   rejects with sourceIntact:false -> the copy at the target is the only complete copy
+//                                   left; it must be kept, the source is now incomplete.
+const movePathWithRetry = async (sourcePathname, targetPathname) => {
+  // Extended-length paths so long/non-ASCII nested paths (past MAX_PATH) don't
+  // fail with ENOENT.
+  const source = winLongPath(sourcePathname);
+  const target = winLongPath(targetPathname);
+
+  // Whatever sits at the target before the first attempt belongs to the user
+  // and is never ours to delete; anything appearing there afterwards is a
+  // leftover of one of our own failed attempts. (A case-only rename does not
+  // land here: fs-extra renames it natively without the exists check.)
+  const targetExistedBefore = fs.existsSync(target);
+
+  // Discards a leftover of one of OUR failed attempts, and answers whether the
+  // source is safe to keep working with. It refuses to delete anything it
+  // cannot prove is redundant: across devices fs-extra's move is
+  // copy-then-remove, so a failed attempt can leave the target holding the ONLY
+  // complete copy while the source is half eaten. Deleting that copy — and then
+  // retrying against the truncated source — destroys the user's requests.
+  const discardOurLeftoverAtTarget = async () => {
+    if (targetExistedBefore) {
+      // Whatever sits there belongs to the user; never ours to delete.
+      return true;
+    }
+    if (!(await exists(target))) {
+      return true;
+    }
+    if (!(await holdsEveryEntryOf(source, target))) {
+      return false;
+    }
+    await fsPromises.rm(target, REMOVE_RETRY_OPTIONS).catch(() => {});
+    return true;
+  };
+
+  for (let attempt = 0; attempt <= MOVE_RETRY_DELAYS_IN_MS.length; attempt++) {
+    try {
+      await fs.move(source, target, { overwrite: false });
+      return;
+    } catch (error) {
+      if (isDestExistsError(error) && targetExistedBefore) {
+        throw targetExistsError(sourcePathname, targetPathname);
+      }
+      // Across devices — userData and the collections sit on different drives
+      // on most Windows machines, so EVERY trash move is cross-device —
+      // fs-extra's move is copy-then-remove. When the remove is the part the
+      // lock breaks, the copy stays behind and every later attempt dies on the
+      // code-less 'dest already exists.' instead of retrying. Clear our own
+      // leftover so the retries (and the copy fallback below) start clean.
+      if (!(await discardOurLeftoverAtTarget())) {
+        throw partiallyMovedError(sourcePathname, targetPathname, error);
+      }
+      if (!isTransientLockError(error) && !isDestExistsError(error)) {
+        throw withSourceIntact(error, true);
+      }
+      if (attempt < MOVE_RETRY_DELAYS_IN_MS.length) {
+        await sleep(MOVE_RETRY_DELAYS_IN_MS[attempt]);
+      }
+    }
+  }
+
+  try {
+    await fs.copy(source, target, { overwrite: false, errorOnExist: true });
+  } catch (error) {
+    // fsExtra.copy is not transactional: without this the half-written target
+    // stays on disk next to the source, which for a rename is the folder
+    // showing up twice in the sidebar after a restart. (copy never touches the
+    // source, so the discard below can always prove it intact.)
+    if (!(await discardOurLeftoverAtTarget())) {
+      throw partiallyMovedError(sourcePathname, targetPathname, error);
+    }
+    throw isTransientLockError(error)
+      ? lockedPathError(sourcePathname, error)
+      : withSourceIntact(error, true);
+  }
+
+  try {
+    await fsPromises.rm(source, REMOVE_RETRY_OPTIONS);
+  } catch (error) {
+    if (await discardOurLeftoverAtTarget()) {
+      // Nothing was lost, so drop the copy: both on disk shows the item twice.
+      throw lockedPathError(sourcePathname, error);
+    }
+    // The removal already ate part of the source — rolling the copy back here
+    // would destroy the user's only complete copy of those requests.
+    throw partiallyMovedError(sourcePathname, targetPathname, error);
+  }
+};
 
 // Recursively copies a source <file/directory> to a destination <directory>.
 const copyPath = async (source, destination) => {
@@ -589,6 +857,7 @@ module.exports = {
   sizeInMB,
   safeWriteFile,
   safeWriteFileSync,
+  movePathWithRetry,
   copyPath,
   removePath,
   getPaths,

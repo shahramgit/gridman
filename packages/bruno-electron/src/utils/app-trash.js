@@ -2,6 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const fsExtra = require('fs-extra');
 const { uuid } = require('./common');
+const { movePathWithRetry } = require('./filesystem');
 
 // Gridman-managed Trash (Postman-style): user-deleted requests, folders,
 // collections and environment files move HERE — inside the app, not the OS
@@ -26,9 +27,6 @@ const moveToAppTrash = async (source, meta = {}) => {
   await fsExtra.ensureDir(payloadDir);
 
   const basename = path.basename(source);
-  // fs-extra move: rename when possible, copy+delete across devices.
-  await fsExtra.move(source, path.join(payloadDir, basename));
-
   const entryMeta = {
     id: entryId,
     displayName: meta.displayName || basename,
@@ -38,6 +36,30 @@ const moveToAppTrash = async (source, meta = {}) => {
     deletedAt: new Date().toISOString(),
     basename
   };
+
+  // Rename when possible, copy+delete across devices (userData usually lives
+  // on another drive than the collection). Deleting hits the same Windows
+  // locks and MAX_PATH limits as renaming, so it goes through the shared retry
+  // helper.
+  try {
+    await movePathWithRetry(source, path.join(payloadDir, basename));
+  } catch (error) {
+    if (error?.sourceIntact === true) {
+      // The source was PROVEN untouched, so nothing of the user's is in here.
+      // Without meta.json this entry is invisible to both the Trash panel and
+      // the purge, so drop it instead of leaking a directory into userData on
+      // every failed delete.
+      await fsExtra.remove(entryDir).catch(() => {});
+    } else {
+      // The move may have taken the only complete copy into the payload — and
+      // anything we cannot PROVE intact counts as that — so the entry has to
+      // stay, with its meta.json, or listAppTrash skips it, purgeAppTrash never
+      // sees it and the user's requests sit unreachable in userData forever.
+      await fsExtra.writeJson(path.join(entryDir, 'meta.json'), entryMeta, { spaces: 2 }).catch(() => {});
+    }
+    throw error;
+  }
+
   await fsExtra.writeJson(path.join(entryDir, 'meta.json'), entryMeta, { spaces: 2 });
   return entryMeta;
 };
@@ -103,8 +125,22 @@ const restoreAppTrashItem = async (entryId) => {
     throw new Error(`Cannot restore: "${meta.basename}" already exists at its original location`);
   }
   await fsExtra.ensureDir(path.dirname(target));
-  await fsExtra.move(payloadPath, target);
-  await fsExtra.remove(entryDir);
+  try {
+    await movePathWithRetry(payloadPath, target);
+  } catch (error) {
+    // `sourceIntact: false` means the complete copy already landed back at the
+    // original location and only the payload could not be fully removed — that
+    // IS the restore the user asked for, so finish it rather than report a
+    // failure they cannot act on and leave a half-emptied entry behind.
+    if (error?.sourceIntact !== false) {
+      throw error;
+    }
+  }
+  // Best-effort: the lock that stopped the payload being removed is usually
+  // still in force, and failing here would report a restore that actually
+  // succeeded — leaving an entry pointing at a path that now exists, which
+  // every retry then refuses with "already exists at its original location".
+  await fsExtra.remove(entryDir).catch(() => {});
   return meta;
 };
 
