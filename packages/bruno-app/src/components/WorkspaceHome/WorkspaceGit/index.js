@@ -255,6 +255,7 @@ const WorkspaceGit = ({ workspace }) => {
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [discardCommitsConfirmOpen, setDiscardCommitsConfirmOpen] = useState(false);
   const [discards, setDiscards] = useState([]);
+  const [discardsError, setDiscardsError] = useState('');
   const [connectRemoteTestResult, setConnectRemoteTestResult] = useState(null);
   const [preferredRemoteBranch, setPreferredRemoteBranch] = useState('');
   const [editingRemote, setEditingRemote] = useState(false);
@@ -296,10 +297,26 @@ const WorkspaceGit = ({ workspace }) => {
   const conflicted = changedFiles.conflicted || [];
   const tooManyFiles = Boolean(changedFiles.tooManyFiles);
   const totalChangedFiles = changedFiles.totalFiles || 0;
-  const fileCount = useMemo(() => staged.length + unstaged.length + conflicted.length, [staged.length, unstaged.length, conflicted.length]);
-  const hasConflicts = gitData?.mergeInProgress || conflicted.length > 0;
+  const repoState = gitData?.repoState || {};
+  // On a >5000-file workspace the conflicted LIST is capped so the panel does
+  // not render thousands of rows, so the count — not `conflicted.length` — is
+  // what detection and every "N files" sentence have to read.
+  const conflictedCount = Number.isFinite(changedFiles.conflictedCount) ? changedFiles.conflictedCount : conflicted.length;
+  const conflictedTruncated = Boolean(changedFiles.conflictedTruncated);
+  // A COUNT, not the list: the panel only needs to know whether Git's index is
+  // stuck, and the list is unbounded on a badly merged workspace.
+  const unmergedFileCount = Number.isFinite(repoState.unmergedFileCount) ? repoState.unmergedFileCount : conflictedCount;
+  const inProgressOperation = repoState.operation || (gitData?.mergeInProgress ? 'merge' : '');
+  const fileCount = useMemo(() => staged.length + unstaged.length + conflictedCount, [staged.length, unstaged.length, conflictedCount]);
+  // A rebase, cherry-pick or revert stops the workspace just as hard as a merge
+  // does, so the Conflicts section (and its Abort) has to be reachable in those
+  // states too, not only when MERGE_HEAD exists.
+  const hasConflicts = Boolean(inProgressOperation) || conflictedCount > 0 || unmergedFileCount > 0;
+  // Safe to read off the capped list: the main process sorts workspace.yml to
+  // the front before it truncates, precisely so this warning and its "Resolve
+  // visually" button survive a workspace with thousands of conflicts.
   const workspaceYmlConflicted = conflicted.some((file) => file.path === WORKSPACE_YML_FILENAME);
-  const otherConflictCount = conflicted.filter((file) => file.path !== WORKSPACE_YML_FILENAME).length;
+  const otherConflictCount = Math.max(conflictedCount - (workspaceYmlConflicted ? 1 : 0), 0);
   const orphanCollections = collectionReconciliation?.orphanCollections || [];
   const missingCollections = collectionReconciliation?.missingCollections || [];
   const hasCommits = Boolean(gitData?.hasCommits);
@@ -308,6 +325,30 @@ const WorkspaceGit = ({ workspace }) => {
   const behind = Number(gitData?.aheadBehind?.behind || 0);
   const hasLocalChanges = Boolean(fileCount > 0 || tooManyFiles);
   const canPublishCurrentBranch = Boolean(hasCommits && (gitData?.canPublishCurrentBranch || (currentBranch && !hasUpstream)));
+  // Discard used to be gated on staged/unstaged alone, which was wrong in both
+  // directions: a >5000-file diff reports neither bucket, so the button was
+  // dead while the panel said "Git has N changed files"; and a stopped merge
+  // stages the cleanly merged paths, so the button was live and then failed
+  // inside git with "Cannot save the current index state".
+  const discardBlockedReason = inProgressOperation
+    ? `A ${inProgressOperation} is in progress — use Abort in the Conflicts section first`
+    : unmergedFileCount
+      ? 'Conflicted files must be resolved, or use Abort in the Conflicts section, before discarding'
+      : !hasCommits
+          ? 'Make the first commit before changes can be discarded against it'
+          : '';
+  const hasDiscardableChanges = Boolean(tooManyFiles || staged.length || unstaged.length);
+  const discardChangesTitle = discardBlockedReason
+    || (hasDiscardableChanges
+      ? 'Return the workspace to the last commit; the discarded work stays under "Recently discarded"'
+      : 'No local changes to discard');
+  const canDiscardLocalCommits = Boolean(hasCommits && ahead > 0 && !discardBlockedReason);
+  const discardCommitsTitle = discardBlockedReason
+    || (ahead === 0
+      ? 'No committed-but-unpushed changes'
+      : hasUpstream
+        ? `Undo the ${ahead} commit${ahead === 1 ? '' : 's'} that ${trackingBranch} does not have yet`
+        : `Undo the ${ahead} commit${ahead === 1 ? '' : 's'} no remote has yet (this branch is not published)`);
   const browserRemoteUrl = getBrowserRemoteUrl(remoteUrl);
   const providerUrls = getProviderUrls({
     browserRemoteUrl,
@@ -498,14 +539,18 @@ const WorkspaceGit = ({ workspace }) => {
   const loadDiscards = useCallback(async () => {
     if (!gitRootPath) {
       setDiscards([]);
+      setDiscardsError('');
       return;
     }
     try {
       const stashes = await window.ipcRenderer.invoke('renderer:list-workspace-git-discards', { gitRootPath });
       setDiscards((stashes || []).filter((stash) => (stash.message || '').includes('Discarded via Gridman')));
+      setDiscardsError('');
     } catch (error) {
-      // listing is best-effort; the panel simply shows no entries
+      // An empty list here reads as "your discarded work is gone", so a listing
+      // failure has to say it failed instead of rendering nothing.
       setDiscards([]);
+      setDiscardsError(getIpcErrorMessage(error, 'Could not read the discarded changes for this workspace'));
     }
   }, [gitRootPath]);
 
@@ -726,6 +771,12 @@ const WorkspaceGit = ({ workspace }) => {
           // resolving in its favour means accepting the deletion. Say so —
           // otherwise "Accept remote" looks like it silently dropped the file.
           setOutput(`${label}: ${result.path} was deleted on that side, so the deletion was accepted.`);
+        } else if (result.clearedConflicts) {
+          // Nothing to hand to git --abort: the conflict came from restoring a
+          // discarded change. Only Git's index was cleared — say that the files
+          // still hold their conflict markers, or the user believes the
+          // workspace is clean and commits them.
+          setOutput(`${label}: ${result.clearedConflicts} file${result.clearedConflicts === 1 ? '' : 's'} released from the conflicted state. Their contents were left untouched, so the conflict markers are still in them — edit them, or use "Discard all changes" to return them to the last commit.`);
         } else {
           setOutput(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
         }
@@ -1399,14 +1450,24 @@ const WorkspaceGit = ({ workspace }) => {
     }
   };
 
-  const abortMerge = () => runGitOperation('Abort merge', 'renderer:abort-workspace-git-merge');
+  // The label is what the toast and the button's spinner say, so it has to name
+  // the state actually being aborted — "Abort merge completed" during a rebase
+  // is the same wrong answer the button used to give.
+  const abortLabel = `Abort ${inProgressOperation || 'conflicts'}`;
+  const abortMerge = () => runGitOperation(abortLabel, 'renderer:abort-workspace-git-merge');
 
+  // The Conflicts section renders for a rebase, cherry-pick and revert too, so
+  // Continue has to cover the same states — gating it on mergeInProgress alone
+  // turned the other three into a dead end that answered "No merge in
+  // progress".
   const continueMerge = () => {
-    if (!gitData?.mergeInProgress) {
-      toast.error('No merge in progress');
+    if (!inProgressOperation) {
+      toast.error(unmergedFileCount
+        ? 'There is nothing to continue — these files are left over from restoring a discarded change. Use Abort to clear them.'
+        : 'No merge, rebase, cherry-pick or revert in progress');
       return;
     }
-    return runGitOperation('Continue merge', 'renderer:continue-resolved-workspace-git-merge', {
+    return runGitOperation(`Continue ${inProgressOperation}`, 'renderer:continue-resolved-workspace-git-merge', {
       conflictedFilePaths: conflicted.map((file) => file.path),
       commitMessage: mergeMessage
     });
@@ -1689,7 +1750,10 @@ const WorkspaceGit = ({ workspace }) => {
             )}
             {hasConflicts && (
               <div className="mt-3 text-red-500 flex items-center gap-2">
-                <IconGitMerge size={16} /> Merge conflict resolution is required.
+                <IconGitMerge size={16} />
+                {inProgressOperation && inProgressOperation !== 'merge'
+                  ? `A ${inProgressOperation} is in progress — resolve the conflicts or abort it.`
+                  : 'Merge conflict resolution is required.'}
               </div>
             )}
           </div>
@@ -2293,14 +2357,19 @@ const WorkspaceGit = ({ workspace }) => {
                   push. Discarded changes stay recoverable below; ignored files (like environments with secrets) are
                   untouched.
                 </div>
+                <div className="text-muted text-sm mt-2">
+                  A Pull may already have committed your local work in a safety commit — then there is nothing left to
+                  discard here and <strong>Discard local commits</strong> is the button that removes it.
+                </div>
                 <div className="flex gap-2 mt-2">
                   <Button
                     size="sm"
                     color="danger"
                     icon={<IconTrash size={14} />}
-                    disabled={!staged.length && !unstaged.length}
+                    disabled={!hasDiscardableChanges || Boolean(discardBlockedReason)}
                     loading={operation === 'Discard changes'}
                     onClick={() => setDiscardConfirmOpen(true)}
+                    title={discardChangesTitle}
                   >
                     Discard all changes…
                   </Button>
@@ -2309,14 +2378,20 @@ const WorkspaceGit = ({ workspace }) => {
                     color="danger"
                     variant="outline"
                     icon={<IconTrash size={14} />}
-                    disabled={!hasUpstream || ahead === 0}
+                    disabled={!canDiscardLocalCommits}
                     loading={operation === 'Discard commits'}
                     onClick={() => setDiscardCommitsConfirmOpen(true)}
-                    title={!hasUpstream ? 'This branch has no upstream yet' : (ahead === 0 ? 'No committed-but-unpushed changes' : undefined)}
+                    title={discardCommitsTitle}
                   >
                     Discard local commits…
                   </Button>
                 </div>
+                {discardsError ? (
+                  <div className="workspace-warning mt-3">
+                    Gridman could not list the discarded changes: {discardsError}. Nothing was deleted — retry the
+                    refresh above.
+                  </div>
+                ) : null}
                 {discards.length ? (
                   <div className="mt-3">
                     <div className="font-medium text-sm">Recently discarded</div>
@@ -2342,7 +2417,11 @@ const WorkspaceGit = ({ workspace }) => {
           {hasConflicts && (
             <div className="panel">
               <div className="section-title">Conflicts</div>
-              <p className="text-sm text-muted">Choose local or remote for each conflicted file, or edit the files manually, then continue the merge.</p>
+              <p className="text-sm text-muted">
+                {inProgressOperation
+                  ? `Choose local or remote for each conflicted file, or edit the files manually, then continue the ${inProgressOperation}.`
+                  : 'These files are left over from restoring a discarded change — there is no merge to continue. Abort releases them from the conflicted state without touching their contents.'}
+              </p>
               {workspaceYmlConflicted && (
                 <div className="workspace-warning mt-2">
                   <div className="font-semibold">workspace.yml has conflicts</div>
@@ -2361,14 +2440,24 @@ const WorkspaceGit = ({ workspace }) => {
                   </Button>
                 </div>
               )}
-              <textarea
-                className="textbox w-full h-16 mt-2"
-                value={mergeMessage}
-                onChange={(event) => setMergeMessage(event.target.value)}
-              />
+              {conflictedTruncated && (
+                <div className="workspace-warning mt-2">
+                  {conflictedCount} files are conflicted. Gridman lists the first {conflicted.length} here for
+                  performance — resolve the rest in the editor, or use Abort.
+                </div>
+              )}
+              {inProgressOperation === 'merge' && (
+                <textarea
+                  className="textbox w-full h-16 mt-2"
+                  value={mergeMessage}
+                  onChange={(event) => setMergeMessage(event.target.value)}
+                />
+              )}
               <div className="flex gap-2 mt-2">
-                <Button size="sm" color="primary" icon={<IconGitMerge size={14} />} loading={operation === 'Continue merge'} onClick={continueMerge}>Continue merge</Button>
-                <Button size="sm" color="light" icon={<IconX size={14} />} loading={operation === 'Abort merge'} onClick={abortMerge}>Abort merge</Button>
+                {inProgressOperation && (
+                  <Button size="sm" color="primary" icon={<IconGitMerge size={14} />} loading={operation === `Continue ${inProgressOperation}`} onClick={continueMerge}>Continue {inProgressOperation}</Button>
+                )}
+                <Button size="sm" color="light" icon={<IconX size={14} />} loading={operation === abortLabel} onClick={abortMerge}>{abortLabel}</Button>
               </div>
             </div>
           )}
@@ -2396,8 +2485,18 @@ const WorkspaceGit = ({ workspace }) => {
           >
             <div style={{ display: 'grid', gap: 12 }}>
               <p style={{ margin: 0, lineHeight: 1.5 }}>
-                This removes <strong>{ahead} local commit{ahead === 1 ? '' : 's'}</strong> that {ahead === 1 ? 'has' : 'have'} not
-                been pushed, returning this branch to <strong>{remote}/{currentBranch}</strong>. The remote is not touched.
+                {hasUpstream ? (
+                  <>
+                    This removes <strong>{ahead} local commit{ahead === 1 ? '' : 's'}</strong> that {ahead === 1 ? 'has' : 'have'} not
+                    been pushed, returning this branch to <strong>{trackingBranch || `${remote}/${currentBranch}`}</strong>. The remote is not touched.
+                  </>
+                ) : (
+                  <>
+                    This branch is not published, so it removes the commits <strong>no remote has yet</strong> — up
+                    to {ahead} commit{ahead === 1 ? '' : 's'}. If every commit is local, the workspace's first commit
+                    is kept, because there is nothing below it to return to.
+                  </>
+                )}
               </p>
               <p style={{ margin: 0, lineHeight: 1.5 }} className="text-muted text-sm">
                 All changes from those commits (plus any uncommitted work) move to "Recently discarded",

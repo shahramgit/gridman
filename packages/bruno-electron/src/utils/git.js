@@ -79,6 +79,16 @@ const getGitVersion = () => {
   });
 };
 
+// Status refreshes run on a 15s panel poll plus window focus/visibility and a
+// 30s title-bar poll, while the user is clicking Discard or Abort. `git status`
+// takes .git/index.lock to write its refreshed index cache back, so on an
+// ~11700-file workspace a poll and a user action collide and one of them dies
+// on "Another git process seems to be running". GIT_OPTIONAL_LOCKS=0 is exactly
+// what `git --no-optional-locks` sets, and it suppresses only OPTIONAL locks —
+// commit/add/reset still take the index lock they need — so it is set on the
+// one shared instance rather than on a second cached one. A second instance
+// would carry its own task queue and double the per-repository ceiling on
+// concurrent git child processes, on the workspace least able to afford it.
 const getSimpleGitInstanceForPath = (gitRootPath) => {
   const binary = ensureGitAvailable();
   const key = `${binary}:${gitRootPath}`;
@@ -87,13 +97,19 @@ const getSimpleGitInstanceForPath = (gitRootPath) => {
     git = simpleGit({
       baseDir: gitRootPath,
       binary
-    });
+    }).env({ ...process.env, GIT_OPTIONAL_LOCKS: '0' });
     simpleGitInstances.set(key, git);
   }
   return git;
 };
 
+// Same instance; the name marks call sites that must not disturb the index.
+const getReadOnlySimpleGitInstanceForPath = (gitRootPath) => getSimpleGitInstanceForPath(gitRootPath);
+
 const normalizeGitPath = (filePath = '') => filePath.replace(/\\/g, '/');
+
+// Always at the repository root, so this is the whole path git reports for it.
+const WORKSPACE_YML_FILENAME = 'workspace.yml';
 
 const isProtectedWorkspaceGitPath = (filePath = '') => {
   const normalizedPath = normalizeGitPath(filePath);
@@ -980,19 +996,6 @@ const initWorkspaceGit = async (input) => {
   return getWorkspaceGitData({ workspacePath, collectionPaths, preferCollectionParent });
 };
 
-const stageChanges = async (gitRootPath, files) => {
-  return new Promise((resolve, reject) => {
-    const git = getSimpleGitInstanceForPath(gitRootPath);
-    git.add(files, (err, res) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve(res);
-    });
-  });
-};
-
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const isGitIndexLockError = (error) => {
@@ -1018,15 +1021,136 @@ const runGitRawWithIndexLockRetry = async (git, args, attempts = 6) => {
   throw lastError;
 };
 
-const stageRelativeFiles = async (gitRootPath, files) => {
-  const git = getSimpleGitInstanceForPath(gitRootPath);
-  const pathspecPath = path.join(gitRootPath, '.git', `bruno-pathspec-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+// Where git keeps a per-repository control file (MERGE_HEAD, MERGE_MSG, ...).
+// In a worktree, a submodule, or a repository whose .git is a FILE, it is not
+// <root>/.git/<name>, and the hardcoded lookup silently reports "nothing in
+// progress" while git refuses every index write.
+const resolveGitPath = async (gitRootPath, name) => {
+  const output = String(await getReadOnlySimpleGitInstanceForPath(gitRootPath).raw(['rev-parse', '--git-path', name]) || '').trim();
+  return output || path.join('.git', name);
+};
+
+// Which operation the repository is stopped in the middle of, and which paths
+// still have unmerged index entries. Resolved through `git rev-parse
+// --git-path` rather than <root>/.git/<marker>: in a worktree or a repository
+// whose .git is a FILE those markers live somewhere else entirely, so the
+// hardcoded lookup reports "nothing in progress" while git refuses every index
+// write.
+//
+// `hasHead` accepts a value (or a promise) from a caller that already resolved
+// it: this runs on the 15s panel poll, the focus refresh and the 30s title-bar
+// poll, and re-spawning `rev-parse --verify HEAD` next to the caller's own
+// hasGitCommits() is a git process per poll spent on an answer we have.
+const getRepositoryState = async (gitRootPath, { hasHead } = {}) => {
+  const git = getReadOnlySimpleGitInstanceForPath(gitRootPath);
+
+  // One rev-parse for all five markers, and the three probes concurrently:
+  // process spawns are the expensive part on Windows.
+  const [markerPaths, unmergedPaths, headExists] = await Promise.all([
+    git
+      .raw([
+        'rev-parse',
+        '--git-path', 'MERGE_HEAD',
+        '--git-path', 'rebase-merge',
+        '--git-path', 'rebase-apply',
+        '--git-path', 'CHERRY_PICK_HEAD',
+        '--git-path', 'REVERT_HEAD'
+      ])
+      .then((output) => String(output || '').split('\n').map((line) => line.trim()))
+      .catch(() => []),
+    // -z + quotePath=false so Persian collection paths come back as raw bytes
+    // instead of git's escaped "\xxx" form.
+    git
+      .raw(['-c', 'core.quotePath=false', 'ls-files', '-u', '-z'])
+      .then((output) => [...new Set(
+        String(output || '')
+          .split('\0')
+          .map((entry) => entry.split('\t')[1])
+          .filter(Boolean)
+      )])
+      .catch(() => []),
+    hasHead === undefined ? hasGitCommits(gitRootPath) : Promise.resolve(hasHead)
+  ]);
+
+  const markerExists = (index) => Boolean(markerPaths[index]) && fs.existsSync(path.resolve(gitRootPath, markerPaths[index]));
+  const [merging, rebaseMerge, rebaseApply, cherryPicking, reverting] = [0, 1, 2, 3, 4].map(markerExists);
+  const rebasing = rebaseMerge || rebaseApply;
+
+  return {
+    merging,
+    rebasing,
+    cherryPicking,
+    reverting,
+    // Rebase first: its conflicts are driven by the merge machinery, so
+    // MERGE_HEAD can exist at the same time and `merge --continue|--abort`
+    // would act on the wrong commit.
+    operation: rebasing ? 'rebase' : cherryPicking ? 'cherry-pick' : reverting ? 'revert' : merging ? 'merge' : '',
+    unmergedPaths,
+    hasHead: Boolean(headExists)
+  };
+};
+
+// The customer sees raw git text in a toast — "Cannot save the current index
+// state", "<path>: needs merge" — and reads it as Gridman losing their work.
+// Translate the states we know about into the next action they can take.
+const mapGitFailure = (message = '') => {
+  const text = String(message || '');
+
+  if (/needs merge|unmerged files|Cannot save the current index state|could not write index/i.test(text)) {
+    return 'Some files still have unresolved conflicts, so Git cannot save the workspace state. Resolve them or use Abort in the Conflicts section, then try again.';
+  }
+  if (/You do not have the initial commit yet|does not have a commit checked out/i.test(text)) {
+    return 'This workspace has no commit yet, so there is no state to return to. Make the first commit, then discard.';
+  }
+  if (/index\.lock|Another git process seems to be running/i.test(text)) {
+    return 'Another Git process is using this workspace. Wait for it to finish and try again.';
+  }
+  if (/would be overwritten by merge|already exists, no checkout/i.test(text)) {
+    return 'Restoring would overwrite files that changed since they were discarded. Commit or discard those changes first, then restore.';
+  }
+  if (/CONFLICT|Automatic merge failed/i.test(text)) {
+    return 'Those changes conflict with what is in the workspace now. Resolve the conflicted files, or use Abort in the Conflicts section to release them, then try again.';
+  }
+
+  return text;
+};
+
+const createMappedGitError = (err, fallback) => {
+  const error = new Error(mapGitFailure(getGitErrorMessage(err, fallback)));
+  error.cause = err;
+  return error;
+};
+
+// Every path Gridman hands to git names one existing file, so it is a literal
+// filename — never a pattern. Pathspecs are glob-matched by default (and
+// --pathspec-file-nul only turns off quoting, not globbing), so a request named
+// `GET [v2] users.bru` — `[` and `]` are legal filename characters on Windows
+// too — would make reset/checkout/rm/add act on OTHER files that happen to
+// match.
+//
+// The path is passed through untouched: it already uses '/' because it came
+// from git, and rewriting backslashes here would break the legal (on
+// macOS/Linux) filename that contains one.
+const toLiteralPathspec = (filePath) => `:(literal)${filePath}`;
+
+// The '/'-separated, repository-relative form git wants, for the call sites
+// whose paths come from the FILESYSTEM instead of from git. Built with
+// path.sep rather than normalizeGitPath so a backslash inside a macOS/Linux
+// filename survives — only the real separator is rewritten.
+const toRepoRelativeGitPath = (gitRootPath, filePath) =>
+  path.relative(gitRootPath, path.resolve(gitRootPath, filePath)).split(path.sep).join('/');
+
+// The pathspecs travel in a NUL-separated file rather than argv: these
+// workspaces carry hundreds of deeply nested Persian paths and Windows caps a
+// command line at ~32k characters. The file lives in the OS temp dir because
+// <root>/.git is not a directory in a worktree or a submodule.
+const runGitWithLiteralPathspecs = async (git, args, files) => {
+  const pathspecPath = path.join(os.tmpdir(), `bruno-pathspec-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
   try {
-    fs.writeFileSync(pathspecPath, `${files.join('\0')}\0`, 'utf8');
-    await runGitRawWithIndexLockRetry(git, [
-      'add',
-      '--all',
+    fs.writeFileSync(pathspecPath, `${files.map(toLiteralPathspec).join('\0')}\0`, 'utf8');
+    return await runGitRawWithIndexLockRetry(git, [
+      ...args,
       '--pathspec-from-file',
       pathspecPath,
       '--pathspec-file-nul'
@@ -1036,44 +1160,54 @@ const stageRelativeFiles = async (gitRootPath, files) => {
   }
 };
 
+const stageRelativeFiles = async (gitRootPath, files) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  await runGitWithLiteralPathspecs(git, ['add', '--all'], files);
+};
+
+// Callers hand this absolute filesystem paths. `git add` treats every argument
+// as a PATHSPEC, so staging `GET [v2] users.bru` used to stage whatever else
+// matched it as a glob — the same class of bug as the destructive paths, just
+// quieter.
+const stageChanges = async (gitRootPath, files) => {
+  const relativePaths = (files || []).map((filePath) => toRepoRelativeGitPath(gitRootPath, filePath));
+  if (!relativePaths.length) {
+    return;
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+
+  // The repository root itself — callers pass `<root>/.` to mean "stage
+  // everything" and path.relative answers ''. A literal pathspec cannot spell
+  // that, so hand git its own '.', which has no glob characters to abuse.
+  if (relativePaths.some((relativePath) => !relativePath || relativePath === '.')) {
+    return runGitRawWithIndexLockRetry(git, ['add', '--', '.']);
+  }
+
+  return runGitWithLiteralPathspecs(git, ['add'], relativePaths);
+};
+
 const unstageChanges = async (gitRootPath, files) => {
-  return new Promise((resolve, reject) => {
-    const git = getSimpleGitInstanceForPath(gitRootPath);
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  const status = await git.status(['--porcelain']);
 
-    // First check the status to see which files are actually staged
-    git.status(['--porcelain'], (err, status) => {
-      if (err) {
-        reject(err);
-        return;
-      }
+  // Only files that are actually staged: `git reset` on an unstaged path is a
+  // no-op, but it still rewrites the index entry on an ~11700-file workspace.
+  const stagedFiles = (files || [])
+    .map((fullPath) => toRepoRelativeGitPath(gitRootPath, fullPath))
+    .filter((relativePath) =>
+      status.files.some((file) =>
+        file.path === relativePath && (file.index === 'M' || file.index === 'A' || file.index === 'D')
+      )
+    );
 
-      // Filter files to only include those that are actually staged
-      const stagedFiles = files.filter((fullPath) => {
-        const relativePath = path.relative(gitRootPath, fullPath);
-        // Normalize path separators for cross-platform compatibility
-        const normalizedPath = relativePath.replace(/\\/g, '/');
-        return status.files.some((file) =>
-          file.path === normalizedPath
-          && (file.index === 'M' || file.index === 'A' || file.index === 'D')
-        );
-      });
+  if (!stagedFiles.length) {
+    return;
+  }
 
-      // If no files are actually staged, just resolve
-      if (stagedFiles.length === 0) {
-        resolve();
-        return;
-      }
-
-      // Unstage only the files that are actually staged
-      git.reset(['HEAD', '--', ...stagedFiles], (err, res) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        resolve(res);
-      });
-    });
-  });
+  // -q: without it git prints every remaining unstaged path, which is the whole
+  // workspace on the repositories this panel exists for.
+  return runGitWithLiteralPathspecs(git, ['reset', '-q', 'HEAD'], stagedFiles);
 };
 
 // Which conflict stages exist for a path: 2 = "ours", 3 = "theirs". A plain
@@ -1081,7 +1215,11 @@ const unstageChanges = async (gitRootPath, files) => {
 const getConflictStages = async (git, filePath) => {
   let raw = '';
   try {
-    raw = String(await git.raw(['ls-files', '-u', '--', filePath]) || '');
+    // ls-files has no --pathspec-from-file, so the literal magic travels in
+    // argv — one short path, nowhere near Windows' command-line limit. Without
+    // it a conflicted `req[1].bru` reports the stages of `req1.bru` and the
+    // modify/delete branch below is chosen off another file's state.
+    raw = String(await git.raw(['ls-files', '-u', '--', toLiteralPathspec(filePath)]) || '');
   } catch (_err) {
     return new Set();
   }
@@ -1111,12 +1249,15 @@ const resolveConflictFile = async (gitRootPath, filePath, side) => {
   const stages = await getConflictStages(git, filePath);
   const wantedStage = side === 'ours' ? '2' : '3';
   if (stages.size && !stages.has(wantedStage)) {
-    await git.raw(['rm', '-f', '--', filePath]);
+    // Both of these DELETE or OVERWRITE working-tree files, so they may only
+    // ever act on the one path the user clicked — a plain pathspec is
+    // glob-matched and would take the bystanders with it.
+    await runGitWithLiteralPathspecs(git, ['rm', '-f'], [filePath]);
     return { path: filePath, side, deleted: true };
   }
 
-  await git.raw(['checkout', `--${side}`, '--', filePath]);
-  await stageChanges(gitRootPath, [path.join(gitRootPath, filePath)]);
+  await runGitWithLiteralPathspecs(git, ['checkout', `--${side}`], [filePath]);
+  await stageChanges(gitRootPath, [filePath]);
   return { path: filePath, side, deleted: false };
 };
 
@@ -1157,8 +1298,10 @@ const discardChanges = async (gitRootPath, filePaths) => {
             // Untracked file - needs to be deleted from filesystem
             untrackedFiles.push(filePath);
           } else if (fileStatus) {
-            // Tracked file - can be discarded with git checkout
-            trackedFiles.push(filePath);
+            // Tracked file - can be discarded with git checkout. The
+            // REPOSITORY-RELATIVE path is what git gets: checkout takes
+            // pathspecs, and a glob-matched one throws away bystanders.
+            trackedFiles.push(normalizedPath);
           } else {
             // File not in status - might be already deleted, renamed, or doesn't exist
             console.warn(`File not found in git status: ${relativePath}. File may have been already deleted or moved.`);
@@ -1175,17 +1318,8 @@ const discardChanges = async (gitRootPath, filePaths) => {
         try {
           // Handle tracked files with git checkout
           if (trackedFiles.length > 0) {
-            await new Promise((checkoutResolve, checkoutReject) => {
-              git.checkout(trackedFiles, (err, res) => {
-                if (err) {
-                  console.error('Error discarding tracked files:', err);
-                  checkoutReject(err);
-                } else {
-                  console.log(`Discarded ${trackedFiles.length} tracked files`);
-                  checkoutResolve(res);
-                }
-              });
-            });
+            await runGitWithLiteralPathspecs(git, ['checkout'], trackedFiles);
+            console.log(`Discarded ${trackedFiles.length} tracked files`);
           }
 
           // Handle untracked files by deleting them from filesystem
@@ -1216,6 +1350,28 @@ const discardChanges = async (gitRootPath, filePaths) => {
   });
 };
 
+// The porcelain status of ONE file, for "Revert to Last Commit" on a single
+// request. It used to run in the IPC layer against a plain pathspec, so a
+// request named `GET [v2] users.bru` was answered with `GET v users.bru`'s
+// status — and the untracked branch of that decision moves a file to the Trash.
+const getWorkspaceFileGitStatus = async (gitRootPath, filePath) => {
+  const git = getReadOnlySimpleGitInstanceForPath(gitRootPath);
+  const relativePath = toRepoRelativeGitPath(gitRootPath, filePath);
+  // status has no --pathspec-from-file; a single literal pathspec in argv is
+  // the same protection.
+  const output = await git.raw(['status', '--porcelain', '--', toLiteralPathspec(relativePath)]);
+  return String(output || '').trim();
+};
+
+// Restores one file from the index/HEAD. DESTRUCTIVE: the file's unsaved
+// content is gone afterwards, and the caller only snapshots the target into the
+// Trash — so this must never widen to a second file the way a glob-matched
+// pathspec did.
+const restoreWorkspaceFileFromIndex = async (gitRootPath, filePath) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  return runGitWithLiteralPathspecs(git, ['checkout'], [toRepoRelativeGitPath(gitRootPath, filePath)]);
+};
+
 const commitChanges = async (gitRootPath, message) => {
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
@@ -1232,7 +1388,7 @@ const commitChanges = async (gitRootPath, message) => {
 const getStagedFileDiff = async (gitRootPath, filePath) => {
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
-    git.diff(['--no-prefix', '--staged', '--', filePath], (err, stagedChanges) => {
+    git.diff(['--no-prefix', '--staged', '--', toLiteralPathspec(filePath)], (err, stagedChanges) => {
       if (err) {
         reject(err);
         return;
@@ -1245,7 +1401,7 @@ const getStagedFileDiff = async (gitRootPath, filePath) => {
 const getRenamedFileDiff = async (gitRootPath, file) => {
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
-    git.diff(['--staged', '--', file.from, file.to], (err, stagedChanges) => {
+    git.diff(['--staged', '--', toLiteralPathspec(file.from), toLiteralPathspec(file.to)], (err, stagedChanges) => {
       if (err) {
         reject(err);
         return;
@@ -1271,7 +1427,7 @@ const getUnstagedFileDiff = async (gitRootPath, filePath) => {
       });
 
       if (isFileTracked) {
-        git.diff(['--no-prefix', '--diff-filter=ACMD', '--', filePath], (err, tracked) => {
+        git.diff(['--no-prefix', '--diff-filter=ACMD', '--', toLiteralPathspec(filePath)], (err, tracked) => {
           if (err) {
             reject(err);
             return;
@@ -1476,7 +1632,7 @@ const mergeGitBranch = async (win, { gitRootPath, processUid, branchName, noFast
       throw new Error(getWindowsLongPathsHelpMessage(message));
     }
 
-    const mergeInProgress = fs.existsSync(path.join(gitRootPath, '.git', 'MERGE_HEAD'));
+    const { merging: mergeInProgress } = await getRepositoryState(gitRootPath);
     if (
       mergeInProgress
       || message.includes('CONFLICT')
@@ -1746,8 +1902,8 @@ const pullGitChanges = async (win, data) => {
     throw new Error('Invalid strategy');
   }
 
-  const getMergeConflictResult = (err) => {
-    const mergeInProgress = fs.existsSync(path.join(gitRootPath, '.git', 'MERGE_HEAD'));
+  const getMergeConflictResult = async (err) => {
+    const { merging: mergeInProgress } = await getRepositoryState(gitRootPath);
     const message = getGitErrorMessage(err, 'Merge conflicts need to be resolved before sync can continue.');
 
     if (
@@ -1909,7 +2065,7 @@ const pullGitChanges = async (win, data) => {
         continue;
       }
 
-      const conflictResult = getMergeConflictResult(err);
+      const conflictResult = await getMergeConflictResult(err);
       if (conflictResult) {
         notifyWorkspaceConfigUpdated(win, gitRootPath);
         return safetyCommitFiles.length || protectedBackupFiles.length || localBackupFiles.length
@@ -1934,29 +2090,64 @@ const pullGitChanges = async (win, data) => {
   throw new Error('Git pull still reports local files that would be overwritten after several safety commits. Commit or move the remaining local files, then pull again.');
 };
 
+// How many conflicted files the panel is handed at most. Each one becomes an
+// unvirtualized row with three or four buttons, so the list is a summary past
+// this point, not a work queue.
+const MAX_LISTED_CONFLICTS = 200;
+
+// workspace.yml is the file that DEFINES the workspace, and the panel gives it
+// its own warning and its own visual resolver keyed off the listed entries. Git
+// reports paths alphabetically, so on a workspace with thousands of conflicts
+// it sorts past the cap and the only guided way to fix it disappears — put it
+// first so the cap can never drop it.
+const withWorkspaceYmlFirst = (files) => {
+  const index = files.findIndex((file) => file.path === WORKSPACE_YML_FILENAME);
+  return index > 0 ? [files[index], ...files.slice(0, index), ...files.slice(index + 1)] : files;
+};
+
 async function getChangedFilesInCollectionGit(_gitRootPath, _collectionPath) {
   return new Promise((resolve, reject) => {
-    const git = getSimpleGitInstanceForPath(_gitRootPath);
+    const git = getReadOnlySimpleGitInstanceForPath(_gitRootPath);
     git.status(['--porcelain', _gitRootPath], async (err, status) => {
       if (err) {
         reject(err);
         return;
       }
 
-      const totalFiles = status?.files?.length || 0;
-      if (totalFiles > 5000) {
-        return resolve({
-          staged: [],
-          unstaged: [],
-          totalFiles,
-          tooManyFiles: true
-        });
-      }
-
       const isConflictStatus = (file) => {
         const statusCode = `${file.index || ' '}${file.working_dir || ' '}`;
         return ['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'].includes(statusCode);
       };
+
+      const toConflictedEntry = (file) => ({
+        path: file.path,
+        type: 'conflicted',
+        fileIndex: file.index,
+        working_dir: file.working_dir,
+        status: `${file.index || ' '}${file.working_dir || ' '}`.trim()
+      });
+
+      const totalFiles = status?.files?.length || 0;
+      if (totalFiles > 5000) {
+        // The full change list is hidden for performance, but the panel still
+        // needs to KNOW there are conflicts: without that it loses Abort and
+        // thinks there is nothing to discard on exactly the workspaces (116
+        // collections, ~11700 files) this branch exists for. The count is what
+        // detection needs; the list is capped because the panel renders every
+        // entry as an unvirtualized row with three or four buttons, and a bad
+        // merge here produces thousands of them — the performance cliff this
+        // early return was added to avoid.
+        const conflictedFiles = status.files.filter(isConflictStatus);
+        return resolve({
+          staged: [],
+          unstaged: [],
+          totalFiles,
+          tooManyFiles: true,
+          conflictedCount: conflictedFiles.length,
+          conflictedTruncated: conflictedFiles.length > MAX_LISTED_CONFLICTS,
+          conflicted: withWorkspaceYmlFirst(conflictedFiles).slice(0, MAX_LISTED_CONFLICTS).map(toConflictedEntry)
+        });
+      }
 
       const unstaged = await Promise.all(
         status.files
@@ -1987,23 +2178,15 @@ async function getChangedFilesInCollectionGit(_gitRootPath, _collectionPath) {
           })
       );
 
-      const conflicted = await Promise.all(
-        status.files.filter(isConflictStatus).map(async (file) => {
-          return {
-            path: file.path,
-            type: 'conflicted',
-            fileIndex: file.index,
-            working_dir: file.working_dir,
-            status: `${file.index || ' '}${file.working_dir || ' '}`.trim()
-          };
-        }) || []
-      );
+      const conflicted = status.files.filter(isConflictStatus).map(toConflictedEntry);
 
       resolve({
         staged: [...staged, ...renamed],
         unstaged,
         totalFiles,
         tooManyFiles: false,
+        conflictedCount: conflicted.length,
+        conflictedTruncated: false,
         conflicted
       });
     });
@@ -2091,7 +2274,7 @@ const fetchChanges = (gitRootPath, remote = 'origin', { win, processUid } = {}) 
 
 const getGitStatus = (gitRootPath) => {
   return new Promise((resolve, reject) => {
-    const git = getSimpleGitInstanceForPath(gitRootPath);
+    const git = getReadOnlySimpleGitInstanceForPath(gitRootPath);
     git.status((err, status) => {
       if (err) {
         reject(err);
@@ -2271,12 +2454,16 @@ const parsePorcelainStatusPaths = (output = '') => {
     }
   }
 
-  return [...new Set(files.map(normalizeGitPath).filter(Boolean))];
+  // Verbatim: these come from `git status --porcelain -z`, so they already use
+  // '/' — normalizing here would rewrite a legal backslash INSIDE a filename
+  // and the literal pathspec built from it would then match nothing, failing
+  // the pre-pull safety commit.
+  return [...new Set(files.filter(Boolean))];
 };
 
 const getLocalWorkspaceFilesForSafetyCommit = async (gitRootPath) => {
   const git = getSimpleGitInstanceForPath(gitRootPath);
-  const status = await git.raw(['-c', 'core.quotePath=false', 'status', '--porcelain', '-z', '--untracked-files=all']);
+  const status = await git.raw(['--no-optional-locks', '-c', 'core.quotePath=false', 'status', '--porcelain', '-z', '--untracked-files=all']);
   return parsePorcelainStatusPaths(status).filter((filePath) => !isProtectedWorkspaceGitPath(filePath));
 };
 
@@ -2290,7 +2477,7 @@ const saveLocalWorkspaceFilesBeforePull = async (gitRootPath, additionalFiles = 
 
 const hasStagedChanges = async (gitRootPath) => {
   const git = getSimpleGitInstanceForPath(gitRootPath);
-  const status = await git.raw(['-c', 'core.quotePath=false', 'status', '--porcelain', '-z', '--untracked-files=no']);
+  const status = await git.raw(['--no-optional-locks', '-c', 'core.quotePath=false', 'status', '--porcelain', '-z', '--untracked-files=no']);
   return status
     .split('\0')
     .filter(Boolean)
@@ -2301,7 +2488,9 @@ const hasStagedChanges = async (gitRootPath) => {
 };
 
 const createSafetyCommitForFiles = async (gitRootPath, files, message = 'Save local workspace files before pull') => {
-  const normalizedFiles = [...new Set(files.map(normalizeGitPath).filter(Boolean))];
+  // Verbatim, for the same reason as parsePorcelainStatusPaths: these paths are
+  // git's own output and get turned into literal pathspecs downstream.
+  const normalizedFiles = [...new Set(files.filter(Boolean))];
   if (!normalizedFiles.length) {
     return {
       committed: false,
@@ -2433,6 +2622,21 @@ const getAheadBehindForClient = (aheadBehind = {}) => ({
   behindCommits: Array.isArray(aheadBehind.behindCommits) ? aheadBehind.behindCommits : []
 });
 
+// The panel only ever reads the COUNT of unmerged paths, and this object rides
+// the 15s panel poll, every focus refresh and the 30s title-bar poll. A bad
+// merge on a real workspace makes that array tens of thousands of Persian
+// paths — 45KB per poll over IPC for a number — which is the same unbounded
+// payload the changedFiles cap exists to prevent. Send the number.
+const getRepositoryStateForClient = (repoState = {}) => ({
+  merging: Boolean(repoState.merging),
+  rebasing: Boolean(repoState.rebasing),
+  cherryPicking: Boolean(repoState.cherryPicking),
+  reverting: Boolean(repoState.reverting),
+  operation: repoState.operation || '',
+  unmergedFileCount: Array.isArray(repoState.unmergedPaths) ? repoState.unmergedPaths.length : 0,
+  hasHead: Boolean(repoState.hasHead)
+});
+
 const getWorkspaceGitData = async (input) => {
   const { workspacePath, collectionPaths, preferCollectionParent, fetchRemote, remote } = normalizeWorkspaceGitInput(input);
   const gitTargetPath = getWorkspaceGitTargetPath({ workspacePath, collectionPaths, preferCollectionParent });
@@ -2454,7 +2658,12 @@ const getWorkspaceGitData = async (input) => {
     await fetchChanges(gitRootPath, remoteToFetch);
   }
 
-  const [status, remotesForClient, branchMetadata, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits, auth, remoteBranchNamesFromRemote] = await Promise.all([
+  // Every poll of the panel goes through here, so the state probes ride along
+  // with the batch instead of adding a serial round of git spawns after it, and
+  // hasCommits is handed to getRepositoryState rather than resolved twice.
+  const hasCommitsPromise = hasGitCommits(gitRootPath);
+
+  const [status, remotesForClient, branchMetadata, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits, auth, remoteBranchNamesFromRemote, changedFiles, repoState] = await Promise.all([
     getGitStatus(gitRootPath),
     Promise.resolve(remotes),
     getGitBranchMetadata({ gitRootPath, remote: remoteToFetch || remote }).catch(() => ({
@@ -2471,13 +2680,14 @@ const getWorkspaceGitData = async (input) => {
     getCurrentGitBranch(gitRootPath).catch(() => ''),
     getDefaultGitBranch(gitRootPath).catch(() => ''),
     getAheadBehindCount(gitRootPath).catch(() => ({ ahead: 0, behind: 0, aheadCommits: [], behindCommits: [] })),
-    hasGitCommits(gitRootPath),
+    hasCommitsPromise,
     getGitAuthDiagnostics({ gitRootPath, remote: remoteToFetch || remote }).catch(() => null),
-    fetchRemoteBranchNamesFromRemote({ gitRootPath, remote: remoteToFetch || remote }).catch(() => [])
+    fetchRemoteBranchNamesFromRemote({ gitRootPath, remote: remoteToFetch || remote }).catch(() => []),
+    getChangedFilesInCollectionGit(gitRootPath, gitRootPath),
+    getRepositoryState(gitRootPath, { hasHead: hasCommitsPromise })
   ]);
 
-  const changedFiles = await getChangedFilesInCollectionGit(gitRootPath, gitRootPath);
-  const mergeInProgress = fs.existsSync(path.join(gitRootPath, '.git', 'MERGE_HEAD'));
+  const mergeInProgress = repoState.merging;
 
   return {
     isGitRepository: true,
@@ -2503,7 +2713,8 @@ const getWorkspaceGitData = async (input) => {
     remoteBranchNames: remoteBranchNamesFromRemote,
     aheadBehind: getAheadBehindForClient(aheadBehind),
     auth,
-    mergeInProgress
+    mergeInProgress,
+    repoState: getRepositoryStateForClient(repoState)
   };
 };
 
@@ -2942,21 +3153,54 @@ const getAheadBehindCount = async (gitRootPath) => {
   }
 };
 
+// Abort is offered whenever the panel sees a merge or a conflicted file, but it
+// only ever knew how to run `git merge --abort`. A rebase, cherry-pick or
+// revert — and a conflicting `git stash apply`, which Gridman itself produces
+// from "Restore discarded changes" — left the user with an Abort button that
+// answered "No merge in progress" and no other way out. Every state it handles
+// is reversible: nothing here overwrites a file the user has not confirmed.
 const abortConflictResolution = async (gitRootPath) => {
-  return new Promise((resolve, reject) => {
-    const git = getSimpleGitInstanceForPath(gitRootPath);
-    if (fs.existsSync(path.join(gitRootPath, '.git', 'MERGE_HEAD'))) {
-      git.raw(['merge', '--abort'], (err, res) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(res);
-        }
-      });
-    } else {
-      reject(new Error('No merge in progress'));
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  const state = await getRepositoryState(gitRootPath);
+
+  if (state.operation) {
+    try {
+      return await runGitRawWithIndexLockRetry(git, [state.operation, '--abort']);
+    } catch (err) {
+      throw createMappedGitError(err, `Failed to abort the ${state.operation}`);
     }
-  });
+  }
+
+  if (state.unmergedPaths.length) {
+    // Unmerged index entries with no operation to abort: a failed stash apply,
+    // which Gridman produces itself from "Restore discarded changes". There is
+    // no --abort for it, so the index entries are dropped back to HEAD to
+    // unstick git.
+    //
+    // The working tree is deliberately NOT touched. `git merge --abort` — all
+    // this button ever did — refuses rather than clobbers, and this path has no
+    // confirmation step in front of it, so it must not throw away the
+    // half-applied content: the files keep their conflict markers on disk and
+    // "Discard all changes" (which does confirm) is what returns them to the
+    // last commit. `git reset` never writes the working tree, so one call for
+    // every path is atomic — no half-rolled-back state to explain.
+    try {
+      await runGitWithLiteralPathspecs(git, ['reset', '-q', 'HEAD'], state.unmergedPaths);
+    } catch (err) {
+      throw createMappedGitError(err, 'Failed to clear the conflicted files');
+    }
+
+    const remaining = (await getRepositoryState(gitRootPath, { hasHead: state.hasHead })).unmergedPaths;
+    if (remaining.length) {
+      // Claiming the conflicts were cleared while the index still holds them
+      // sends the user back to Discard, which then fails inside git.
+      throw new Error(`${remaining.length} file${remaining.length === 1 ? '' : 's'} still ${remaining.length === 1 ? 'has' : 'have'} unresolved conflicts in Git's index: ${remaining.slice(0, 5).join(', ')}`);
+    }
+
+    return { aborted: true, clearedConflicts: state.unmergedPaths.length, keptWorkingTreeContent: true };
+  }
+
+  throw new Error('There is nothing to abort — this workspace has no merge, rebase, cherry-pick, revert, or conflicted files.');
 };
 
 const continueMerge = async (gitRootPath, conflictedFiles, commitMessage) => {
@@ -2978,12 +3222,14 @@ const continueMerge = async (gitRootPath, conflictedFiles, commitMessage) => {
       }
 
       // Step 2: Stage the conflicted files
-      const filePaths = conflictedFiles.map((f) => f.path);
-      const fullPaths = filePaths.map((p) => path.join(gitRootPath, p));
-      await stageChanges(gitRootPath, fullPaths);
+      await stageChanges(gitRootPath, conflictedFiles.map((f) => f.path));
 
-      // Step 3: Write commit message to .git/MERGE_MSG
-      const mergeMsgPath = path.join(gitRootPath, '.git', 'MERGE_MSG');
+      // Step 3: Write the commit message to git's own MERGE_MSG. Resolved
+      // through rev-parse --git-path, not <root>/.git: in a worktree or a
+      // submodule that directory is somewhere else entirely, and writing the
+      // message into a path git never reads makes the merge commit with the
+      // wrong text.
+      const mergeMsgPath = path.resolve(gitRootPath, await resolveGitPath(gitRootPath, 'MERGE_MSG'));
       await fsPromises.writeFile(mergeMsgPath, commitMessage, 'utf8');
 
       // Step 4: Call git merge --continue
@@ -3001,32 +3247,53 @@ const continueMerge = async (gitRootPath, conflictedFiles, commitMessage) => {
   });
 };
 
+// The panel's "Continue" button. It ran `git merge --continue` unconditionally,
+// so in a rebase, cherry-pick or revert — states the Conflicts section now
+// renders for — it answered with raw git text about there being no merge.
+// Continue whatever the repository is actually stopped in.
 const continueResolvedMerge = async (gitRootPath, conflictedFilePaths, commitMessage) => {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const fsPromises = require('fs/promises');
-      const fullPaths = conflictedFilePaths.map((filePath) => path.join(gitRootPath, filePath));
+  const fsPromises = require('fs/promises');
+  const state = await getRepositoryState(gitRootPath);
 
-      if (fullPaths.length) {
-        await stageChanges(gitRootPath, fullPaths);
+  if (!state.operation) {
+    throw new Error(state.unmergedPaths.length
+      ? 'There is no merge, rebase, cherry-pick or revert to continue — these files are left over from restoring a discarded change. Use Abort to clear them.'
+      : 'There is nothing to continue — this workspace has no merge, rebase, cherry-pick or revert in progress.');
+  }
+
+  // Passed through as-is: these paths come from `git status`, so they already
+  // use '/' — and rewriting backslashes would corrupt a filename that legally
+  // contains one on macOS/Linux.
+  const relativePaths = (conflictedFilePaths || []).filter(Boolean);
+  if (relativePaths.length) {
+    await stageRelativeFiles(gitRootPath, relativePaths);
+  }
+
+  // Continuing with unmerged entries left in the index fails inside git with
+  // "you have unmerged files" / "needs merge". Say which files are still in the
+  // way — the panel's list can be capped on a >5000-file workspace, so the
+  // caller does not always know about all of them.
+  const remaining = (await getRepositoryState(gitRootPath, { hasHead: state.hasHead })).unmergedPaths;
+  if (remaining.length) {
+    throw new Error(`${remaining.length} file${remaining.length === 1 ? '' : 's'} still ${remaining.length === 1 ? 'has' : 'have'} unresolved conflicts, so the ${state.operation} cannot continue: ${remaining.slice(0, 5).join(', ')}`);
+  }
+
+  // Only a merge takes its message from MERGE_MSG; rebase, cherry-pick and
+  // revert reuse the message of the commit they are replaying.
+  if (commitMessage && state.operation === 'merge') {
+    const mergeMsgPath = path.resolve(gitRootPath, await resolveGitPath(gitRootPath, 'MERGE_MSG'));
+    await fsPromises.writeFile(mergeMsgPath, commitMessage, 'utf8');
+  }
+
+  return new Promise((resolve, reject) => {
+    execFile(ensureGitAvailable(), ['-c', 'core.editor=:', state.operation, '--continue'], { cwd: gitRootPath }, (err, stdout) => {
+      if (err) {
+        reject(createMappedGitError(err, `Failed to continue the ${state.operation}`));
+        return;
       }
-
-      if (commitMessage) {
-        const mergeMsgPath = path.join(gitRootPath, '.git', 'MERGE_MSG');
-        await fsPromises.writeFile(mergeMsgPath, commitMessage, 'utf8');
-      }
-
-      execFile(ensureGitAvailable(), ['-c', 'core.editor=:', 'merge', '--continue'], { cwd: gitRootPath }, (err, stdout) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        notifyWorkspaceConfigUpdated(null, gitRootPath);
-        resolve(stdout);
-      });
-    } catch (error) {
-      reject(error);
-    }
+      notifyWorkspaceConfigUpdated(null, gitRootPath);
+      resolve(stdout);
+    });
   });
 };
 
@@ -3064,7 +3331,7 @@ const getCommitFileDiff = async (gitRootPath, commitHash, filePath) => {
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
     // Get the diff for a specific file in a commit (compare with parent)
-    git.raw(['show', '--no-prefix', '-p', commitHash, '--', filePath], (err, diff) => {
+    git.raw(['show', '--no-prefix', '-p', commitHash, '--', toLiteralPathspec(filePath)], (err, diff) => {
       if (err) {
         reject(err);
         return;
@@ -3123,7 +3390,7 @@ const getCommitCompareFileDiff = async (gitRootPath, fromCommit, toCommit, fileP
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
     // Get the diff for a specific file between two commits
-    git.raw(['diff', '--no-prefix', fromCommit, toCommit, '--', filePath], (err, diff) => {
+    git.raw(['diff', '--no-prefix', fromCommit, toCommit, '--', toLiteralPathspec(filePath)], (err, diff) => {
       if (err) {
         reject(err);
         return;
@@ -3148,7 +3415,7 @@ const getFileGitHistory = async (gitRootPath, filePath) => {
       '--format=%H|%s|%an|%aI',
       '--follow',
       '-n', '100',
-      '--', filePath
+      '--', toLiteralPathspec(filePath)
     ]);
 
     if (!result || !result.trim()) {
@@ -3189,17 +3456,9 @@ const getFileGitHistory = async (gitRootPath, filePath) => {
  * @returns {Promise<void>}
  */
 const createStash = async (gitRootPath, message) => {
-  return new Promise((resolve, reject) => {
-    const git = getSimpleGitInstanceForPath(gitRootPath);
-    // Use --include-untracked to stash untracked files as well
-    git.stash(['push', '--include-untracked', '-m', message], (err, result) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve(result);
-    });
-  });
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  // Use --include-untracked to stash untracked files as well
+  return runGitRawWithIndexLockRetry(git, ['stash', 'push', '--include-untracked', '-m', message]);
 };
 
 /**
@@ -3302,16 +3561,8 @@ const listStashes = async (gitRootPath) => {
  * @returns {Promise<void>}
  */
 const applyStash = async (gitRootPath, stashIndex) => {
-  return new Promise((resolve, reject) => {
-    const git = getSimpleGitInstanceForPath(gitRootPath);
-    git.stash(['apply', `stash@{${stashIndex}}`], (err, result) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve(result);
-    });
-  });
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  return runGitRawWithIndexLockRetry(git, ['stash', 'apply', `stash@{${stashIndex}}`]);
 };
 
 /**
@@ -3321,16 +3572,245 @@ const applyStash = async (gitRootPath, stashIndex) => {
  * @returns {Promise<void>}
  */
 const dropStash = async (gitRootPath, stashIndex) => {
-  return new Promise((resolve, reject) => {
-    const git = getSimpleGitInstanceForPath(gitRootPath);
-    git.stash(['drop', `stash@{${stashIndex}}`], (err, result) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve(result);
-    });
-  });
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  return runGitRawWithIndexLockRetry(git, ['stash', 'drop', `stash@{${stashIndex}}`]);
+};
+
+// Discard and Restore both rebuild the index, and git cannot build a tree from
+// an unmerged index: mid-merge `git stash push` aborts with "Cannot save the
+// current index state" / "<path>: needs merge", which the panel showed verbatim
+// in a toast — the customer's "we press discard changes and get various errors
+// (save changes...)". Name the state that is in the way and what clears it.
+const getRepositoryStateBlockReason = (state, action) => {
+  if (state.merging) {
+    return `A merge is in progress — abort it first, then ${action}`;
+  }
+  if (state.rebasing) {
+    return `A rebase is in progress — abort it first, then ${action}`;
+  }
+  if (state.cherryPicking) {
+    return `A cherry-pick is in progress — abort it first, then ${action}`;
+  }
+  if (state.reverting) {
+    return `A revert is in progress — abort it first, then ${action}`;
+  }
+  if (state.unmergedPaths.length) {
+    const fileCount = state.unmergedPaths.length;
+    return `${fileCount} file${fileCount === 1 ? '' : 's'} still ${fileCount === 1 ? 'has' : 'have'} unresolved conflicts — resolve them or use Abort, then ${action}`;
+  }
+  if (!state.hasHead) {
+    return `This workspace has no commit yet, so there is no state to return to — make the first commit, then ${action}`;
+  }
+  return '';
+};
+
+const discardWorkspaceChanges = async (gitRootPath, message) => {
+  const blockReason = getRepositoryStateBlockReason(await getRepositoryState(gitRootPath), 'discard');
+  if (blockReason) {
+    throw new Error(blockReason);
+  }
+
+  try {
+    await createStash(gitRootPath, message);
+  } catch (err) {
+    throw createMappedGitError(err, 'Failed to discard changes');
+  }
+
+  return { label: message };
+};
+
+const restoreWorkspaceDiscard = async (gitRootPath, stashIndex) => {
+  const blockReason = getRepositoryStateBlockReason(await getRepositoryState(gitRootPath), 'restore');
+  if (blockReason) {
+    throw new Error(blockReason);
+  }
+
+  let applyOutput = '';
+  try {
+    // apply then drop (not pop) so a conflict during apply keeps the stash
+    // intact for another attempt after the user resolves the working tree.
+    applyOutput = String(await applyStash(gitRootPath, stashIndex) || '');
+  } catch (err) {
+    throw createMappedGitError(err, 'Failed to restore the discarded changes');
+  }
+
+  // NOT dead code, and the catch above does not cover it: `git stash apply`
+  // exits 1 on a conflict but prints "CONFLICT ..." to STDOUT, and simple-git
+  // treats a non-zero exit that produced stdout as success — it resolves with
+  // the conflict text. Without this check the stash is dropped on the next
+  // line and the only copy of the discarded work goes with it, leaving the user
+  // with conflict markers and nothing to retry from.
+  if ((await getRepositoryState(gitRootPath)).unmergedPaths.length) {
+    throw new Error(mapGitFailure(applyOutput || 'CONFLICT'));
+  }
+
+  await dropStash(gitRootPath, stashIndex);
+  return { restored: true };
+};
+
+// Which commit "Discard local commits" resets back to. A workspace created by
+// the panel's own "Initialize Git" has no remote at all, so @{upstream} never
+// resolves and the button used to be disabled forever even while the panel
+// showed an ahead count. Without an upstream the local commits are simply the
+// ones no remote contains.
+// Does this revision name resolve to a commit right now? Used to tell "the
+// upstream ref is gone" apart from "this repository cannot answer questions",
+// which their error TEXT does not.
+const revisionResolvesToCommit = async (git, revision) => {
+  try {
+    return Boolean(String(await git.raw(['rev-parse', '--verify', '--quiet', `${revision}^{commit}`]) || '').trim());
+  } catch (_err) {
+    return false;
+  }
+};
+
+const resolveLocalCommitBase = async (gitRootPath) => {
+  const git = getReadOnlySimpleGitInstanceForPath(gitRootPath);
+
+  // Every read below is a plain revision query, but a repository that cannot
+  // answer one must still reach the user as a sentence rather than as argv.
+  const readRevisions = async (args) => {
+    try {
+      return String(await git.raw(args) || '');
+    } catch (err) {
+      throw createMappedGitError(err, 'Could not work out which commits are local');
+    }
+  };
+
+  let upstream = '';
+  try {
+    upstream = String(await git.raw(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])).trim();
+  } catch (err) {
+    // Three different states end up here and they all mean the same thing: no
+    // upstream to measure against. Two say so plainly ("no upstream configured",
+    // "HEAD does not point to a branch"); the third does not — when
+    // branch.<name>.merge is still configured but the remote-tracking ref has
+    // been PRUNED, which is the ordinary state after the branch is deleted on
+    // the server and anything fetches with --prune, git answers "fatal:
+    // ambiguous argument '@{upstream}': unknown revision or path not in the
+    // working tree", the same words a broken repository produces.
+    //
+    // So ask git what resolves instead of reading the message: a repository
+    // whose HEAD is a commit can still answer "which commits has no remote
+    // got", which is exactly what the remote-less path below computes. Only
+    // when even HEAD does not resolve is the repository itself the problem.
+    if (!(await revisionResolvesToCommit(git, 'HEAD'))) {
+      throw createMappedGitError(err, 'Could not work out which commits are local');
+    }
+  }
+
+  if (upstream) {
+    const ahead = parseInt(String(await readRevisions(['rev-list', '--count', `${upstream}..HEAD`])).trim(), 10) || 0;
+    return {
+      base: upstream,
+      commits: ahead,
+      upstream,
+      reason: ahead ? '' : 'no local commits ahead of the remote'
+    };
+  }
+
+  // Without an upstream the local commits are the ones no remote contains.
+  // `--boundary` also prints, prefixed with `-`, the commits where that set
+  // stops: the newest history a remote already has. HEAD~<count> cannot be used
+  // instead — Gridman pulls with --no-rebase, so merge commits are normal, and
+  // then the count of local commits is not the depth of the first-parent chain.
+  // On the reproduced shapes HEAD~N is either the pre-merge base (resetting
+  // there DISCARDS the pulled remote commit) or past the root ("fatal:
+  // ambiguous argument").
+  const localCommits = parseInt(String(await readRevisions(['rev-list', '--count', 'HEAD', '--not', '--remotes'])).trim(), 10) || 0;
+  if (!localCommits) {
+    return { base: '', commits: 0, upstream: '', reason: 'no local commits that a remote does not already have' };
+  }
+
+  const boundaries = String(await readRevisions(['rev-list', '--boundary', 'HEAD', '--not', '--remotes']) || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('-'))
+    .map((line) => line.slice(1));
+
+  if (boundaries.length) {
+    // A merge can have several boundaries (the pre-merge base AND the remote
+    // tip). Keep only the newest — the others are its ancestors, so resetting
+    // there would throw away history a remote already has.
+    const independent = boundaries.length === 1
+      ? boundaries
+      : String(await readRevisions(['merge-base', '--independent', ...boundaries]) || '')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean);
+
+    if (independent.length !== 1) {
+      // Local history merges two published lines; no single commit can be
+      // reset to without losing one of them.
+      return {
+        base: '',
+        commits: localCommits,
+        upstream: '',
+        reason: 'this branch merges more than one published line of history, so there is no single commit to return to — discard the individual changes instead'
+      };
+    }
+
+    return { base: independent[0], commits: localCommits, upstream: '', reason: '' };
+  }
+
+  // No boundary at all: the whole history is local. There is no parent below
+  // the first commit to reset onto, so the workspace's initial commit stays.
+  const rootCommits = String(await readRevisions(['rev-list', '--max-parents=0', 'HEAD']) || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (rootCommits.length !== 1) {
+    // Unrelated histories were merged (pull supports that), so "the first
+    // commit" is ambiguous and picking one would delete the other root's work.
+    return {
+      base: '',
+      commits: localCommits,
+      upstream: '',
+      reason: 'this workspace has more than one first commit (unrelated histories were merged), so there is no single commit to return to — discard the individual changes instead'
+    };
+  }
+
+  const commitsAboveRoot = parseInt(String(await readRevisions(['rev-list', '--count', `${rootCommits[0]}..HEAD`])).trim(), 10) || 0;
+  return {
+    base: rootCommits[0],
+    commits: commitsAboveRoot,
+    upstream: '',
+    keptInitialCommit: true,
+    reason: commitsAboveRoot ? '' : 'the first commit in this workspace cannot be discarded — there is nothing to return to'
+  };
+};
+
+const discardLocalCommits = async (gitRootPath, message) => {
+  const blockReason = getRepositoryStateBlockReason(await getRepositoryState(gitRootPath), 'discard local commits');
+  if (blockReason) {
+    throw new Error(blockReason);
+  }
+
+  const { base, commits, upstream, keptInitialCommit, reason } = await resolveLocalCommitBase(gitRootPath);
+  if (!commits || !base) {
+    return { discarded: false, reason };
+  }
+
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  try {
+    await runGitRawWithIndexLockRetry(git, ['reset', '--soft', base]);
+  } catch (err) {
+    throw createMappedGitError(err, 'The local commits could not be undone');
+  }
+
+  const status = String(await getReadOnlySimpleGitInstanceForPath(gitRootPath).raw(['status', '--porcelain'])).trim();
+  let stashed = false;
+  if (status) {
+    try {
+      await createStash(gitRootPath, message);
+    } catch (err) {
+      throw createMappedGitError(err, 'The commits were undone but their changes could not be moved to "Recently discarded"');
+    }
+    stashed = true;
+  }
+
+  return { discarded: true, commits, stashed, upstream, keptInitialCommit: Boolean(keptInitialCommit) };
 };
 
 /**
@@ -3415,7 +3895,7 @@ const getStashFileDiff = async (gitRootPath, stashIndex, filePath, isUntracked =
     } else {
       // For tracked files, use git diff to compare stash against its parent
       // stash@{n}^ is the parent commit, stash@{n} is the stash commit
-      const diff = await git.raw(['diff', `stash@{${stashIndex}}^`, `stash@{${stashIndex}}`, '--', filePath]);
+      const diff = await git.raw(['diff', `stash@{${stashIndex}}^`, `stash@{${stashIndex}}`, '--', toLiteralPathspec(filePath)]);
       return diff;
     }
   } catch (err) {
@@ -3769,6 +4249,8 @@ module.exports = {
   unstageChanges,
   resolveConflictFile,
   discardChanges,
+  getWorkspaceFileGitStatus,
+  restoreWorkspaceFileFromIndex,
   commitChanges,
   getChangedFilesInCollectionGit,
   getCollectionGitBranches,
@@ -3811,6 +4293,8 @@ module.exports = {
   getAheadBehindCount,
   getAheadCount,
   getBehindCount,
+  getRepositoryState,
+  mapGitFailure,
   abortConflictResolution,
   continueMerge,
   continueResolvedMerge,
@@ -3824,6 +4308,9 @@ module.exports = {
   listStashes,
   applyStash,
   dropStash,
+  discardWorkspaceChanges,
+  restoreWorkspaceDiscard,
+  discardLocalCommits,
   getStashFiles,
   getStashFileDiff,
   getFileContentAtCommit,

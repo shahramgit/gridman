@@ -596,11 +596,15 @@ const AppTitleBar = () => {
 
   const workspaceGitSummary = useMemo(() => {
     const changedFiles = workspaceGitData?.changedFiles || {};
-    const changeCount = (changedFiles.staged?.length || 0) + (changedFiles.unstaged?.length || 0) + (changedFiles.conflicted?.length || 0);
+    // The conflicted LIST is capped for big workspaces; conflictedCount carries
+    // the real number, so the badge must prefer it or it under-reports exactly
+    // when there is most to report.
+    const conflictedCount = changedFiles.conflictedCount ?? (changedFiles.conflicted?.length || 0);
+    const changeCount = (changedFiles.staged?.length || 0) + (changedFiles.unstaged?.length || 0) + conflictedCount;
     const ahead = workspaceGitData?.aheadBehind?.ahead || workspaceGitData?.status?.ahead || 0;
     const behind = workspaceGitData?.aheadBehind?.behind || workspaceGitData?.status?.behind || 0;
     const hasRemote = Boolean(workspaceGitData?.remotes?.length);
-    const hasConflicts = Boolean(workspaceGitData?.mergeInProgress || changedFiles.conflicted?.length);
+    const hasConflicts = Boolean(workspaceGitData?.mergeInProgress || conflictedCount);
     const hasCommits = Boolean(workspaceGitData?.hasCommits);
     const hasUpstream = Boolean(workspaceGitData?.hasUpstream || workspaceGitData?.trackingBranch || workspaceGitData?.status?.tracking);
     const remoteHasBranches = Boolean(workspaceGitData?.remoteHasBranches || workspaceGitData?.remoteBranchNames?.length || workspaceGitData?.remoteBranches?.length);

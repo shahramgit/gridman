@@ -43,10 +43,13 @@ const {
   setGitIdentity,
   enableGitGlobalLongPaths,
   testGitSshConnection,
-  createStash,
   listStashes,
-  applyStash,
-  dropStash
+  dropStash,
+  discardWorkspaceChanges,
+  restoreWorkspaceDiscard,
+  discardLocalCommits,
+  getWorkspaceFileGitStatus,
+  restoreWorkspaceFileFromIndex
 } = require('../utils/git');
 const { createDirectory, removeDirectory } = require('../utils/filesystem');
 const { beginGitOperation, endGitOperation } = require('../app/git-operation-state');
@@ -327,10 +330,8 @@ const registerGitIpc = (mainWindow) => {
   // but the discarded work stays recoverable from the stash — surfaced in the
   // Git panel as "Recently discarded" with restore/delete.
   ipcMain.handle('renderer:discard-workspace-git-changes', async (event, { gitRootPath }) => {
-    return withWorkspaceGitOperationLock(gitRootPath, 'discard changes', async () => {
-      const label = `Discarded via Gridman on ${new Date().toLocaleString()}`;
-      await createStash(gitRootPath, label);
-      return { label };
+    return withWorkspaceGitOperationLock(gitRootPath, 'discard changes', () => {
+      return discardWorkspaceChanges(gitRootPath, `Discarded via Gridman on ${new Date().toLocaleString()}`);
     });
   });
 
@@ -339,11 +340,8 @@ const registerGitIpc = (mainWindow) => {
   });
 
   ipcMain.handle('renderer:restore-workspace-git-discard', async (event, { gitRootPath, stashIndex }) => {
-    return withWorkspaceGitOperationLock(gitRootPath, 'restore discarded changes', async () => {
-      // apply then drop (not pop) so a conflict during apply keeps the stash
-      // intact for another attempt after the user resolves the working tree.
-      await applyStash(gitRootPath, stashIndex);
-      await dropStash(gitRootPath, stashIndex);
+    return withWorkspaceGitOperationLock(gitRootPath, 'restore discarded changes', () => {
+      return restoreWorkspaceDiscard(gitRootPath, stashIndex);
     });
   });
 
@@ -352,33 +350,13 @@ const registerGitIpc = (mainWindow) => {
   });
 
   // "Discard local commits": undo commits that were made but NOT pushed —
-  // reset the branch back to its upstream (soft, history only), then run the
-  // same stash-backed discard so all the changes from those commits land in
-  // "Recently discarded" and stay restorable. Nothing is force-pushed and the
-  // remote is never touched.
+  // reset the branch back to the last state a remote already has (soft, history
+  // only), then run the same stash-backed discard so all the changes from those
+  // commits land in "Recently discarded" and stay restorable. Nothing is
+  // force-pushed and the remote is never touched.
   ipcMain.handle('renderer:discard-workspace-git-commits', async (event, { gitRootPath }) => {
-    return withWorkspaceGitOperationLock(gitRootPath, 'discard commits', async () => {
-      const simpleGit = require('simple-git');
-      const git = simpleGit(gitRootPath);
-      let upstream;
-      try {
-        upstream = String(await git.raw(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'])).trim();
-      } catch (err) {
-        throw new Error('This branch has no upstream — publish or push it once before local commits can be discarded against it');
-      }
-      const ahead = parseInt(String(await git.raw(['rev-list', '--count', `${upstream}..HEAD`])).trim(), 10) || 0;
-      if (!ahead) {
-        return { discarded: false, reason: 'no local commits ahead of the remote' };
-      }
-      await git.raw(['reset', '--soft', upstream]);
-      const status = String(await git.raw(['status', '--porcelain'])).trim();
-      let stashed = false;
-      if (status) {
-        const label = `Discarded via Gridman on ${new Date().toLocaleString()}`;
-        await createStash(gitRootPath, label);
-        stashed = true;
-      }
-      return { discarded: true, commits: ahead, stashed, upstream };
+    return withWorkspaceGitOperationLock(gitRootPath, 'discard commits', () => {
+      return discardLocalCommits(gitRootPath, `Discarded via Gridman on ${new Date().toLocaleString()}`);
     });
   });
 
@@ -408,11 +386,12 @@ const registerGitIpc = (mainWindow) => {
       throw new Error('This workspace is not a Git repository');
     }
     return withWorkspaceGitOperationLock(gitRootPath, 'revert file', async () => {
-      const simpleGit = require('simple-git');
-      const git = simpleGit(gitRootPath);
-      const relPath = path.relative(gitRootPath, path.resolve(pathname));
-      const status = await git.raw(['status', '--porcelain', '--', relPath]);
-      const line = String(status || '').trim();
+      // Both git calls live in utils/git so the path reaches git as a LITERAL
+      // pathspec: run against a plain one, reverting `GET [v2] users.bru` also
+      // reverted `GET v users.bru` — and the Trash copy below snapshots only
+      // the file the user clicked, so the bystander's unsaved edits were
+      // unrecoverable.
+      const line = await getWorkspaceFileGitStatus(gitRootPath, pathname);
       if (!line) {
         return { reverted: false, reason: 'clean' };
       }
@@ -422,7 +401,7 @@ const registerGitIpc = (mainWindow) => {
         return { reverted: true, untracked: true };
       }
       await copyToAppTrash(pathname, { type: 'request' });
-      await git.raw(['checkout', '--', relPath]);
+      await restoreWorkspaceFileFromIndex(gitRootPath, pathname);
       return { reverted: true, untracked: false };
     });
   });
