@@ -38,7 +38,7 @@ console.log(`\n${colors.bright}${colors.yellow}🚀 Starting Gridman development
 // gitignored dist — so an edit in bruno-common/converters/filestore/requests can
 // look like it did nothing at all. Warn, never block.
 try {
-  require('./check-package-builds.js');
+  require('./check-package-builds.js').reportStalePackageBuilds();
 } catch (_err) {
   // the check is a convenience; never let it stop the dev server
 }

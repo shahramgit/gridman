@@ -55,53 +55,55 @@ const newestMtime = (dir) => {
   return newest;
 };
 
-const strict = process.argv.includes('--strict');
-const problems = [];
+// Returns the stale packages and reports them. NEVER exits the process: this is
+// also called in-process by scripts/dev.js, where a process.exit() would kill
+// the dev server before it started.
+const reportStalePackageBuilds = ({ strict = false } = {}) => {
+  const problems = [];
 
-for (const pkg of BUILT_PACKAGES) {
-  const packageDir = path.join(rootDir, 'packages', pkg.name);
-  const srcDir = path.join(packageDir, 'src');
-  const distDir = path.join(packageDir, 'dist');
+  for (const pkg of BUILT_PACKAGES) {
+    const packageDir = path.join(rootDir, 'packages', pkg.name);
+    const srcDir = path.join(packageDir, 'src');
+    const distDir = path.join(packageDir, 'dist');
 
-  if (!fs.existsSync(srcDir)) continue;
+    if (!fs.existsSync(srcDir)) continue;
 
-  if (!fs.existsSync(distDir)) {
-    problems.push({ pkg, reason: 'dist/ is missing entirely' });
-    continue;
+    if (!fs.existsSync(distDir)) {
+      problems.push({ pkg, reason: 'dist/ is missing entirely' });
+      continue;
+    }
+
+    const srcTime = newestMtime(srcDir);
+    const distTime = newestMtime(distDir);
+    if (srcTime > distTime) {
+      const ageInMinutes = Math.round((srcTime - distTime) / 60000);
+      problems.push({ pkg, reason: `src/ is ${ageInMinutes} minute(s) newer than dist/` });
+    }
   }
 
-  const srcTime = newestMtime(srcDir);
-  const distTime = newestMtime(distDir);
-  if (srcTime > distTime) {
-    const ageInMinutes = Math.round((srcTime - distTime) / 60000);
-    problems.push({ pkg, reason: `src/ is ${ageInMinutes} minute(s) newer than dist/` });
+  if (!problems.length) {
+    if (strict) console.log('\u2713 workspace package builds are current');
+    return problems;
   }
-}
 
-if (!problems.length) {
-  if (strict) console.log('✓ workspace package builds are current');
-  process.exit(0);
-}
-
-const label = strict ? 'ERROR' : 'WARNING';
-console.log('');
-console.log(`${label}: workspace package builds are STALE. Consumers resolve to dist/, so these changes are NOT in the app:`);
-for (const { pkg, reason } of problems) {
-  console.log(`  - ${pkg.name}: ${reason}`);
-}
-console.log('');
-console.log('Rebuild them with:');
-console.log(`  ${problems.map(({ pkg }) => `npm run ${pkg.script}`).join(' && ')}`);
-
-// The rollup builds need the pinned Node; on 18 @rollup/plugin-terser dies with
-// "ReferenceError: crypto is not defined", and prebuild has already run rimraf
-// on dist by then, so a failed build leaves you with no dist at all.
-const major = Number(process.versions.node.split('.')[0]);
-if (major < 20) {
+  const label = strict ? 'ERROR' : 'WARNING';
   console.log('');
-  console.log(`Node ${process.versions.node} cannot run those builds (.nvmrc pins v22.12.0).`);
-  console.log('Use the pinned version first — on Node 18 the build deletes dist and then fails.');
-}
-console.log('');
+  console.log(`${label}: workspace package builds are STALE. Consumers resolve to dist/, so these changes are NOT in the app:`);
+  for (const { pkg, reason } of problems) {
+    console.log(`  - ${pkg.name}: ${reason}`);
+  }
+  console.log('');
+  console.log('Rebuild them with:');
+  console.log(`  ${problems.map(({ pkg }) => `npm run ${pkg.script}`).join(' && ')}`);
+  console.log('');
 
-process.exit(strict ? 1 : 0);
+  return problems;
+};
+
+module.exports = { reportStalePackageBuilds };
+
+if (require.main === module) {
+  const strict = process.argv.includes('--strict');
+  const problems = reportStalePackageBuilds({ strict });
+  process.exit(strict && problems.length ? 1 : 0);
+}
