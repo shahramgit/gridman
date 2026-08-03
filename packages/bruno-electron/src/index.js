@@ -130,9 +130,19 @@ const saveZoomPreferences = async (percentage) => {
   }
 };
 
+// Automated runs drive the renderer over CDP, which does not need a visible
+// window — but showing one steals focus and, on macOS, yanks the user back to
+// whichever Space the window opened on. So under Playwright the window stays
+// hidden unless GRIDMAN_E2E_SHOW_WINDOW is set (for watching a run debug).
+const isBackgroundWindowMode = () =>
+  process.env.PLAYWRIGHT === 'true' && process.env.GRIDMAN_E2E_SHOW_WINDOW !== 'true';
+
 // Helper function to focus and restore the main window
 const focusMainWindow = () => {
   if (mainWindow) {
+    if (isBackgroundWindowMode()) {
+      return;
+    }
     app.focus({ steal: true });
     if (mainWindow.isMinimized()) {
       mainWindow.restore();
@@ -200,6 +210,12 @@ if (useSingleInstance && !gotTheLock) {
 
 // Prepare the renderer once the app is ready
 app.on('ready', async () => {
+  // Without this the Dock icon still appears and macOS can activate the app,
+  // switching the user's Space even though no window is ever shown.
+  if (isBackgroundWindowMode() && app.dock) {
+    app.dock.hide();
+  }
+
   initializeShellEnv();
 
   // React/Redux DevTools extensions instrument every fiber commit and
@@ -263,7 +279,10 @@ app.on('ready', async () => {
       nodeIntegration: true,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
-      webviewTag: true
+      webviewTag: true,
+      // A window that is never shown gets its timers throttled, which turns
+      // waits in the e2e suite into flakes. Only relaxed for that hidden case.
+      backgroundThrottling: !isBackgroundWindowMode()
     },
     title: 'Gridman',
     icon: getAppIconPath(),
@@ -373,7 +392,9 @@ app.on('ready', async () => {
       const zoomLevel = percentageToZoomLevel(zoomPercentage);
       mainWindow.webContents.setZoomLevel(zoomLevel);
     }
-    mainWindow.show();
+    if (!isBackgroundWindowMode()) {
+      mainWindow.show();
+    }
   });
   const devPort = process.env.BRUNO_DEV_PORT || 3000;
   const url = isDev
