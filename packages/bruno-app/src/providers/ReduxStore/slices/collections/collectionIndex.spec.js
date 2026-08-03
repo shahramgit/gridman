@@ -16,6 +16,7 @@ import reducer, {
   collectionAddDirectoryEvent,
   collectionAddFileEvent,
   collectionChangeFileEvent,
+  collectionUnlinkFileEvent,
   requestUrlChanged,
   runFolderEvent,
   collectionIndexStarted,
@@ -24,10 +25,14 @@ import reducer, {
   collectionIndexNodeRemoved,
   collectionIndexNodeRenamed,
   collectionIndexNodeAdded,
+  collectionIndexNodesActivated,
   collectionIndexNodesResequenced
 } from './index';
 import { callIpc } from 'utils/common/ipc';
 import { moveCollectionItemByPath } from './actions';
+import { collectionScanStats, flattenItems } from 'utils/collections';
+import { buildVisibleRows } from 'utils/collections/visibleRows';
+import { normalizePath } from 'utils/common/path';
 
 const COLLECTION_UID = 'col-1';
 
@@ -829,6 +834,423 @@ describe('collectionChangeFileEvent (partial/unparseable items)', () => {
     expect(item.draft).toBeTruthy();
     expect(item.draft.seq).toBe(7);
     expect(item.draft.request.url).toBe('https://api.example.com/users?edited=1');
+  });
+});
+
+describe('uidByPathname aliases (uid-preserving moves)', () => {
+  // The main process preserves a request's uid across in-app moves/renames
+  // (bruno-electron cache/requestUids.js moveRequestUid), so the watcher's
+  // addFile for the DESTINATION carries the same uid as the node already
+  // indexed at the source. setIndexNode used to write the new pathname key
+  // without dropping the node's previous one, leaving uidByPathname holding
+  // BOTH paths -> the following unlink of the source resolved through the
+  // stale alias and deleted the node at its NEW path (row vanished until a
+  // restart).
+  const SOURCE = '/ws/collections/api/users/get-user.bru';
+  const TARGET = '/ws/collections/api/orders/get-user.bru';
+
+  const buildMovedState = () => {
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, createCollection({
+      uid: COLLECTION_UID,
+      name: 'api',
+      pathname: '/ws/collections/api',
+      items: [],
+      brunoConfig: { name: 'api' }
+    }));
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+    state = reducer(state, collectionIndexBatchReceived({
+      collectionUid: COLLECTION_UID,
+      loadSessionId: 's1',
+      nodes: NODES,
+      totalScanned: NODES.length
+    }));
+
+    // Watcher add for the destination, SAME uid (the uid cache moved it).
+    state = reducer(state, collectionAddFileEvent({
+      file: {
+        meta: { collectionUid: COLLECTION_UID, pathname: TARGET, name: 'get-user.bru' },
+        data: { uid: 'r1', name: 'get-user', type: 'http-request', seq: 1, request: { method: 'GET', url: 'x' }, settings: {}, examples: [] },
+        partial: false,
+        loading: false,
+        size: 0.01
+      }
+    }));
+    return state;
+  };
+
+  it('drops the previous pathname key when a node is re-indexed at a new path', () => {
+    const state = buildMovedState();
+    const index = state.collectionIndexes[COLLECTION_UID];
+
+    expect(index.uidByPathname[TARGET]).toBe('r1');
+    expect(index.uidByPathname[SOURCE]).toBeUndefined();
+  });
+
+  it('keeps the moved row alive when the source unlink arrives after the destination add', () => {
+    let state = buildMovedState();
+    state = reducer(state, collectionUnlinkFileEvent({
+      file: { meta: { collectionUid: COLLECTION_UID, pathname: SOURCE, name: 'get-user.bru' } }
+    }));
+    const index = state.collectionIndexes[COLLECTION_UID];
+
+    expect(index.nodesByUid.r1).toBeDefined();
+    expect(index.nodesByUid.r1.pathname).toBe(TARGET);
+    expect(index.uidByPathname[TARGET]).toBe('r1');
+    expect(index.childrenByParentUid.f2).toContain('r1');
+    expect(index.childrenByParentUid.f1).not.toContain('r1');
+  });
+
+  it('does not orphan the node already sitting at a move target', () => {
+    // Overwrite-on-move: the destination pathname is already indexed. The
+    // rekey used to steal that node's uidByPathname entry and leave it in
+    // nodesByUid as an unreachable ghost (it kept rendering as a child row).
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+    state = reducer(state, collectionIndexBatchReceived({
+      collectionUid: COLLECTION_UID,
+      loadSessionId: 's1',
+      nodes: [
+        ...NODES,
+        { uid: 'r3', name: 'get-user', type: 'http', pathname: TARGET, parentUid: 'f2', depth: 1, seq: 1 }
+      ]
+    }));
+
+    state = reducer(state, collectionIndexNodeMoved({
+      collectionUid: COLLECTION_UID,
+      sourcePathname: SOURCE,
+      targetPathname: TARGET
+    }));
+    const index = state.collectionIndexes[COLLECTION_UID];
+
+    expect(index.uidByPathname[TARGET]).toBe('r1');
+    expect(index.nodesByUid.r3).toBeUndefined();
+    expect(index.childrenByParentUid.f2.filter((uid) => uid === 'r3')).toHaveLength(0);
+    // every surviving node is still reachable through the map
+    for (const node of Object.values(index.nodesByUid)) {
+      expect(index.uidByPathname[node.pathname]).toBe(node.uid);
+    }
+  });
+
+  it('leaves a plain rename onto a free pathname untouched', () => {
+    let state = buildIndexedState();
+    state = reducer(state, collectionIndexNodeMoved({
+      collectionUid: COLLECTION_UID,
+      sourcePathname: SOURCE,
+      targetPathname: '/ws/collections/api/users/get-user-v2.bru'
+    }));
+    const index = state.collectionIndexes[COLLECTION_UID];
+
+    expect(index.nodesByUid.r1.pathname).toBe('/ws/collections/api/users/get-user-v2.bru');
+    expect(Object.keys(index.nodesByUid)).toHaveLength(NODES.length);
+  });
+});
+
+describe('collectionIndexNodesActivated (no full tree scan per node)', () => {
+  // MEASURED on the biggest real collection (1,594 nodes): a 378-node
+  // activation burst cost 210 ms and the SECOND burst 1,627 ms, because every
+  // activated request scanned the whole hydrated tree three times (the
+  // existing-item probe in applyCollectionIndexNodeToTree, the same probe
+  // inside applyCollectionAddFile, and the loadedRequestsByPath probe in the
+  // reducer) over a tree that GROWS as the loop applies nodes.
+  //
+  // Counted through collectionScanStats, not jest.spyOn: a namespace spy sees
+  // neither the structural lookup's fallback (an intra-module call that never
+  // goes through the namespace object) nor the deep scan it runs, so it would
+  // report 0 while a full scan happened.
+  const ACTIVATION_NODES = [
+    NODES[0],
+    { ...NODES[1], filename: 'get-user.bru' },
+    { ...NODES[2], filename: 'list-users.bru' }
+  ];
+
+  const buildCollectionState = () => {
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, createCollection({
+      uid: COLLECTION_UID,
+      name: 'api',
+      pathname: '/ws/collections/api',
+      items: [],
+      brunoConfig: { name: 'api' }
+    }));
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+    state = reducer(state, collectionIndexBatchReceived({
+      collectionUid: COLLECTION_UID,
+      loadSessionId: 's1',
+      nodes: NODES,
+      totalScanned: NODES.length
+    }));
+    return state;
+  };
+
+  it('scans the tree once for a whole first burst', () => {
+    let state = buildCollectionState();
+    collectionScanStats.scans = 0;
+    state = reducer(state, collectionIndexNodesActivated({
+      collectionUid: COLLECTION_UID,
+      nodes: ACTIVATION_NODES
+    }));
+
+    // ONE scan for the burst: the nodes that are not in the tree yet share the
+    // fallback (the safety net that stops a tree out of step with the
+    // filesystem from getting a duplicate row) through the burst's scan cache.
+    // Three scans PER NODE is what this replaced.
+    expect(collectionScanStats.scans).toBe(1);
+
+    const collection = state.collections.find((c) => c.uid === COLLECTION_UID);
+    const usersFolder = collection.items.find((i) => i.pathname === '/ws/collections/api/users');
+    expect(usersFolder.uid).toBe('f1');
+    expect(usersFolder.items.map((i) => i.uid).sort()).toEqual(['r1', 'r2']);
+    expect(usersFolder.items.find((i) => i.uid === 'r1').request.gridmanIndexOnly).toBe(true);
+  });
+
+  it('does not scan the tree at all when the burst re-activates known nodes', () => {
+    // The repeated case, and the expensive one: the second burst of a search
+    // mount re-activates nodes the first burst already put in the tree.
+    let state = buildCollectionState();
+    state = reducer(state, collectionIndexNodesActivated({ collectionUid: COLLECTION_UID, nodes: ACTIVATION_NODES }));
+
+    collectionScanStats.scans = 0;
+    state = reducer(state, collectionIndexNodesActivated({ collectionUid: COLLECTION_UID, nodes: ACTIVATION_NODES }));
+
+    expect(collectionScanStats.scans).toBe(0);
+
+    const collection = state.collections.find((c) => c.uid === COLLECTION_UID);
+    const usersFolder = collection.items.find((i) => i.pathname === '/ws/collections/api/users');
+    expect(usersFolder.items.map((i) => i.uid).sort()).toEqual(['r1', 'r2']);
+  });
+
+  it('re-activation does not clobber an already loaded request', () => {
+    // The existing-item probe is load-bearing: it is what stops a re-activation
+    // from writing the index stub over a fully parsed request.
+    let state = buildCollectionState();
+    state = reducer(state, collectionIndexNodesActivated({ collectionUid: COLLECTION_UID, nodes: ACTIVATION_NODES }));
+    state = reducer(state, collectionAddFileEvent({
+      file: {
+        meta: { collectionUid: COLLECTION_UID, pathname: '/ws/collections/api/users/get-user.bru', name: 'get-user.bru', source: 'load-request' },
+        data: { uid: 'r1', name: 'get-user', type: 'http-request', seq: 1, request: { method: 'POST', url: 'https://api.example.com/users' }, settings: {}, examples: [] },
+        partial: false,
+        loading: false,
+        size: 0.01
+      }
+    }));
+    state = reducer(state, collectionIndexNodesActivated({ collectionUid: COLLECTION_UID, nodes: ACTIVATION_NODES }));
+
+    const collection = state.collections.find((c) => c.uid === COLLECTION_UID);
+    const usersFolder = collection.items.find((i) => i.pathname === '/ws/collections/api/users');
+    const getUser = usersFolder.items.find((i) => i.uid === 'r1');
+    expect(getUser.request.method).toBe('POST');
+    expect(getUser.request.gridmanIndexOnly).toBeUndefined();
+    expect(getUser.loading).toBe(false);
+    expect(state.loadedRequestsByPath[COLLECTION_UID]['/ws/collections/api/users/get-user.bru']?.uid).toBe('r1');
+  });
+});
+
+describe('index activation against a tree that does not mirror the filesystem', () => {
+  // The structural walk down the folder chain is a FAST PATH, not an oracle:
+  // nothing enforces that an item's position in collection.items matches its
+  // pathname, and a move/rename can leave the two out of step. Its miss is
+  // therefore not a proof of absence — and applyCollectionAddFile trusts the
+  // resolved value, so a false miss pushes a SECOND item under the same uid
+  // (duplicate React keys, two sidebar rows, one of them unaddressable).
+  const REQUEST_PATH = '/ws/collections/api/users/get-user.bru';
+  const loadedRequestItem = () => ({
+    uid: 'r1',
+    name: 'get-user',
+    type: 'http-request',
+    seq: 1,
+    filename: 'get-user.bru',
+    pathname: REQUEST_PATH,
+    request: { method: 'POST', url: 'https://api.example.com/users', body: { mode: 'none' } },
+    settings: {},
+    examples: [],
+    draft: null,
+    partial: false,
+    loading: false
+  });
+
+  const buildStateWithItems = (items) => {
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, createCollection({
+      uid: COLLECTION_UID,
+      name: 'api',
+      pathname: '/ws/collections/api',
+      items,
+      brunoConfig: { name: 'api' }
+    }));
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+    state = reducer(state, collectionIndexBatchReceived({
+      collectionUid: COLLECTION_UID,
+      loadSessionId: 's1',
+      nodes: NODES,
+      totalScanned: NODES.length
+    }));
+    return state;
+  };
+
+  it.each([
+    [
+      'the folder chain is missing entirely',
+      () => [
+        {
+          uid: 'f-legacy',
+          type: 'folder',
+          name: 'legacy',
+          pathname: '/ws/collections/api/legacy',
+          collapsed: true,
+          items: [loadedRequestItem()]
+        }
+      ]
+    ],
+    [
+      'the folder chain resolves but the row hangs off a sibling',
+      () => [
+        { uid: 'f1', type: 'folder', name: 'users', pathname: '/ws/collections/api/users', collapsed: true, items: [] },
+        {
+          uid: 'f2',
+          type: 'folder',
+          name: 'orders',
+          pathname: '/ws/collections/api/orders',
+          collapsed: true,
+          items: [loadedRequestItem()]
+        }
+      ]
+    ]
+  ])('finds the existing row when %s', (_label, buildItems) => {
+    let state = buildStateWithItems(buildItems());
+    state = reducer(state, collectionIndexNodesActivated({
+      collectionUid: COLLECTION_UID,
+      nodes: [{ ...NODES[1], filename: 'get-user.bru' }]
+    }));
+
+    const collection = state.collections.find((c) => c.uid === COLLECTION_UID);
+    const flattened = flattenItems(collection.items);
+    expect(flattened.filter((item) => item.uid === 'r1')).toHaveLength(1);
+    expect(flattened.filter((item) => item.pathname === REQUEST_PATH)).toHaveLength(1);
+    // resolved => the loaded request is recognised and left alone, instead of
+    // being shadowed by a fresh index stub.
+    const request = flattened.find((item) => item.uid === 'r1');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.gridmanIndexOnly).toBeUndefined();
+  });
+});
+
+describe('uidByPathname key form migration', () => {
+  // `if (!index.uidByPathname)` can never fire on a live index —
+  // collectionIndexStarted initialises the map to {} — so it could not migrate
+  // an index whose keys were built by an older key FORM, which is exactly what
+  // the win32-normalize -> normalizePath switch is. The form is stamped on the
+  // index instead, and a mismatch rebuilds the map once.
+  const WIN_REQUEST = 'C:\\ws\\collections\\api\\users\\get-user.bru';
+
+  const staleKeyFormState = () => ({
+    collections: [],
+    collectionIndexes: {
+      [COLLECTION_UID]: {
+        collectionUid: COLLECTION_UID,
+        loadSessionId: 's0',
+        status: 'ready',
+        nodesByUid: {
+          r1: { uid: 'r1', name: 'get-user', type: 'http', pathname: WIN_REQUEST, parentUid: null, depth: 0, seq: 1 }
+        },
+        // Keys as the previous form produced them: path.win32.normalize keeps
+        // backslashes, so none of these match a normalizePath key.
+        uidByPathname: { [WIN_REQUEST]: 'r1' },
+        childrenByParentUid: { root: ['r1'] },
+        rootChildUids: ['r1'],
+        totalScanned: 1,
+        totalNodes: 1,
+        error: null
+      }
+    },
+    loadedRequestsByPath: {},
+    tempDirectories: {}
+  });
+
+  it('rebuilds a map that was keyed by an older form', () => {
+    const state = reducer(staleKeyFormState(), collectionIndexNodeRenamed({
+      collectionUid: COLLECTION_UID,
+      pathname: WIN_REQUEST,
+      name: 'renamed'
+    }));
+    const index = state.collectionIndexes[COLLECTION_UID];
+
+    expect(index.nodesByUid.r1.name).toBe('renamed');
+    expect(index.uidByPathname[normalizePath(WIN_REQUEST)]).toBe('r1');
+    expect(index.uidByPathname[WIN_REQUEST]).toBeUndefined();
+  });
+});
+
+describe('uidByPathname key form matches the sidebar lookup (Windows)', () => {
+  // buildVisibleRows resolves content-search hits through uidByPathname with
+  // keys produced by utils/common/path normalizePath (NFC + forward slashes,
+  // the same form useWorkspaceSearch stores). The index used to key on
+  // path.normalize(), and `path` is path.win32 on Windows, whose normalize()
+  // KEEPS backslashes - so on Windows (our users) the O(1) lookup could never
+  // hit and every filtered render fell back to scanning Object.values(nodesByUid)
+  // with an NFC normalize per node.
+  const WIN_FOLDER = 'C:\\ws\\collections\\api\\users';
+  const WIN_REQUEST = 'C:\\ws\\collections\\api\\users\\get-user.bru';
+
+  const buildWindowsIndex = () => {
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, collectionIndexStarted({ collectionUid: COLLECTION_UID, loadSessionId: 's1' }));
+    state = reducer(state, collectionIndexBatchReceived({
+      collectionUid: COLLECTION_UID,
+      loadSessionId: 's1',
+      nodes: [
+        { uid: 'f1', name: 'users', type: 'folder', pathname: WIN_FOLDER, parentUid: null, depth: 0, seq: 1 },
+        { uid: 'r1', name: 'get-user', type: 'http', pathname: WIN_REQUEST, parentUid: 'f1', depth: 1, seq: 1 }
+      ],
+      totalScanned: 2
+    }));
+    return state.collectionIndexes[COLLECTION_UID];
+  };
+
+  it('keys backslash pathnames the way normalizePath does', () => {
+    const index = buildWindowsIndex();
+
+    expect(index.uidByPathname[normalizePath(WIN_REQUEST)]).toBe('r1');
+    expect(index.uidByPathname[normalizePath(WIN_FOLDER)]).toBe('f1');
+    expect(Object.keys(index.uidByPathname).sort()).toEqual([normalizePath(WIN_FOLDER), normalizePath(WIN_REQUEST)].sort());
+  });
+
+  // The fallback (Object.values(nodesByUid) + an NFC normalize per node) still
+  // produces the right rows, so a row assertion alone cannot tell a hit from a
+  // miss. Count the scan instead: Object.values trips the ownKeys trap.
+  const withScanCounter = (index) => {
+    const counter = { scans: 0 };
+    return [
+      {
+        ...index,
+        nodesByUid: new Proxy(index.nodesByUid, {
+          ownKeys(target) {
+            counter.scans += 1;
+            return Reflect.ownKeys(target);
+          }
+        })
+      },
+      counter
+    ];
+  };
+
+  it.each([
+    ['the normalized form the search hook reports', normalizePath(WIN_REQUEST)],
+    ['the raw backslash form', WIN_REQUEST]
+  ])('resolves a hit given %s through the map, without the fallback scan', (_label, hit) => {
+    const [index, counter] = withScanCounter(buildWindowsIndex());
+
+    const rows = buildVisibleRows({
+      index,
+      searchMatches: {
+        matchedPathnames: new Set([hit]),
+        matchMeta: new Map([[hit, { field: 'body', text: 'x' }]])
+      }
+    });
+
+    expect(rows.map((row) => row.uid)).toEqual(['f1', 'r1']);
+    expect(rows.find((row) => row.uid === 'r1').searchMatchMeta).toEqual({ field: 'body', text: 'x' });
+    expect(counter.scans).toBe(0);
   });
 });
 

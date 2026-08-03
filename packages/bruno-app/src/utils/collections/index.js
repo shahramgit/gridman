@@ -2,7 +2,7 @@ import { cloneDeep, isEqual, sortBy, filter, map, isString, findIndex, find, eac
 import { uuid } from 'utils/common';
 import { buildPersistedEnvVariables } from 'utils/environments';
 import { sortByNameThenSequence } from 'utils/common/index';
-import path from 'utils/common/path';
+import path, { normalizePath } from 'utils/common/path';
 import { isRequestTagsIncluded } from '@usebruno/common';
 
 const AUTO_REQUEST_NAME_PATTERN = /^Untitled(?:\s*\d+|\d+)?$/i;
@@ -102,15 +102,142 @@ export const findItemByPathname = (items = [], pathname) => {
   return find(items, (i) => normalizeItemPathname(i.pathname) === normalizedPathname);
 };
 
+// Counts the exhaustive whole-collection scans the structural lookup below
+// exists to avoid. Read by the perf guard in collectionIndex.spec.js: a
+// jest.spyOn on this module's namespace cannot observe the fallback, because
+// that call is intra-module (it never goes through the namespace object), so
+// the guard would silently prove nothing. One integer bump in front of an
+// O(collection) walk is not measurable.
+export const collectionScanStats = { scans: 0 };
+
 export const findItemInCollectionByPathname = (collection, pathname) => {
   // Callers pass tab-referenced collections that may not (or no longer) be
   // loaded — resolving against a missing collection is simply a miss.
   if (!collection) {
     return null;
   }
+  collectionScanStats.scans += 1;
   let flattenedItems = flattenItems(collection.items);
 
   return findItemByPathname(flattenedItems, pathname);
+};
+
+// Exhaustive depth-first scan with early exit — the safety net the structural
+// lookup falls back to when the caller has no scan cache (a one-off lookup).
+// Pre-order like flattenItems, so it returns the same first match as
+// findItemInCollectionByPathname, minus the throwaway array and with the
+// memoized normalizePath instead of a path.normalize per item. MEASURED on a
+// 1,594-item collection (the biggest in the GSB workspace): 378 misses cost
+// 16.6 ms here vs 366 ms through flattenItems.
+const findItemByPathnameDeep = (items, normalizedPathname) => {
+  for (const item of items || []) {
+    if (normalizePath(item.pathname) === normalizedPathname) {
+      return item;
+    }
+    if (item.items && item.items.length) {
+      const found = findItemByPathnameDeep(item.items, normalizedPathname);
+      if (found) {
+        return found;
+      }
+    }
+  }
+  return null;
+};
+
+const buildPathnameItemMap = (items, map) => {
+  for (const item of items || []) {
+    const key = normalizePath(item.pathname);
+    // Pre-order, first one wins — the same match the flatten + find returns.
+    if (!map.has(key)) {
+      map.set(key, item);
+    }
+    if (item.items && item.items.length) {
+      buildPathnameItemMap(item.items, map);
+    }
+  }
+};
+
+// Hand one of these to findItemInCollectionByPathnameStructural when a whole
+// BURST of pathnames is resolved against one collection inside a single immer
+// produce, and the fallback below walks the tree once for the burst instead of
+// once per miss. MEASURED by driving collectionIndexNodesActivated over a
+// 1,594-node collection with a 378-node burst against a fully hydrated tree:
+// 3,376 ms before any of this, 1,001 ms with a fallback scan per miss, 53 ms
+// with this cache (52 ms of which is the apply itself). The walk is what costs
+// — inside a produce every item.pathname / item.items read crosses an immer
+// proxy and drafts the child, so the scan that takes 44 us on plain objects
+// takes 2.5 ms on a draft.
+//
+// Reusing it across a burst is safe because the map is only consulted after
+// the folder walk missed, and everything a burst inserts goes in at a mirrored
+// path, where the walk finds it without the map.
+export const createCollectionScanCache = () => ({ collection: null, byPathname: null });
+
+// Same answer as findItemInCollectionByPathname, without flattening the whole
+// collection. The hydrated tree USUALLY mirrors the filesystem (every
+// intermediate folder item is created with pathname = join(parent, dirname)),
+// so descending the folder chain reaches the same item — O(depth x siblings)
+// with no allocation instead of O(collection) plus a fresh array per call.
+//
+// Used by the collection-index activation path: a 378-node activation burst on
+// the biggest real collection (1,594 nodes) cost 210 ms and the SECOND burst
+// 1,627 ms, because each activated request flattened the tree three times over
+// a tree that GROWS as the loop applies nodes.
+//
+// "Usually" is why the walk is only a fast path: nothing enforces that an
+// item's position in the tree matches its pathname (a move/rename reducer can
+// leave the two out of step for a tick), and the callers use the answer to
+// decide whether to PUSH a new item — a false miss duplicates a uid in
+// collection.items. So any unresolved walk falls through to the exhaustive
+// scan, exactly like the code this replaced; pass a scanCache (see above) to
+// share one such scan across a burst.
+//
+// Keys compare through normalizePath (memoized, NFC, forward slashes) — the
+// same form the collection index keys uidByPathname with.
+export const findItemInCollectionByPathnameStructural = (collection, pathname, scanCache) => {
+  if (!collection || !pathname) {
+    return null;
+  }
+
+  const target = normalizePath(pathname);
+  const root = collection.pathname ? normalizePath(collection.pathname) : '';
+
+  // Targets outside the collection folder (e.g. a transient temp directory)
+  // have no folder chain to descend — they go straight to the scan.
+  if (root && target.startsWith(`${root}/`)) {
+    let items = collection.items;
+    let currentPath = root;
+    let current = null;
+    for (const segment of target.slice(root.length + 1).split('/')) {
+      if (!items || !items.length) {
+        current = null;
+        break;
+      }
+      currentPath = `${currentPath}/${segment}`;
+      current = find(items, (item) => normalizePath(item.pathname) === currentPath);
+      if (!current) {
+        break;
+      }
+      items = current.items;
+    }
+
+    if (current) {
+      return current;
+    }
+  }
+
+  if (scanCache) {
+    if (!scanCache.byPathname || scanCache.collection !== collection) {
+      collectionScanStats.scans += 1;
+      scanCache.collection = collection;
+      scanCache.byPathname = new Map();
+      buildPathnameItemMap(collection.items, scanCache.byPathname);
+    }
+    return scanCache.byPathname.get(target) || null;
+  }
+
+  collectionScanStats.scans += 1;
+  return findItemByPathnameDeep(collection.items, target);
 };
 
 export const findItemInCollectionByItemUid = (collection, itemUid) => {

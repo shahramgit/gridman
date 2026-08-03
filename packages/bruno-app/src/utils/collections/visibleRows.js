@@ -1,11 +1,18 @@
 import { foldSearchText } from '@usebruno/common';
 import { sortByNameThenSequence } from 'utils/common/index';
+import { normalizePath } from 'utils/common/path';
 
 // Row projection for the indexed sidebar renderer (the only sidebar renderer
 // since unification Phase 3a). Pure functions so the search-as-filter
 // behavior (Phase 3b) is unit-testable without mounting the component.
 
-export const normalizeForPathCompare = (pathname) => String(pathname || '').normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
+// Must stay the very same function the collection index keys uidByPathname
+// with (slices/collections indexPathnameKey) and the one useWorkspaceSearch
+// normalizes hit pathnames with. When these drifted apart the O(1) lookup
+// below could never hit on Windows — the index keyed through path.win32's
+// normalize(), which keeps backslashes — so every filtered render fell back to
+// the full Object.values(nodesByUid) scan.
+export const normalizeForPathCompare = (pathname) => normalizePath(pathname);
 
 export const sortNodes = (nodes = []) => {
   // Folders first using sortByNameThenSequence semantics, then requests by
@@ -156,7 +163,7 @@ export const buildVisibleRows = ({ index, expandedNodeUids = new Set(), searchTe
     for (const pathname of searchMatches.matchedPathnames) {
       // O(1) via the index's normalized pathname map; unresolved hits fall
       // back to one normalize-compare scan (covers NFC/NFD mismatches).
-      const uid = uidByPathname[pathname];
+      const uid = uidByPathname[normalizeForPathCompare(pathname)];
       if (uid && nodesByUid[uid]) {
         matched.add(uid);
         matchMetaByUid.set(uid, searchMatches.matchMeta.get(pathname));

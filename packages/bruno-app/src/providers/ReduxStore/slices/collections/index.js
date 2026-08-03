@@ -13,6 +13,8 @@ import {
   findEnvironmentInCollection,
   findItemInCollection,
   findItemInCollectionByPathname,
+  findItemInCollectionByPathnameStructural,
+  createCollectionScanCache,
   findItemByPathname,
   flattenItems,
   isItemAFolder,
@@ -23,7 +25,7 @@ import { parsePathParams, splitOnFirst } from 'utils/url';
 import { getSubdirectoriesFromRoot } from 'utils/common/platform';
 import toast from 'react-hot-toast';
 import mime from 'mime-types';
-import path from 'utils/common/path';
+import path, { normalizePath } from 'utils/common/path';
 import { getUniqueTagsFromItems } from 'utils/collections/index';
 import * as exampleReducers from './exampleReducers';
 
@@ -256,7 +258,15 @@ const applyCollectionAddFile = (state, file, options = {}) => {
     }
 
     if (file.meta.name != 'folder.bru') {
-      const existingItem = isReadyLoadedRequest ? null : findItemInCollectionByPathname(collection, file.meta.pathname);
+      // `existingItem` in options: the caller already resolved this pathname
+      // (the index-activation path does, structurally) — repeating the lookup
+      // here flattened the whole collection a second time per activated node.
+      // A null passed in is a resolved miss, not a "did not look": the
+      // structural lookup falls back to the exhaustive scan whenever its walk
+      // does not resolve, so it never hands us an unchecked null.
+      const existingItem = isReadyLoadedRequest
+        ? null
+        : ('existingItem' in options ? options.existingItem : findItemInCollectionByPathname(collection, file.meta.pathname));
       if (existingItem) {
         applyFileDataToItem(existingItem, file, isTransientFile);
         return collection;
@@ -377,30 +387,69 @@ const applyCollectionAddDirectory = (state, dir, options = {}) => {
 // Persian/accented names (a second index node under the other form).
 const normalizeIndexPathKey = (pathname) => normalizePathnameForCompare(pathname);
 
+// KEY form for uidByPathname. It must be the SAME normalization the sidebar
+// looks the map up with — buildVisibleRows (utils/collections/visibleRows.js)
+// resolves content-search hits with utils/common/path's normalizePath, which is
+// what useWorkspaceSearch stores the hit pathnames as. normalizeIndexPathKey
+// runs path.normalize(), and `path` here is path.win32 on Windows, whose
+// normalize() KEEPS backslashes — so keying on it meant that on Windows (our
+// users) the O(1) lookup could never hit and every filtered render fell back to
+// scanning Object.values(nodesByUid) with an NFC normalize per node. normalizePath
+// is also memoized, which matters at ~11.5k nodes per index batch.
+// Only the map keys use this: node.pathname itself stays in the platform's
+// native separator form (IPC and every other comparison depend on that).
+const indexPathnameKey = (pathname) => normalizePath(pathname);
+
+// Stamped on every index next to the map. Bump it whenever indexPathnameKey
+// changes, so an index whose keys were built by the OLD form is rebuilt
+// instead of missing every lookup: a `!index.uidByPathname` guard alone can
+// never fire on a live index (collectionIndexStarted initialises the map to
+// {}), which is exactly how the win32-normalize key form above would have
+// survived a migration unnoticed.
+const UID_BY_PATHNAME_KEY_FORM = 'normalizePath-v1';
+
 // uidByPathname is the O(1) pathname -> uid lookup for the index. Every
 // mutation of nodesByUid / node.pathname must go through the helpers below —
 // scanning nodesByUid per lookup (inside immer reducers) froze the renderer
 // for seconds on ~11.5k-node collections during hydration/resequence/move.
 const ensureUidByPathname = (index) => {
-  if (!index.uidByPathname) {
-    // Index created before the map existed — build it once.
-    index.uidByPathname = {};
+  if (!index.uidByPathname || index.uidByPathnameKeyForm !== UID_BY_PATHNAME_KEY_FORM) {
+    // Map missing, or keyed by an older key form — rebuild it once.
+    const rebuilt = {};
     for (const node of Object.values(index.nodesByUid || {})) {
-      index.uidByPathname[normalizeIndexPathKey(node.pathname)] = node.uid;
+      rebuilt[indexPathnameKey(node.pathname)] = node.uid;
     }
+    index.uidByPathname = rebuilt;
+    index.uidByPathnameKeyForm = UID_BY_PATHNAME_KEY_FORM;
   }
   return index.uidByPathname;
 };
 
 const setIndexNode = (index, node) => {
+  // Drop the key the node was previously registered under. The main process
+  // PRESERVES a request's uid across in-app moves and renames (bruno-electron
+  // cache/requestUids.js moveRequestUid), so the watcher's addFile for the
+  // destination re-indexes the same uid at a new pathname; leaving the old key
+  // behind made uidByPathname hold both paths, and the unlink event for the
+  // source then resolved through the stale alias and deleted the node at its
+  // NEW path — the row vanished until a restart.
+  const previousNode = index.nodesByUid[node.uid];
+  const map = ensureUidByPathname(index);
+  const key = indexPathnameKey(node.pathname);
+  if (previousNode) {
+    const previousKey = indexPathnameKey(previousNode.pathname);
+    if (previousKey !== key && map[previousKey] === node.uid) {
+      delete map[previousKey];
+    }
+  }
   index.nodesByUid[node.uid] = node;
-  ensureUidByPathname(index)[normalizeIndexPathKey(node.pathname)] = node.uid;
+  map[key] = node.uid;
 };
 
 const deleteIndexNode = (index, node) => {
   delete index.nodesByUid[node.uid];
   const map = ensureUidByPathname(index);
-  const key = normalizeIndexPathKey(node.pathname);
+  const key = indexPathnameKey(node.pathname);
   if (map[key] === node.uid) {
     delete map[key];
   }
@@ -408,11 +457,11 @@ const deleteIndexNode = (index, node) => {
 
 const rekeyIndexNodePathname = (index, node, previousPathname) => {
   const map = ensureUidByPathname(index);
-  const previousKey = normalizeIndexPathKey(previousPathname);
+  const previousKey = indexPathnameKey(previousPathname);
   if (map[previousKey] === node.uid) {
     delete map[previousKey];
   }
-  map[normalizeIndexPathKey(node.pathname)] = node.uid;
+  map[indexPathnameKey(node.pathname)] = node.uid;
 };
 
 // Collect a node and its descendants via childrenByParentUid (O(subtree)),
@@ -432,6 +481,23 @@ const collectIndexSubtreeNodes = (index, rootNode) => {
     }
   }
   return result;
+};
+
+// Deeper than any real collection nests (the GSB workspace tops out well under
+// 20); only here so a malformed parent chain cannot spin a reducer forever.
+const MAX_INDEX_ANCESTOR_WALK = 512;
+
+// Walks the parent chain (O(depth)) — used to keep a destination-collision
+// cleanup from deleting the subtree the moved node itself lives in.
+const isIndexNodeAncestorOf = (index, ancestorUid, node) => {
+  let current = node?.parentUid ? index.nodesByUid[node.parentUid] : null;
+  for (let steps = 0; current && steps < MAX_INDEX_ANCESTOR_WALK; steps += 1) {
+    if (current.uid === ancestorUid) {
+      return true;
+    }
+    current = current.parentUid ? index.nodesByUid[current.parentUid] : null;
+  }
+  return false;
 };
 
 const appendChildUid = (index, parentUid, uid) => {
@@ -464,7 +530,7 @@ const findIndexNodeByPathname = (index, pathname) => {
   if (!index?.nodesByUid) {
     return undefined;
   }
-  const uid = ensureUidByPathname(index)[normalizeIndexPathKey(pathname)];
+  const uid = ensureUidByPathname(index)[indexPathnameKey(pathname)];
   return uid ? index.nodesByUid[uid] : undefined;
 };
 
@@ -679,6 +745,28 @@ const moveCollectionIndexNodeByPathname = (state, collectionUid, sourcePathname,
     return;
   }
 
+  // Overwrite-on-move: something is already indexed at the destination. The
+  // rekey below would steal its uidByPathname entry and strand it in
+  // nodesByUid, where it keeps rendering as a child row nothing can address.
+  // Drop it first — same shape as the clone/reveal path
+  // (removeCollectionIndexNodeByPathname before insert). The ancestor guard
+  // keeps a recursive removal from taking the moved node with it.
+  //
+  // Index-only on purpose. The overwritten file's collection.items row and its
+  // loadedRequestsByPath entry stay: collectionIndexNodeMoved has already run
+  // moveLoadedRequestsByPathname over the destination key, and the watcher's
+  // add for the destination rewrites the tree row in place right after
+  // (applyFileDataToItem keeps the row's existing uid — pre-existing behaviour
+  // shared with the clone/reveal path). Evicting them from here would instead
+  // delete the entry the move just wrote, and loadedRequestsByPath is what
+  // RequestTabPanel renders the focused request AND its unsaved draft from.
+  const targetNode = findIndexNodeByPathname(index, targetPathname);
+  if (targetNode && targetNode.uid !== movedNode.uid && !isIndexNodeAncestorOf(index, targetNode.uid, movedNode)) {
+    removeCollectionIndexNodeByPathname(state, collectionUid, targetPathname, {
+      recursive: targetNode.type === 'folder'
+    });
+  }
+
   const previousParentUid = movedNode.parentUid || null;
   const previousPathname = movedNode.pathname;
   const nextParentPathname = path.dirname(targetPathname);
@@ -742,7 +830,7 @@ const createPartialRequestFromIndexNode = (node) => ({
   examples: []
 });
 
-const applyCollectionIndexNodeToTree = (state, collectionUid, node) => {
+const applyCollectionIndexNodeToTree = (state, collectionUid, node, scanCache) => {
   const collection = findCollectionByUid(state.collections, collectionUid);
 
   if (node.type === 'folder') {
@@ -761,7 +849,15 @@ const applyCollectionIndexNodeToTree = (state, collectionUid, node) => {
     );
   }
 
-  const existingItem = collection ? findItemInCollectionByPathname(collection, node.pathname) : null;
+  // Structural lookup, not findItemInCollectionByPathname: activation arrives in
+  // bursts (~378 nodes for one search mount) and the flatten made each burst
+  // cost O(nodes x collection) over a tree that grows under the loop. It still
+  // falls back to a full scan when the folder walk does not resolve, so the
+  // answer (including a null) is as trustworthy as the flatten's was — the
+  // scanCache keeps that fallback to one scan for the whole burst.
+  const existingItem = collection
+    ? findItemInCollectionByPathnameStructural(collection, node.pathname, scanCache)
+    : null;
 
   if (existingItem?.request && !existingItem.loading && !existingItem.partial) {
     return collection;
@@ -779,7 +875,7 @@ const applyCollectionIndexNodeToTree = (state, collectionUid, node) => {
       partial: false,
       loading: true
     },
-    { deferDepth: true }
+    { deferDepth: true, existingItem: existingItem || null }
   );
 };
 
@@ -3432,6 +3528,7 @@ export const collectionsSlice = createSlice({
         status: 'indexing',
         nodesByUid: {},
         uidByPathname: {},
+        uidByPathnameKeyForm: UID_BY_PATHNAME_KEY_FORM,
         childrenByParentUid: {
           root: []
         },
@@ -3480,10 +3577,11 @@ export const collectionsSlice = createSlice({
     },
     collectionIndexNodeActivated: (state, action) => {
       const { collectionUid, node } = action.payload;
-      const collection = applyCollectionIndexNodeToTree(state, collectionUid, node);
+      const scanCache = createCollectionScanCache();
+      const collection = applyCollectionIndexNodeToTree(state, collectionUid, node, scanCache);
       if (collection) {
         if (node.type !== 'folder') {
-          const item = findItemInCollectionByPathname(collection, node.pathname);
+          const item = findItemInCollectionByPathnameStructural(collection, node.pathname, scanCache);
           upsertLoadedRequestByPath(state, collectionUid, item);
         }
       }
@@ -3499,13 +3597,20 @@ export const collectionsSlice = createSlice({
       if (!Array.isArray(nodes) || !nodes.length) {
         return;
       }
+      // One scan cache for the whole burst: the structural walk answers for
+      // nodes already in the tree, and the nodes that are not share a single
+      // fallback scan instead of one each (MEASURED on a 1,594-node collection,
+      // 378-node burst against a fully hydrated tree: 3,376 ms with the flatten
+      // per node this replaced, 1,001 ms with a fallback scan per miss, 53 ms
+      // with the shared cache).
+      const scanCache = createCollectionScanCache();
       for (const node of nodes) {
-        const applied = applyCollectionIndexNodeToTree(state, collectionUid, node);
+        const applied = applyCollectionIndexNodeToTree(state, collectionUid, node, scanCache);
         if (!applied) {
           continue;
         }
         if (node.type !== 'folder') {
-          const item = findItemInCollectionByPathname(applied, node.pathname);
+          const item = findItemInCollectionByPathnameStructural(applied, node.pathname, scanCache);
           upsertLoadedRequestByPath(state, collectionUid, item);
         }
       }
