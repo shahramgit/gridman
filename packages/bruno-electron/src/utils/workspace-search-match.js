@@ -88,31 +88,22 @@ const foldSearchField = (field) => {
   return field.folded;
 };
 
-// Structured per-example entries (name + folded name/content) so examples can
-// be surfaced as their own search results, in file order (index = the
-// example's position, matching the parsed request.examples order).
+// Structured per-example entries (name + file order index, matching the
+// parsed request.examples order) so a search row can list a request's
+// examples without parsing the file.
+//
+// These used to carry folded copies of the example name AND of the whole
+// example block, for a per-example matcher that no production code ever
+// called — content inside an example is matched through the `examples` field,
+// which is folded once for the whole file. Measured on the real 11,277-file
+// workspace, the dead per-example fold cost 253 MB of retained heap (894 ->
+// 641 MB) and 927 ms of every index build (3,173 -> 2,246 ms).
 const buildExampleEntries = (blocks) => {
-  // The same text is already folded once into the examples field, so a
-  // per-example copy of it is a second full-size retention. Fold example
-  // bodies only until the field cap is spent; past it the example is still
-  // listed and still matchable by name.
-  let foldBudget = SEARCH_INDEX_MAX_FIELD_CHARS;
   return blocks.map((block, index) => {
     const nameMatch = block.match(/(?:^|\n)\s*name:\s*(.+?)\s*(?:\n|$)/);
-    const name = detachSearchText(nameMatch ? nameMatch[1].trim() : '');
-    const withinBudget = block.length <= foldBudget;
-    // Only spend what was actually folded. Charging the budget for a block we
-    // refused to fold drove it negative, which silently un-indexed the content
-    // of every LATER example in the file — one oversized example next to
-    // small ones made all of them unsearchable.
-    if (withinBudget) {
-      foldBudget -= block.length;
-    }
     return {
-      name,
-      index,
-      foldedName: utils.foldSearchText(name),
-      foldedContent: withinBudget ? detachSearchText(utils.foldSearchText(block)) : ''
+      name: detachSearchText(nameMatch ? nameMatch[1].trim() : ''),
+      index
     };
   });
 };
@@ -122,17 +113,6 @@ const extractExampleEntries = (content, format) => {
     return [];
   }
   return buildExampleEntries(extractExampleBlocks(content));
-};
-
-// Returns matching example entries for a query (name or content), each with
-// the original index so the renderer can resolve the example after hydration.
-const matchExampleEntries = (exampleEntries, { foldedQueryCi }) => {
-  if (!foldedQueryCi) {
-    return [];
-  }
-  return (exampleEntries || []).filter(
-    (entry) => entry.foldedName.includes(foldedQueryCi) || entry.foldedContent.includes(foldedQueryCi)
-  );
 };
 
 // Build the raw + folded searchable fields for a request file. yml files do
@@ -174,6 +154,26 @@ const buildSearchFields = ({ content = '', format = 'bru', name = '', filename =
 // pays the fold once per field; every keystroke after that is a map lookup.
 // (Folding the full raw field per entry per keystroke was a main-process
 // stall on large workspaces.)
+//
+// Deliberately NOT budgeted, and that was measured. A global 8 MB char budget
+// was tried and reverted: the fold working set for ONE realistic match-case
+// query over the real 11,277-file workspace is 99.3M code units, so an 8 MB
+// budget cached 266 of the 1,310 allocating folds and left the rest re-folding
+// on every keystroke — 163 ms per keystroke, permanently, against 32-35 ms with
+// the cache doing its job. A budget small enough to be worth having is a
+// budget that leaves the stall this cache exists to remove.
+//
+// What it costs: +190 MB retained on top of the 633 MB index for that query
+// ('DATA' matches ~4,000 fields case-INsensitively — the fold is taken for
+// each of them, whether or not the case-sensitive check then passes — and only
+// 26 case-sensitively, so the pass never early-breaks). Paid only when the
+// user turns match-case ON, only for what they actually searched, and the fold
+// hangs off the index entry so it is freed with the collection when the index
+// is rebuilt or evicted.
+//
+// An all-ASCII field folds to the raw string itself (foldSearchText's fast
+// path returns its input), so caching it retains nothing at all — on that
+// search that was true of most matching fields.
 const getCaseSensitiveFold = (entry, field) => {
   entry.foldedCs = entry.foldedCs || {};
   if (entry.foldedCs[field] === undefined) {
@@ -252,7 +252,6 @@ module.exports = {
   detachSearchText,
   extractSearchBlocks,
   extractExampleEntries,
-  matchExampleEntries,
   buildSearchFields,
   matchSearchFields,
   boundSnippetSource,

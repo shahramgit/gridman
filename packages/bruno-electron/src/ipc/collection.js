@@ -112,7 +112,14 @@ const INDEXED_COLLECTION_WATCHER_ATTACH_DELAY_MS = 3000;
 // exactly like the watcher's own scan does, so both read the same constant — and
 // name an unparseable file the same way, since the sidebar renders from the index
 // and a name carrying the extension repaints the row.
-const { MAX_FILE_SIZE, buildUnparseableRequestData } = collectionWatcher;
+const {
+  MAX_FILE_SIZE,
+  buildUnparseableRequestData,
+  beginParseGeneration,
+  claimNewestParseGeneration,
+  isTransientWorkerFailure,
+  parseFileMetaBounded
+} = collectionWatcher;
 
 const shouldUseIndexedCollectionLoad = ({ size, filesCount, maxFileSize }) => (
   (size > MAX_COLLECTION_SIZE_IN_MB)
@@ -3019,6 +3026,9 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
   // todo: could be removed
   ipcMain.handle('renderer:load-request', async (event, { collectionUid, pathname }) => {
     let fileStats;
+    // Stays undefined if we never got as far as reading the file, so the catch can
+    // tell "this parse was superseded" from "we failed before there was a parse".
+    let generation;
     try {
       fileStats = fs.statSync(pathname);
       if (hasRequestExtension(pathname)) {
@@ -3031,6 +3041,11 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         };
         let bruContent = fs.readFileSync(pathname, 'utf8');
         const format = hasBruExtension(pathname) ? 'bru' : 'yml';
+        // Shares the watcher's registry: this handler and the watcher's change()
+        // parse the same files through the same size-ordered worker queue, so a
+        // click whose parse is overtaken by a save (or by a second click) must be
+        // dropped rather than emitted on top of the newer content.
+        generation = beginParseGeneration(pathname);
         // This parse is synchronous and runs on the browser process, so a
         // single sidebar click on a multi-MB request froze (and could kill)
         // the app. Above the watcher's threshold, hand back the same meta-only
@@ -3038,7 +3053,14 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         if (fileStats?.size >= MAX_FILE_SIZE) {
           // A meta parse can still come back null on a malformed file; never
           // hydrate null (that was the "Cannot set properties of null" crash).
-          file.data = parseFileMeta(bruContent, format) || buildUnparseableRequestData(pathname);
+          // Bounded: this branch only ever runs on files at/above 2.5 MB, and the
+          // yml meta parse is a synchronous whole-file js-yaml load — the very
+          // freeze the size guard above exists to avoid, on the browser process.
+          file.data = parseFileMetaBounded(bruContent, format, fileStats?.size) || buildUnparseableRequestData(pathname);
+          // Synchronous, so this always wins — the call is here to release the
+          // stamp taken above rather than leave an entry behind for every
+          // oversized request the user clicks.
+          claimNewestParseGeneration(pathname, generation);
           file.partial = true;
           file.loading = false;
           file.size = sizeInMB(fileStats?.size);
@@ -3058,7 +3080,25 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           hydrateRequestWithUuid(file.data, pathname);
           mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
         }
-        file.data = parseRequest(bruContent, { format });
+        // Off the browser process. Every sidebar click lands here, and this parse
+        // used to run inline on the main thread: measured against the real
+        // workspace it froze the app for 1.5 s at 0.58 MB, 7.1 s at 2.33 MB, and
+        // killed it outright with a fatal "JS heap out of memory" at 2.47 MB —
+        // the customer's "app hangs and then exits completely". The worker costs
+        // the same memory but stalls the main thread ~20 ms, and an OOM comes back
+        // as a catchable ERR_WORKER_OUT_OF_MEMORY instead of aborting the process.
+        file.data = await parseRequestViaWorker(bruContent, { format, filename: pathname });
+
+        // Superseded while we were in the queue. The renderer feeds this return
+        // value straight into collectionAddFileEvent (loadRequest in
+        // slices/collections/actions.js), which is last-write-wins over
+        // request/examples — returning it now would undo whatever wrote the file.
+        // Resolving with nothing leaves the item as the newer read left it; the
+        // callers already guard on `loadedFile?.data`.
+        if (!claimNewestParseGeneration(pathname, generation)) {
+          return;
+        }
+
         file.partial = false;
         file.loading = false;
         file.size = sizeInMB(fileStats?.size);
@@ -3067,6 +3107,27 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         return safeParseJSON(safeStringifyJSON(file));
       }
     } catch (error) {
+      // The worker being torn down (collection close, app quit, pool cleanup) says
+      // nothing about the file. Falling through would emit a meta-only payload, and
+      // applyFileDataToItem in the renderer unconditionally sets `item.draft = null`
+      // and `item.examples = file.data.examples` — so a pooled worker dying would
+      // throw away the user's unsaved draft and blank the loaded examples of a file
+      // that parses perfectly well. Reject and emit nothing, which is what this
+      // handler did before the parse moved off-thread.
+      // An OOM is not transient: that file really is too big for one heap, and the
+      // meta-only row is the right answer for it.
+      // Claim FIRST, on every exit from this catch: a generation that returns
+      // without claiming holds its path's entry open, and the entry is what keeps
+      // the next read's numbering from colliding with a read still in flight.
+      const isNewestRead = generation === undefined || claimNewestParseGeneration(pathname, generation);
+
+      if (isTransientWorkerFailure(error)) {
+        return Promise.reject(error);
+      }
+      // A stale failure must not repaint a row a newer read has already refreshed.
+      if (!isNewestRead) {
+        return;
+      }
       if (hasRequestExtension(pathname)) {
         const file = {
           meta: {
@@ -3077,16 +3138,24 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         };
         let bruContent = fs.readFileSync(pathname, 'utf8');
         const format = hasBruExtension(pathname) ? 'bru' : 'yml';
-        // Prefer the format-aware full parse; fall back to the meta-only parse.
-        // Either can be null for a malformed/partially-written file — never
-        // hydrate null (that was the "Cannot set properties of null" crash).
-        file.data = parseRequest(bruContent, { format }) || parseBruFileMeta(bruContent);
+        // Meta-only on purpose. Retrying the full parse here re-ran it ON THE MAIN
+        // THREAD, which is exactly the crash the worker above exists to avoid: the
+        // most likely way to land in this catch is now ERR_WORKER_OUT_OF_MEMORY on
+        // a file no single heap can parse, and parsing it again inline turned that
+        // recoverable error straight back into a dead app.
+        // The meta parse can still be null for a malformed/partially-written file —
+        // never hydrate null (that was the "Cannot set properties of null" crash),
+        // and never drop the item either, or the request loses its sidebar row.
+        // Bounded, because parseFileMeta is only cheap for bru: for yml it is a
+        // synchronous whole-file js-yaml load on the browser process, i.e. the same
+        // freeze the worker above exists to remove, reintroduced on the failure path.
+        file.data = parseFileMetaBounded(bruContent, format, fileStats?.size) || buildUnparseableRequestData(pathname);
+        file.error = {
+          message: error?.message
+        };
         file.partial = true;
         file.loading = false;
         file.size = sizeInMB(fileStats?.size);
-        if (!file.data) {
-          return Promise.reject(error);
-        }
         hydrateRequestWithUuid(file.data, pathname);
         mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
         return safeParseJSON(safeStringifyJSON(file));

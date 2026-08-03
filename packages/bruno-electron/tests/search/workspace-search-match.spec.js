@@ -2,7 +2,6 @@ const {
   buildSearchFields,
   matchSearchFields,
   extractExampleEntries,
-  matchExampleEntries,
   boundSnippetSource,
   createSearchSnippet,
   SEARCH_INDEX_MAX_FIELD_CHARS
@@ -115,13 +114,21 @@ example {
       ]);
     });
 
-    it('matches examples by name and by content, returning original indices', () => {
+    it('carries NOTHING but name and index — no per-example folded copies', () => {
+      // Folded copies of the name and of the whole example block used to be
+      // built here for a matcher no production code called; on the real
+      // 11,277-file workspace they retained 260 MB. Example content is matched
+      // through the `examples` FIELD, which is folded once for the whole file.
       const entries = extractExampleEntries(MULTI, 'bru');
-      const byName = matchExampleEntries(entries, { foldedQueryCi: utils.foldSearchText('error case') });
-      expect(byName.map((e) => e.index)).toEqual([1]);
+      expect(entries.map((e) => Object.keys(e).sort())).toEqual([
+        ['index', 'name'],
+        ['index', 'name']
+      ]);
+    });
 
-      const byContent = matchExampleEntries(entries, { foldedQueryCi: utils.foldSearchText('failuretoken') });
-      expect(byContent.map((e) => e.index)).toEqual([1]);
+    it('still matches example content through the examples field', () => {
+      const fields = buildSearchFields({ content: MULTI, format: 'bru', name: 'Get User', filename: 'get-user.bru', url: '' });
+      expect(matchSearchFields(fields, job('failuretoken', { ...ALL_OFF, examples: true }))).toEqual({ field: 'examples' });
     });
   });
 
@@ -144,31 +151,18 @@ example {
       expect(fields.truncated).toBe(false);
     });
 
-    it('keeps an example past the fold budget matchable by name', () => {
-      const content = `example {\n  name: Huge Example\n  ${'b'.repeat(SEARCH_INDEX_MAX_FIELD_CHARS + 5000)}\n}\n`;
-      const entries = extractExampleEntries(content, 'bru');
-
-      expect(entries[0].name).toBe('Huge Example');
-      expect(entries[0].foldedContent).toBe('');
-      const byName = matchExampleEntries(entries, { foldedQueryCi: utils.foldSearchText('huge example') });
-      expect(byName.map((e) => e.index)).toEqual([0]);
-    });
-
-    it('still indexes the content of examples that FOLLOW an oversized one', () => {
-      // The budget must only be spent on blocks that were actually folded.
-      // Charging it for a block we refused to fold drove it negative, and
-      // every later example in the file lost its content index — a request
-      // with one huge example made all its other examples unsearchable.
+    it('lists every example of an oversized request by name, in file order', () => {
+      // The examples FIELD is capped, so content past the cap is not
+      // searchable (that is what `truncated` reports) — but the example list
+      // itself must stay complete so the row can still show them.
       const content = `example {\n  name: Huge Example\n  ${'b'.repeat(SEARCH_INDEX_MAX_FIELD_CHARS + 5000)}\n}\n\n`
         + 'example {\n  name: Small Example\n  response: { body: laterneedletoken }\n}\n';
       const entries = extractExampleEntries(content, 'bru');
 
-      expect(entries.map((e) => e.name)).toEqual(['Huge Example', 'Small Example']);
-      expect(entries[0].foldedContent).toBe('');
-      expect(entries[1].foldedContent).toContain('laterneedletoken');
-
-      const byContent = matchExampleEntries(entries, { foldedQueryCi: utils.foldSearchText('laterneedletoken') });
-      expect(byContent.map((e) => e.index)).toEqual([1]);
+      expect(entries).toEqual([
+        { name: 'Huge Example', index: 0 },
+        { name: 'Small Example', index: 1 }
+      ]);
     });
 
     it('never cuts a surrogate pair in half when capping a field', () => {
@@ -211,6 +205,47 @@ example {
         matchCase: true
       });
       expect(noMatch).toBeNull();
+    });
+
+    it('re-folds nothing on the next keystroke, for a working set past any small budget', () => {
+      // A global 8 MB fold budget was tried here and reverted: one realistic
+      // match-case query over the real workspace has a 99.3M code unit fold
+      // working set, so the budget cached 266 of 1,310 allocating folds and
+      // left the rest re-folding on EVERY keystroke — 163 ms per keystroke
+      // against 32-35 ms with the cache doing its job.
+      //
+      // 'سرويس' carries an ARABIC YEH, which folds to FARSI YEH, so these
+      // folds really do allocate (an all-ASCII field folds to the raw string
+      // itself and retains nothing). 10.4M code units — past the budget that
+      // was measured to defeat this cache.
+      const PERSIAN_UNIT = 'سرويس ';
+      const FIELD_CHARS = 2 * 1024 * 1024;
+      const NEEDLE = 'NeedleToken';
+      const entries = Array.from({ length: 5 }, () => {
+        const body = PERSIAN_UNIT.repeat(Math.ceil(FIELD_CHARS / PERSIAN_UNIT.length)) + NEEDLE;
+        return { raw: { body }, folded: { body: utils.foldSearchText(body) } };
+      });
+      const matchCaseJob = {
+        scopes: { ...ALL_OFF, body: true },
+        matchCase: true,
+        foldedQueryCi: utils.foldSearchText(NEEDLE),
+        foldedQueryCs: utils.foldSearchText(NEEDLE, { caseSensitive: true })
+      };
+
+      for (const entry of entries) {
+        expect(matchSearchFields(entry, matchCaseJob)).toEqual({ field: 'body' });
+        expect(entry.foldedCs.body).not.toBe(entry.raw.body);
+      }
+
+      // Poison the raw text every cached fold came from: a second keystroke
+      // that still matches can only be reading the cache. Any entry whose fold
+      // was dropped instead of kept re-folds the poison and stops matching.
+      for (const entry of entries) {
+        entry.raw.body = 'poisoned';
+      }
+      for (const entry of entries) {
+        expect(matchSearchFields(entry, matchCaseJob)).toEqual({ field: 'body' });
+      }
     });
   });
 

@@ -44,14 +44,34 @@ const invalidateWorkspaceSearchForPath = (pathname) => {
 // Let the collection watcher invalidate search caches on file changes.
 require('../app/search-invalidation').setSearchInvalidator(invalidateWorkspaceSearchForPath);
 
+// path.normalize keeps a trailing separator ('/w/' stays '/w/'), which makes
+// every "is it under this path?" prefix below '/w//' — matching nothing. The
+// workspace path arrives from the renderer, so spell it one way here.
+const normalizeSearchPathKey = (pathname) => {
+  const normalized = path.normalize(pathname);
+  return normalized.replace(/[\\/]+$/, '') || normalized;
+};
+
 // Drop everything cached under a collection (or workspace) path. Without
-// eviction the index + per-file cache grow forever across closed collections
-// and switched workspaces — entries hold full folded file contents.
+// eviction the index + per-file cache grow forever across closed collections —
+// entries hold full folded file contents.
+//
+// KNOWN, DELIBERATE LEAK: a workspace that is open but not the one you are
+// looking at keeps its index (634 MB for a GSB-sized one) until it is closed.
+// Nothing tells the main process which workspace is active — several are open
+// at once — so the only available signal is "a build arrived for a different
+// workspace than the last one", and that is not a switch. Acting on it evicted
+// live indexes: the renderer starts a warm 2s after every workspace load and
+// again whenever the search box opens, warmWorkspaceSearch is a sequential
+// loop with no cancellation, and two of them running at once then evicted each
+// other collection by collection (a reviewer measured 0 of 4 and 1 of 4
+// collections surviving). An empty search index with no indication is worse
+// than the retention.
 const evictWorkspaceSearchForPath = (pathname) => {
   if (!pathname) {
     return;
   }
-  const normalized = path.normalize(pathname);
+  const normalized = normalizeSearchPathKey(pathname);
   const isUnder = (candidate) => candidate === normalized || candidate.startsWith(`${normalized}${path.sep}`);
 
   for (const collectionPath of [...workspaceSearchIndex.keys()]) {
@@ -65,6 +85,19 @@ const evictWorkspaceSearchForPath = (pathname) => {
     }
   }
 };
+
+// NOT DONE HERE: freeing the index when a workspace is closed or switched.
+// It is a real leak — 634 MB of retained heap for the real 11,277-file
+// workspace stays held after a close — but every attempt to evict raced the
+// background warm. warmWorkspaceSearch (ipc/collection.js) is a sequential loop
+// with NO cancellation, the renderer starts one 2s after every workspace load
+// AND whenever the search box opens, so two can overlap: evicting under them
+// made two warms destroy each other's entries (measured: 0 of 4 and 1 of 4
+// collections survived a switch), and a close mid-warm simply rebuilt what it
+// had just freed. An EMPTY search index is a worse outcome for the user than a
+// leak, so this needs real cancellation (a workspace generation the warm loop
+// re-checks each iteration) rather than a refusal flag — until then the leak
+// stands, deliberately.
 
 // After a rebuild, drop per-file cache entries under the collection that no
 // longer exist on disk (deleted files otherwise linger in the cache forever).
@@ -661,9 +694,23 @@ const getCollectionSearchIndex = async (workspacePath, collectionPath) => {
   const startGeneration = existing?.generation || 0;
   const buildPromise = (async () => {
     const entries = await buildCollectionSearchEntries(workspacePath, collectionPath, format);
-    pruneWorkspaceSearchFileCache(collectionPath, entries);
     const current = workspaceSearchIndex.get(collectionPath);
-    const generation = current?.generation ?? startGeneration;
+    // Evicted while this build was in flight — only evictWorkspaceSearchForPath
+    // deletes the key, so the collection was removed or its workspace closed.
+    // Re-inserting here would resurrect everything the eviction just freed and
+    // hold it for the rest of the session; the per-file cache this build filled
+    // on the way has to go with it, and the caller gets nothing rather than
+    // results from a collection that is gone.
+    if (!current) {
+      for (const [pathname, entry] of entries) {
+        if (workspaceSearchFileCache.get(pathname) === entry) {
+          workspaceSearchFileCache.delete(pathname);
+        }
+      }
+      return { builtAt: 0, format, entries: new Map(), building: null, generation: startGeneration };
+    }
+    pruneWorkspaceSearchFileCache(collectionPath, entries);
+    const generation = current.generation ?? startGeneration;
     const built = {
       // If an invalidation raced the walk, keep the result usable but stale
       // so the next search kicks another rebuild.

@@ -177,6 +177,43 @@ describe('workspace-search-index', () => {
     expect([...workspaceSearchFileCache.keys()].some((p) => p.startsWith(collectionPath))).toBe(false);
   });
 
+  it('keeps the index of a workspace that is merely not the one being searched', async () => {
+    // Several workspaces can be open at once, and the main process is never
+    // told which one is active — a build for another workspace is NOT a switch.
+    // Inferring one here evicted a live index: two warms (one per workspace)
+    // then destroyed each other entry by entry.
+    await getCollectionSearchIndex(workspacePath, collectionPath);
+    expect(workspaceSearchIndex.has(collectionPath)).toBe(true);
+
+    const otherWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'gridman-search-other-'));
+    const otherCollection = path.join(otherWorkspace, 'collections', 'api');
+    fs.mkdirSync(path.join(otherCollection, 'users'), { recursive: true });
+    fs.writeFileSync(path.join(otherCollection, 'bruno.json'), JSON.stringify({ version: '1', name: 'api', type: 'collection' }));
+    fs.writeFileSync(path.join(otherCollection, 'users', 'get.bru'), BRU_REQUEST('Other', 'https://api.example.com/other'));
+
+    try {
+      await getCollectionSearchIndex(otherWorkspace, otherCollection);
+
+      expect(workspaceSearchIndex.get(collectionPath).entries.size).toBe(2);
+      expect(workspaceSearchIndex.get(otherCollection).entries.size).toBe(1);
+    } finally {
+      fs.rmSync(otherWorkspace, { recursive: true, force: true });
+    }
+  });
+
+  it('does not resurrect a collection evicted while its build was in flight', async () => {
+    const pending = getCollectionSearchIndex(workspacePath, collectionPath);
+    evictWorkspaceSearchForPath(collectionPath);
+    const raced = await pending;
+
+    expect(workspaceSearchIndex.has(collectionPath)).toBe(false);
+    expect([...workspaceSearchFileCache.keys()].some((p) => p.startsWith(collectionPath))).toBe(false);
+    // ...and the caller of the raced build gets nothing either: handing back
+    // the entries it built keeps that whole collection's folded text alive for
+    // as long as the caller holds the result.
+    expect(raced.entries.size).toBe(0);
+  });
+
   it('prunes deleted files from the cache on rebuild', async () => {
     await getCollectionSearchIndex(workspacePath, collectionPath);
     const target = path.join(collectionPath, 'users', 'get-user.bru');

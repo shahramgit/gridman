@@ -30,10 +30,122 @@ const { transformBrunoConfigAfterRead } = require('../utils/transformBrunoConfig
 const dotEnvWatcher = require('./dotenv-watcher');
 const { isPathUnderActiveGitOperation, gitOperationEvents } = require('./git-operation-state');
 
+// The one threshold every "parse this request fully vs. hand back meta only"
+// guard reads — the watcher's add/change here, and the renderer:load-request /
+// renderer:load-request-via-worker IPC handlers, which import it from this module.
+// Keeping it in one place is what makes a sidebar click classify a file exactly
+// the way the watcher's own scan does.
+//
+// It does NOT bound the cost of a parse, it only decides who pays it: above the
+// threshold the user gets a meta-only row and an explicit "Load Request" button.
+// Measured on the real GSB workspace (one file per process, 4 GB heap):
+// 0.58 MB -> 1.5 s / 1.5 GB RSS, 1.12 MB -> 2.8 s / 2.1 GB, 2.33 MB -> 7.1 s / 3.5 GB,
+// 2.47 MB -> fatal "JS heap out of memory". The parser costs ~1.4 GB per MB of
+// input on this corpus, so 2.5 MB sits just past the point where a parse can
+// exhaust a 4 GB heap. The largest .bru in that workspace is 2,590,667 bytes,
+// which means this guard currently fires on nothing there.
+// Raising/lowering it is a product decision — do not change the value here
+// without the CTO; see the report attached to this change.
 const MAX_FILE_SIZE = 2.5 * 1024 * 1024;
+
+// The meta-only fallback is only cheap for bru. parseBruFileMeta is a regex over
+// the text, but parseYmlFileMeta hands the WHOLE file to js-yaml synchronously
+// (utils/collection.js) — on the browser process that is the freeze this change
+// exists to remove, reintroduced on the failure path. Measured with js-yaml on
+// this machine over structured request yml: 10.6 ms and 15.3 MB of heap per MB of
+// input, so our shipped 50 MB example cap would mean ~530 ms blocked and ~765 MB
+// allocated on the main thread just to recover a sidebar name.
+// 1 MB costs ~11 ms / ~15 MB, which is below the frame budget; above it we take
+// the filename instead. That loses nothing for a request written by this app —
+// stringifyHttpRequest writes name/type/seq under `info:` while parseYmlFileMeta
+// reads `meta:`, so it already returns null for every yml request we produce.
+const MAX_SYNC_YML_META_SIZE = 1 * 1024 * 1024;
 
 const normalizeWatcherPath = (value) =>
   path.resolve(String(value || '')).replace(/\\/g, '/').replace(/\/+$/, '');
+
+// Size-bounded wrapper around parseFileMeta. Every caller that reaches for a
+// meta-only snapshot of a file it could not fully parse must go through this.
+const parseFileMetaBounded = (content, format, sizeInBytes) => {
+  if (format !== 'bru' && Number(sizeInBytes) >= MAX_SYNC_YML_META_SIZE) {
+    return null;
+  }
+  return parseFileMeta(content, format);
+};
+
+// A worker that was killed out from under us — collection close, app quit, pool
+// cleanup, an OS kill — rejects without ever having judged the file: WorkerQueue's
+// exit handler turns that into "Worker stopped with exit code N". That is not a
+// verdict on the request, and treating it as one repaints the row from a meta-only
+// payload, which in the renderer runs applyFileDataToItem and unconditionally
+// clears item.draft and item.examples — i.e. throws away unsaved edits and blanks
+// the loaded examples of a file that is perfectly fine.
+// ERR_WORKER_OUT_OF_MEMORY is deliberately NOT transient: that IS a verdict ("no
+// single heap can parse this"), and the meta-only row is the right answer for it.
+const TRANSIENT_WORKER_ERROR_CODES = new Set([
+  'ERR_WORKER_PATH',
+  'ERR_WORKER_INIT_FAILED',
+  'ERR_WORKER_INVALID_EXEC_ARGV'
+]);
+
+const isTransientWorkerFailure = (err) => {
+  if (err?.code === 'ERR_WORKER_OUT_OF_MEMORY') {
+    return false;
+  }
+  if (TRANSIENT_WORKER_ERROR_CODES.has(err?.code)) {
+    return true;
+  }
+  return /worker stopped with exit code/i.test(String(err?.message || ''));
+};
+
+// A request parse is asynchronous now, and the shared filestore WorkerQueue serves
+// a busy lane in PAYLOAD-SIZE order rather than arrival order (bruno-filestore
+// WorkerQueue#enqueue sorts the pending list by priority, and priority is the
+// payload's size in MB). So two saves of the same file whose sizes differ can come
+// back inverted — reproduced with three request payloads in one lane: a 0.90 MB
+// save issued first completed AFTER a 0.30 MB save issued second.
+// change() was strictly FIFO while the parse was synchronous, and the renderer
+// applies a change last-write-wins over name/type/seq/request/examples, so a stale
+// result landing last silently reverts the in-memory request AND its saved
+// examples — and the next Ctrl+S then persists that stale copy to disk. It bites
+// hardest on the large-example requests we sell, because two consecutive saves of
+// one of those differ by more than enough to invert.
+// Every read of a request file stamps itself here before awaiting, and a result is
+// dropped if a newer read of the same path has started since.
+const parseGenerations = new Map();
+
+const beginParseGeneration = (pathname) => {
+  const key = normalizeWatcherPath(pathname);
+  const entry = parseGenerations.get(key) || { latest: 0, inFlight: 0 };
+  entry.latest += 1;
+  entry.inFlight += 1;
+  parseGenerations.set(key, entry);
+  return entry.latest;
+};
+
+// Call exactly once per generation, on BOTH the success and the failure path —
+// a generation that never claims holds its path's entry open forever.
+//
+// The entry is only forgotten once nothing is in flight for that path. Deleting
+// it as soon as the newest result landed restarted numbering at 1 for the next
+// read, so an older read still in flight could match that fresh 1 and be treated
+// as newest — the stale-overwrite this guard exists to prevent, with extra steps.
+// Keeping the entry while reads are outstanding still bounds the map by files
+// actually being parsed, not by the 11,387 in the real workspace.
+const claimNewestParseGeneration = (pathname, generation) => {
+  const key = normalizeWatcherPath(pathname);
+  const entry = parseGenerations.get(key);
+  if (!entry) {
+    return false;
+  }
+
+  entry.inFlight -= 1;
+  const isNewest = entry.latest === generation;
+  if (entry.inFlight <= 0) {
+    parseGenerations.delete(key);
+  }
+  return isNewest;
+};
 
 const isUnderPath = (childPath, parentPath) => {
   const child = normalizeWatcherPath(childPath);
@@ -384,7 +496,6 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
     }
 
     try {
-      const metaJson = parseFileMeta(content, format);
       file.size = sizeInMB(fileStats?.size);
 
       if (fileStats.size < MAX_FILE_SIZE) {
@@ -398,7 +509,15 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
         hydrateRequestWithUuid(file.data, pathname);
         win.webContents.send('main:collection-tree-updated', 'addFile', file);
       } else {
-        file.data = metaJson;
+        // Computed here rather than above the branch: the full parse below needs
+        // nothing from it, so on a yml collection the old placement ran a whole-file
+        // js-yaml load on the browser process for EVERY file of the initial scan
+        // (11,387 of them in the real workspace) to feed a branch almost none of
+        // them take. Bounded for the same reason the fallbacks below are.
+        // Null is possible for a malformed or half-written file — this used to emit
+        // it straight through, and hydrateRequestWithUuid then handed the renderer
+        // a `data: null` item.
+        file.data = parseFileMetaBounded(content, format, fileStats?.size) || buildUnparseableRequestData(pathname);
         file.partial = true;
         file.loading = false;
         hydrateRequestWithUuid(file.data, pathname);
@@ -461,7 +580,10 @@ const addDirectory = async (win, pathname, collectionUid, collectionPath) => {
   win.webContents.send('main:collection-tree-updated', 'addDir', directory);
 };
 
-const change = async (win, pathname, collectionUid, collectionPath) => {
+// `watcher` is the CollectionWatcher instance; the request branch below needs it
+// to bracket its (now asynchronous) parse with addFileToProcessing /
+// markFileAsProcessed, the same way add() does.
+const change = async (win, pathname, collectionUid, collectionPath, watcher) => {
   if (isPathUnderActiveGitOperation(pathname)) {
     return;
   }
@@ -593,11 +715,34 @@ const change = async (win, pathname, collectionUid, collectionPath) => {
       return;
     }
 
+    // Bracket the parse the way add() does. It is now genuinely asynchronous, so
+    // the collection can finish discovering while this file is still in flight;
+    // without the bracket a save during the initial scan reports the collection
+    // as fully loaded before its own item has been re-emitted.
+    watcher?.addFileToProcessing?.(collectionUid, pathname);
+
+    // Stamped against the content we just read, so "newest" means newest read of
+    // the file rather than newest to come back from the queue.
+    const generation = beginParseGeneration(pathname);
+
     try {
       if (fileStats.size >= MAX_FILE_SIZE && format === 'bru') {
         file.data = await parseLargeRequestWithRedaction(content, 'bru');
       } else {
-        file.data = await parseRequest(content, { format });
+        // Off the browser process. This parse used to run inline here on every
+        // save and every external write: measured against the real workspace it
+        // blocked the main thread for 1.5 s at 0.58 MB, 7.1 s at 2.33 MB, and
+        // died with a fatal "JS heap out of memory" at 2.47 MB — the customer's
+        // "app hangs and then exits completely". In a worker the same file costs
+        // the same memory but the main thread stalls ~20 ms, and an OOM comes
+        // back as a catchable ERR_WORKER_OUT_OF_MEMORY handled below.
+        file.data = await parseRequestViaWorker(content, { format, filename: pathname });
+      }
+
+      // A save that was read after this one has already been (or is about to be)
+      // emitted; emitting this older parse now would revert it.
+      if (!claimNewestParseGeneration(pathname, generation)) {
+        return;
       }
 
       file.partial = false;
@@ -606,6 +751,22 @@ const change = async (win, pathname, collectionUid, collectionPath) => {
       hydrateRequestWithUuid(file.data, pathname);
       win.webContents.send('main:collection-tree-updated', 'change', file);
     } catch (err) {
+      // Same ordering guard as the success path: a stale failure must not repaint
+      // a row that a newer read has already refreshed.
+      if (!claimNewestParseGeneration(pathname, generation)) {
+        return;
+      }
+
+      // The worker dying is not a verdict on the file. Emitting the partial item
+      // below would hand the renderer a meta-only payload, and applyFileDataToItem
+      // clears item.draft and item.examples from it — losing unsaved edits over a
+      // pool shutdown. Stay silent and wait for the next event, which is exactly
+      // what this code did before the parse moved off-thread.
+      if (isTransientWorkerFailure(err)) {
+        console.error(err);
+        return;
+      }
+
       // Emit a partial item instead of swallowing the error, so a file that stops
       // parsing mid-session keeps a row to click on instead of silently going stale.
       // In-app git operations never reach here (change() returns above on
@@ -614,7 +775,16 @@ const change = async (win, pathname, collectionUid, collectionPath) => {
       // external writer — the git CLI in a terminal, an editor, or a merge tool
       // leaving conflict markers behind. Mirrors the worker branch in add().
       // upstream bruno #8545 (81f9a4092)
-      file.data = buildUnparseableRequestData(pathname);
+      //
+      // Meta first, filename second: the worker parse rejects with
+      // ERR_WORKER_OUT_OF_MEMORY on a file too big for one heap, and that file is
+      // not malformed — its meta block reads fine, so the row keeps its real name,
+      // type and seq exactly like add()'s oversized branch emits. Only a file that
+      // cannot even yield a meta block falls back to the filename.
+      // Bounded, because the yml meta parse is a synchronous whole-file js-yaml
+      // load: unbounded it puts the very freeze the worker removed back on the
+      // browser process, in the failure case.
+      file.data = parseFileMetaBounded(content, format, fileStats?.size) || buildUnparseableRequestData(pathname);
       file.error = {
         message: err?.message
       };
@@ -623,6 +793,8 @@ const change = async (win, pathname, collectionUid, collectionPath) => {
       file.size = sizeInMB(fileStats.size);
       hydrateRequestWithUuid(file.data, pathname);
       win.webContents.send('main:collection-tree-updated', 'change', file);
+    } finally {
+      watcher?.markFileAsProcessed?.(win, collectionUid, pathname);
     }
   }
 };
@@ -924,7 +1096,7 @@ class CollectionWatcher {
         })
         .on('add', (pathname) => add(win, pathname, collectionUid, watchPath, useWorkerThread, this, initialScanActive ? BACKGROUND_PARSE_PRIORITY_BOOST : 0))
         .on('addDir', (pathname) => addDirectory(win, pathname, collectionUid, watchPath))
-        .on('change', (pathname) => change(win, pathname, collectionUid, watchPath))
+        .on('change', (pathname) => change(win, pathname, collectionUid, watchPath, this))
         .on('unlink', (pathname) => unlink(win, pathname, collectionUid, watchPath))
         .on('unlinkDir', (pathname) => unlinkDir(win, pathname, collectionUid, watchPath))
         .on('error', (error) => {
@@ -1138,6 +1310,15 @@ module.exports.MAX_FILE_SIZE = MAX_FILE_SIZE;
 // item the way this scan (and the indexer) names it, or it repaints the row with
 // the filename.
 module.exports.buildUnparseableRequestData = buildUnparseableRequestData;
+// The load-request handlers await the same worker for the same files, so they share
+// this module's ordering stamp, its transient-failure rule and its bounded meta
+// fallback. Two registries would let a sidebar click and a watcher change() each
+// think it was the newest read of the same path.
+module.exports.beginParseGeneration = beginParseGeneration;
+module.exports.claimNewestParseGeneration = claimNewestParseGeneration;
+module.exports.isTransientWorkerFailure = isTransientWorkerFailure;
+module.exports.parseFileMetaBounded = parseFileMetaBounded;
+module.exports.MAX_SYNC_YML_META_SIZE = MAX_SYNC_YML_META_SIZE;
 // The chokidar callbacks are module-level functions; the unit tests in
 // tests/collections drive them through here rather than spinning up a real watcher.
 module.exports.__handlers = {

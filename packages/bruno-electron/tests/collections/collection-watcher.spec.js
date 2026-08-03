@@ -42,6 +42,21 @@ jest.mock('electron-store', () => {
   };
 });
 
+// change() parses through the shared filestore worker pool now, and that pool has
+// no exported shutdown — a single call leaves a live worker thread behind, so this
+// file hung past jest's 300 s exit wait on its own and printed "A worker process
+// has failed to exit gracefully" in the suite run. Nothing here is about threading,
+// so the parse is routed through the identical synchronous parser on purpose. The
+// worker path itself is covered in request-parse-ordering.spec.js.
+jest.mock('@usebruno/filestore', () => {
+  const actual = jest.requireActual('@usebruno/filestore');
+  return {
+    ...actual,
+    // async, so a parser throw surfaces as a rejection the way the worker's does.
+    parseRequestViaWorker: async (content, options) => actual.parseRequest(content, { format: options?.format })
+  };
+});
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
