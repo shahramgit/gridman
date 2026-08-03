@@ -22,7 +22,7 @@ import {
   IconTerminal2,
   IconTrash
 } from '@tabler/icons';
-import { useDispatch, useSelector, useStore } from 'react-redux';
+import { shallowEqual, useDispatch, useSelector, useStore } from 'react-redux';
 import { getEmptyImage } from 'react-dnd-html5-backend';
 import { useDrag, useDrop } from 'react-dnd';
 import path from 'utils/common/path';
@@ -80,6 +80,8 @@ const MAX_LIST_HEIGHT = 520;
 // Filtered (search) views render plain rows; collections whose filtered set
 // exceeds this cap show an explicit "Show N more matches" expander.
 const FILTER_ROW_CAP = 60;
+// Rows added per animation frame once that expander is clicked.
+const FILTER_ROW_CHUNK = 60;
 
 // Cross-row activation coalescer (mount path only). A broad content search
 // mounts hundreds of matched rows in one commit, and each row's mount effect
@@ -204,6 +206,21 @@ const getIndexedNodeDisplayDepth = (index, node) => {
 };
 
 const normalizeForPathCompare = (pathname) => String(pathname || '').normalize('NFC').replace(/\\/g, '/').replace(/\/+$/, '');
+
+// One-entry memo for the ACTIVE reveal's normalized pathname. Every mounted row
+// runs its reveal selector on every dispatch and they all read the SAME
+// sidebarReveal object, so normalizing inside the selector would repeat the
+// NFC + separator normalize once per row per dispatch (~122 mounted rows on
+// GSB) — normalizePath was already a measured top self-time entry here.
+let lastRevealObject = null;
+let lastRevealNormalizedPathname = null;
+const getRevealNormalizedPathname = (reveal) => {
+  if (reveal !== lastRevealObject) {
+    lastRevealObject = reveal;
+    lastRevealNormalizedPathname = normalizeForPathCompare(reveal?.pathname);
+  }
+  return lastRevealNormalizedPathname;
+};
 
 const getIndexedRequestTabUid = ({ collectionUid, pathname, uid }) => {
   return `indexed-request:${collectionUid}:${pathname || uid}`;
@@ -351,7 +368,11 @@ const IndexedRowExamples = ({ collectionUid, item, displayDepth }) => {
   );
 };
 
-const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, expandedNodeUids, filterCollapsedUids, onToggleFolder, onItemDroppedIntoFolder, multiSelect }) => {
+// isExpanded arrives already resolved (see renderRow) rather than as the
+// expanded-uid Set: the reveal path rebuilds that Set on every attempt and a
+// folder toggle rebuilds it too, so passing the Set failed this memo and
+// re-rendered EVERY row in the collection for a change that affects one row.
+const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, onToggleFolder, onItemDroppedIntoFolder, multiSelect }) => {
   const dispatch = useDispatch();
   const store = useStore();
   const { dropdownContainerRef } = useSidebarAccordion();
@@ -359,8 +380,6 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
   const menuDropdownRef = useRef(null);
   const isRequest = node.type !== 'folder';
   const isFolder = !isRequest;
-  // While a filter is active the filtered tree is always shown fully expanded.
-  const isExpanded = filterActive ? !filterCollapsedUids?.has(node.uid) : expandedNodeUids.has(node.uid);
   const [renameItemModalOpen, setRenameItemModalOpen] = useState(false);
   const [examplesExpanded, setExamplesExpanded] = useState(false);
   const [cloneItemModalOpen, setCloneItemModalOpen] = useState(false);
@@ -418,32 +437,51 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, filterActive, 
   // uid to focus. Returning the object forced an `isEqual` DEEP compare of the
   // whole tab (with its request data) for every one of ~122 mounted rows on
   // EVERY store dispatch — pure waste while a search streams loads.
-  const existingRequestTabUid = useSelector((state) => {
+  //
+  // "is it the ACTIVE tab" rides along in the SAME selector (one tabs scan,
+  // shallow-compared) instead of a separate state.tabs.activeTabUid
+  // subscription: activeTabUid changes on every click, and subscribing to it
+  // re-rendered EVERY mounted row in the collection (measured 20/20 in
+  // IndexedCollectionItems.render.spec.jsx) when at most two rows — the one
+  // losing focus and the one gaining it — can look any different.
+  const requestTabState = useSelector((state) => {
     if (!isRequest) {
       return null;
     }
-    return state.tabs.tabs.find((tab) => doesTabMatchRequestNode(tab, {
+    const matchedTabUid = state.tabs.tabs.find((tab) => doesTabMatchRequestNode(tab, {
       collectionUid,
       pathname: node.pathname,
       uid: node.uid
-    }))?.uid || null;
+    }))?.uid;
+
+    return matchedTabUid ? { uid: matchedTabUid, isActive: matchedTabUid === state.tabs.activeTabUid } : null;
+  }, shallowEqual);
+  const existingRequestTabUid = requestTabState?.uid || null;
+  const isActiveTabRow = Boolean(requestTabState?.isActive);
+  // Subscribe to the reveal nonce OF THIS ROW ONLY — null for every other row.
+  // state.app.sidebarReveal is rewritten as a FRESH object on every reveal, and
+  // a single request click writes it twice (revealRequestInSidebar from
+  // RequestTabPanel on tab activation, then the clearSidebarReveal this
+  // component dispatches once the reveal is consumed). Subscribing to the whole
+  // object re-rendered every mounted row of every mounted collection on both
+  // writes (measured 20/20 rows per write).
+  const normalizedRevealComparePathname = useMemo(() => normalizeForPathCompare(node.pathname), [node.pathname]);
+  const revealNonceForRow = useSelector((state) => {
+    const reveal = state.app.sidebarReveal;
+    if (!reveal || reveal.collectionUid !== collectionUid) {
+      return null;
+    }
+    return getRevealNormalizedPathname(reveal) === normalizedRevealComparePathname ? reveal.nonce : null;
   });
-  const isTabForItemPresent = Boolean(existingRequestTabUid);
-  const activeTabUid = useSelector((state) => state.tabs.activeTabUid);
-  const isActiveTabRow = Boolean(existingRequestTabUid && existingRequestTabUid === activeTabUid);
-  const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
   const [revealFlash, setRevealFlash] = useState(false);
   useEffect(() => {
-    if (!sidebarReveal || sidebarReveal.collectionUid !== collectionUid) {
-      return;
-    }
-    if (normalizeForPathCompare(sidebarReveal.pathname) !== normalizeForPathCompare(node.pathname)) {
+    if (!revealNonceForRow) {
       return;
     }
     setRevealFlash(true);
     const timer = setTimeout(() => setRevealFlash(false), 1800);
     return () => clearTimeout(timer);
-  }, [sidebarReveal?.nonce]);
+  }, [revealNonceForRow]);
   const { hasCopiedItems } = useSelector((state) => state.app.clipboard);
   const index = useSelector((state) => state.collections.collectionIndexes?.[collectionUid]);
   // Subscribe to primitives/O(1) lookups only. The old selectors deep-compared
@@ -1487,7 +1525,9 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
   const index = useDeferredValue(liveIndex);
   const deferredSearchMatches = useDeferredValue(searchMatches);
   const [expandedNodeUids, setExpandedNodeUids] = useState(() => new Set());
-  const [showAllFilteredRows, setShowAllFilteredRows] = useState(false);
+  // null = still capped at rowCap; a number = the user asked for the rest and
+  // this many rows are mounted so far (see the progressive growth effect).
+  const [expandedRowCount, setExpandedRowCount] = useState(null);
   // Per-collection slice of the sidebar-wide row budget (broad queries match
   // dozens of collections; the parent divides ~300 rows among them).
   const rowCap = filterRowAllowance || FILTER_ROW_CAP;
@@ -1509,14 +1549,35 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
 
   // A new result set re-collapses an expanded over-cap list.
   useEffect(() => {
-    setShowAllFilteredRows(false);
+    setExpandedRowCount(null);
   }, [deferredSearchMatches]);
+
   // Rows in a filtered view render fully expanded; a collection matched only
   // by its name browses normally (expand/collapse works), so the rows must
   // not derive expansion from searchText themselves.
   const filterActive = searchMatches
     ? searchMatches.matchedPathnames.size > 0
     : Boolean(searchText?.trim());
+
+  // PROGRESSIVE EXPANSION of an over-cap filtered list. Mounting the remainder
+  // in the click's own commit meant up to ~1,500 rows at once (the biggest GSB
+  // collection is 1,594 nodes and a matched FOLDER pulls its whole subtree in),
+  // each row carrying its store subscriptions, a useDrag, a useDrop and an
+  // eagerly built context menu. Grow by a chunk per animation frame instead so
+  // the browser paints (and scrolling stays live) between chunks — the same
+  // pattern the sidebar uses to reveal matched collections
+  // (Sidebar/Collections/index.js, REVEAL_CHUNK). Only while a filter is
+  // active: the browse view is virtualized and renders every row anyway, so
+  // outside a filter this would be a pointless frame-by-frame state loop.
+  useEffect(() => {
+    if (!filterActive || expandedRowCount === null || expandedRowCount >= visibleRows.length) {
+      return undefined;
+    }
+    const frame = requestAnimationFrame(() => {
+      setExpandedRowCount((current) => (current === null ? current : current + FILTER_ROW_CHUNK));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [filterActive, expandedRowCount, visibleRows.length]);
 
   // Shift-click ranges must follow the virtualized list's visible order.
   // The rows read it via a ref so the wrapped callback stays stable and the
@@ -1765,6 +1826,8 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
     return null;
   }
 
+  const renderedRowCount = expandedRowCount === null ? rowCap : expandedRowCount;
+
   // Fallback height only used until the scroll parent is found (or if none is).
   const listHeight = Math.min(Math.max(visibleRows.length * ROW_HEIGHT, ROW_HEIGHT), MAX_LIST_HEIGHT);
 
@@ -1780,9 +1843,9 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
         node={node}
         collectionUid={collectionUid}
         searchText={searchText}
-        filterActive={filterActive}
-        expandedNodeUids={expandedNodeUids}
-        filterCollapsedUids={filterActive ? filterCollapsedUids : null}
+        // While a filter is active the filtered tree is shown fully expanded
+        // unless the user collapsed that folder during the search.
+        isExpanded={filterActive ? !filterCollapsedUids?.has(node.uid) : expandedNodeUids.has(node.uid)}
         onToggleFolder={onToggleFolder}
         onItemDroppedIntoFolder={onItemDroppedIntoFolder}
         multiSelect={rowMultiSelect}
@@ -1808,15 +1871,15 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
         // under broad body/example searches) cap at FILTER_ROW_CAP rows with
         // an explicit expander, keeping first paint bounded.
         <>
-          {(showAllFilteredRows ? visibleRows : visibleRows.slice(0, rowCap)).map((node) => (
+          {(renderedRowCount >= visibleRows.length ? visibleRows : visibleRows.slice(0, renderedRowCount)).map((node) => (
             <React.Fragment key={node.pathname || node.uid}>{renderRow(node)}</React.Fragment>
           ))}
-          {!showAllFilteredRows && visibleRows.length > rowCap ? (
+          {expandedRowCount === null && visibleRows.length > rowCap ? (
             <button
               type="button"
               className="text-xs text-muted ml-8 py-1 add-request-link"
               data-testid="filtered-rows-show-more"
-              onClick={() => setShowAllFilteredRows(true)}
+              onClick={() => setExpandedRowCount(rowCap + FILTER_ROW_CHUNK)}
             >
               Show {visibleRows.length - rowCap} more matches...
             </button>

@@ -109,7 +109,14 @@ const Collection = ({ collection, searchText, searchMatches = null, filterRowAll
 
   const isCollectionFocused = useSelector(isTabForItemActive({ itemUid: collection.uid }));
   const { hasCopiedItems } = useSelector((state) => state.app.clipboard);
-  const sidebarReveal = useSelector((state) => state.app.sidebarReveal);
+  // Only a PENDING reveal aimed at THIS collection matters here. Subscribing to
+  // state.app.sidebarReveal itself re-rendered every mounted collection block
+  // (112 on GSB) twice per request click, because the slice rewrites that
+  // object on both revealRequestInSidebar and clearSidebarReveal.
+  const pendingRevealNonce = useSelector((state) => {
+    const reveal = state.app.sidebarReveal;
+    return reveal?.pending && reveal.collectionUid === collection.uid ? reveal.nonce : null;
+  });
 
   // Multi-select (Postman-style): selection lives here — the common ancestor
   // of both sidebar renderers — because the indexed renderer is virtualized
@@ -191,7 +198,7 @@ const Collection = ({ collection, searchText, searchMatches = null, filterRowAll
   // collection mounts/indexes so revealing into a just-opened collection
   // works once its data arrives.
   useEffect(() => {
-    if (!sidebarReveal?.pending || sidebarReveal.collectionUid !== collection.uid) {
+    if (!pendingRevealNonce) {
       return;
     }
 
@@ -204,7 +211,7 @@ const Collection = ({ collection, searchText, searchMatches = null, filterRowAll
     if (collection.collapsed) {
       dispatch(toggleCollection(collection.uid));
     }
-  }, [sidebarReveal?.nonce, sidebarReveal?.pending, collection.mountStatus, collectionIndex?.totalNodes]);
+  }, [pendingRevealNonce, collection.mountStatus, collectionIndex?.totalNodes]);
   const menuDropdownRef = useRef(null);
 
   // Open the OpenAPI Sync tab
