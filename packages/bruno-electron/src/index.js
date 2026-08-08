@@ -50,6 +50,11 @@ const registerTrashIpc = require('./ipc/trash');
 const registerHistoryIpc = require('./ipc/history');
 const registerWorkflowsIpc = require('./ipc/workflows');
 const registerOpenAPISyncIpc = require('./ipc/openapi-sync');
+// AI (chat sidebar + script generation + ghost-text autocomplete). Registering
+// the handlers does no network work and constructs no provider: every handler
+// re-reads `ai.enabled` per call and refuses before a model client exists, and
+// with the shipped defaults every switch is off. See ipc/ai/index.js.
+const registerAiIpc = require('./ipc');
 const collectionWatcher = require('./app/collection-watcher');
 const WorkspaceWatcher = require('./app/workspace-watcher');
 const ApiSpecWatcher = require('./app/apiSpecsWatcher');
@@ -526,6 +531,7 @@ app.on('ready', async () => {
   registerTrashIpc();
   registerHistoryIpc();
   registerWorkflowsIpc(mainWindow);
+  registerAiIpc(mainWindow);
   // Purge Gridman-trash entries older than the retention window (30 days).
   require('./utils/app-trash').purgeAppTrash().catch((err) => {
     console.warn('Trash purge failed:', err?.message);

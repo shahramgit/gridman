@@ -11,9 +11,11 @@ import {
   IconZoomQuestion,
   IconSquareLetterB,
   IconDatabase,
-  IconStar
+  IconStar,
+  IconStars
 } from '@tabler/icons';
 
+import AI from './AI';
 import Support from './Support';
 import General from './General';
 import Themes from './Themes';
@@ -77,6 +79,10 @@ const Preferences = () => {
       case 'features': {
         return <Features />;
       }
+
+      case 'ai': {
+        return <AI />;
+      }
     }
   };
 
@@ -111,6 +117,12 @@ const Preferences = () => {
           <div className={getTabClassname('features')} role="tab" onClick={() => setTab('features')}>
             <IconStar size={16} strokeWidth={1.5} />
             Features
+          </div>
+          {/* Always reachable — this tab is where AI gets turned on in the
+              first place, so it can't be gated on ai.enabled. */}
+          <div className={getTabClassname('ai')} role="tab" onClick={() => setTab('ai')}>
+            <IconStars size={16} strokeWidth={1.5} />
+            AI
           </div>
           <div className={getTabClassname('support')} role="tab" onClick={() => setTab('support')}>
             <IconZoomQuestion size={16} strokeWidth={1.5} />

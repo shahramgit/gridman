@@ -8,6 +8,8 @@ import StatusBar from 'components/StatusBar';
 import AppTitleBar from 'components/AppTitleBar';
 import ApiSpecPanel from 'components/ApiSpecPanel';
 import TabPanelErrorBoundary from 'components/RequestTabPanel/TabPanelErrorBoundary';
+import AiChatSurface from 'components/AiChatSidebar/Surface';
+import AiToggleButton from 'components/AiChatSidebar/ToggleButton';
 // import ErrorCapture from 'components/ErrorCapture';
 import { useSelector } from 'react-redux';
 import { isElectron } from 'utils/common/platform';
@@ -152,6 +154,27 @@ export default function Main() {
               </>
             )}
           </section>
+          {/*
+            The AI feature's only mount point.
+
+            Both of these render EXACTLY `null` while `app.preferences.ai.enabled`
+            is false — no panel, no rail, no button, no listener, no status poll
+            and no dispatch, so a fresh install pays nothing for the feature
+            being in the bundle. The gate lives inside each component (see
+            AiChatSidebar/Surface and AiChatSidebar/ToggleButton) rather than
+            here, so a second mount point could never reintroduce it.
+
+            Deliberately a right-hand surface, as a sibling of the request pane:
+            it must not touch components/Sidebar (the indexed collection
+            renderer), and it does not — it reads the collection tree from the
+            store and nothing else.
+
+            No keybinding is registered for it. A global shortcut would have to
+            live outside this component to be global, which would mean an
+            always-mounted listener for an optional, default-off feature.
+          */}
+          <AiChatSurface />
+          <AiToggleButton className="ai-rail" />
         </StyledWrapper>
       </div>
 
