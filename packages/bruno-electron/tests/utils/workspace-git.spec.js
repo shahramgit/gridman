@@ -862,3 +862,73 @@ describe('workspace git workflows', () => {
     });
   });
 });
+
+describe('isProtectedWorkspaceGitPath', () => {
+  // What Gridman refuses to commit. The rule changed in 3.5.2-vasl.4: environment
+  // files are now SHARED by default, because a secret variable is written to them
+  // as a name only — the value lives in an encrypted store under userData and
+  // never enters the repository.
+  const { isProtectedWorkspaceGitPath } = require('../../src/utils/git');
+  const { getPreferences } = require('../../src/store/preferences');
+
+  describe('by default', () => {
+    it('never commits dotenv files, which do hold plaintext values', () => {
+      expect(isProtectedWorkspaceGitPath('.env')).toBe(true);
+      expect(isProtectedWorkspaceGitPath('.env.local')).toBe(true);
+      expect(isProtectedWorkspaceGitPath('.env.production')).toBe(true);
+    });
+
+    it('shares environment files, so a teammate receives them on clone', () => {
+      expect(isProtectedWorkspaceGitPath('environments/Local.bru')).toBe(false);
+      expect(isProtectedWorkspaceGitPath('collections/api/environments/Prod.yml')).toBe(false);
+    });
+
+    it('shares environment files with Persian names and Windows separators', () => {
+      expect(isProtectedWorkspaceGitPath('collections\\\\002 سازمان\\\\environments\\\\محیط.bru')).toBe(false);
+      expect(isProtectedWorkspaceGitPath('environments/محیط تست.yml')).toBe(false);
+    });
+
+    it('leaves ordinary collection files alone', () => {
+      expect(isProtectedWorkspaceGitPath('collections/api/get-user.bru')).toBe(false);
+      expect(isProtectedWorkspaceGitPath('workspace.yml')).toBe(false);
+    });
+  });
+
+  describe('when a team opts out via preferences.git.excludeEnvironmentsFromGit', () => {
+    // git.js re-requires the preferences module on every call, so a spy on the
+    // module object is what the rule actually reads.
+    const preferencesStore = require('../../src/store/preferences');
+    let spy;
+
+    beforeEach(() => {
+      spy = jest.spyOn(preferencesStore, 'getPreferences')
+        .mockReturnValue({ git: { excludeEnvironmentsFromGit: true } });
+    });
+
+    afterEach(() => {
+      spy.mockRestore();
+    });
+
+    it('goes back to excluding environment files', () => {
+      expect(isProtectedWorkspaceGitPath('environments/Local.bru')).toBe(true);
+      expect(isProtectedWorkspaceGitPath('collections/api/environments/Prod.yml')).toBe(true);
+    });
+
+    it('still excludes dotenv files', () => {
+      expect(isProtectedWorkspaceGitPath('.env')).toBe(true);
+    });
+  });
+
+  it('falls back to sharing environments when preferences cannot be read', () => {
+    const preferencesStore = require('../../src/store/preferences');
+    const spy = jest.spyOn(preferencesStore, 'getPreferences').mockImplementation(() => {
+      throw new Error('store not initialised');
+    });
+
+    // A preferences failure must not silently change what gets committed.
+    expect(isProtectedWorkspaceGitPath('environments/Local.bru')).toBe(false);
+    expect(isProtectedWorkspaceGitPath('.env')).toBe(true);
+
+    spy.mockRestore();
+  });
+});

@@ -111,13 +111,43 @@ const normalizeGitPath = (filePath = '') => filePath.replace(/\\/g, '/');
 // Always at the repository root, so this is the whole path git reports for it.
 const WORKSPACE_YML_FILENAME = 'workspace.yml';
 
+// Read lazily and defensively: git.js is required from contexts where the
+// preferences store may not be initialised (tests, early startup), and a
+// preferences failure must not decide what gets committed. Fail towards the
+// documented default rather than towards a surprise.
+const shouldExcludeEnvironmentsFromGit = () => {
+  try {
+    const { getPreferences } = require('../store/preferences');
+    return Boolean(getPreferences()?.git?.excludeEnvironmentsFromGit);
+  } catch (_err) {
+    return false;
+  }
+};
+
+const isEnvironmentDirectoryPath = (normalizedPath) =>
+  normalizedPath.startsWith('environments/') || normalizedPath.includes('/environments/');
+
+// What Gridman refuses to put in git, ever: dotenv files. Those hold real values
+// in plaintext and are read at runtime.
+//
+// Environment FILES are deliberately NOT in that set any more. A secret variable
+// is written to an environment file as a NAME ONLY — its value lives in an
+// encrypted store under userData and never enters the repository. Verified in
+// both formats: `vars:secret [ token ]` in .bru, `- secret: true / name: token`
+// in .yml. So excluding environments/ protected nothing, while hiding the part
+// teams actually want shared (base URLs, ids, non-secret config) — on a
+// git-backed workspace every teammate had to recreate them by hand.
+//
+// Teams who consider their internal URLs sensitive can opt back out via
+// preferences.git.excludeEnvironmentsFromGit.
 const isProtectedWorkspaceGitPath = (filePath = '') => {
   const normalizedPath = normalizeGitPath(filePath);
 
-  return normalizedPath === '.env'
-    || normalizedPath.startsWith('.env.')
-    || normalizedPath.startsWith('environments/')
-    || normalizedPath.includes('/environments/');
+  if (normalizedPath === '.env' || normalizedPath.startsWith('.env.')) {
+    return true;
+  }
+
+  return shouldExcludeEnvironmentsFromGit() && isEnvironmentDirectoryPath(normalizedPath);
 };
 
 const stringifyGitErrorPart = (value) => {
@@ -4239,6 +4269,8 @@ const getGitGraph = async (gitRootPath, branchName, limit = 50) => {
 };
 
 module.exports = {
+  // exported so the "what does Gridman refuse to commit" rule is directly testable
+  isProtectedWorkspaceGitPath,
   getCollectionGitRootPath,
   getWorkspaceGitRootPath,
   getCollectionGitRepoUrl,

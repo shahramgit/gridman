@@ -29,6 +29,14 @@ const defaultPreferences = {
     codeFont: 'default',
     codeFontSize: 13
   },
+  git: {
+    // Environment files carry secret NAMES only — values live in the encrypted
+    // store under userData and never reach the repository — so they are shared
+    // by default, which is what a git-backed team wants. Turn this on if the
+    // internal URLs and ids in those files are themselves sensitive.
+    // Dotenv files (.env, .env.*) are excluded unconditionally either way.
+    excludeEnvironmentsFromGit: false
+  },
   proxy: {
     source: 'inherit',
     pac: { source: '' },
@@ -161,6 +169,9 @@ const preferencesSchema = Yup.object().shape({
   font: Yup.object().shape({
     codeFont: Yup.string().nullable(),
     codeFontSize: Yup.number().min(1).max(32).nullable()
+  }),
+  git: Yup.object().shape({
+    excludeEnvironmentsFromGit: Yup.boolean()
   }),
   proxy: Yup.object({
     disabled: Yup.boolean().optional(),

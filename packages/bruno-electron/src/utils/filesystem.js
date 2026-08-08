@@ -6,11 +6,14 @@ const isValidPathname = require('is-valid-path');
 const os = require('os');
 
 const DEFAULT_GITIGNORE = [
-  '# Secrets',
+  '# Secrets — real values in plaintext, never committed.',
   '.env*',
   '',
-  '# Gridman environments (may contain secrets)',
-  '**/environments/',
+  '# NOTE: environment files are intentionally NOT ignored. A secret variable is',
+  '# stored in them as a NAME only; its value lives in an encrypted store outside',
+  '# the repository. Sharing them is what lets a teammate clone and run. If your',
+  '# internal URLs are themselves sensitive, add "**/environments/" below and turn',
+  '# on Preferences > Git > exclude environments.',
   '',
   '# Dependencies',
   'node_modules',
