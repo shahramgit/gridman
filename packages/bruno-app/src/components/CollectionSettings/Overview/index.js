@@ -3,6 +3,7 @@ import Docs from '../Docs';
 import Info from './Info';
 import { IconBox } from '@tabler/icons';
 import RequestsNotLoaded from './RequestsNotLoaded';
+import MigrateToYml from '../MigrateToYml';
 
 const Overview = ({ collection }) => {
   return (
@@ -17,6 +18,7 @@ const Overview = ({ collection }) => {
           </div>
           <Info collection={collection} />
           <RequestsNotLoaded collection={collection} />
+          <MigrateToYml collection={collection} />
         </div>
         <div className="col-span-3">
           <Docs collection={collection} />

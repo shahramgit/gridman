@@ -83,6 +83,7 @@ const { transformBrunoConfigBeforeSave } = require('../utils/transformBrunoConfi
 const { REQUEST_TYPES } = require('../utils/constants');
 const { cancelOAuth2AuthorizationRequest, isOauth2AuthorizationRequestInProgress } = require('../utils/oauth2-protocol-handler');
 const { findUniqueFolderName } = require('../utils/collection-import');
+const { migrateCollectionToYml } = require('../utils/collection-migration');
 const { readCollectionItemsFromDisk, readFolderForExport, writeItemsIntoFolder } = require('./collection-export-import');
 const { saveSpecAndUpdateMetadata, cleanupSpecFilesForCollection } = require('./openapi-sync');
 const {
@@ -2667,6 +2668,91 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     } catch (error) {
       return Promise.reject(error);
     }
+  });
+
+  // Convert a .bru collection to the .yml (opencollection) format.
+  //
+  // The work itself lives in utils/collection-migration.js; this handler owns
+  // the electron-facing half: the cancel registry, the throttled progress
+  // channel, and detaching the collection afterwards. See that module's header
+  // for why this is two phases with a commit point and why nothing is ever
+  // unlinked.
+  const activeYmlMigrations = new Map();
+
+  ipcMain.handle('renderer:migrate-collection-to-yml', async (event, { collectionPathname, collectionUid, migrationUid } = {}) => {
+    try {
+      if (!collectionPathname || !migrationUid) {
+        throw new Error('collectionPathname and migrationUid are required');
+      }
+
+      const normalizedCollectionPathname = path.resolve(collectionPathname);
+      for (const migration of activeYmlMigrations.values()) {
+        if (migration.collectionPathname === normalizedCollectionPathname) {
+          throw new Error('A migration is already running for this collection.');
+        }
+      }
+
+      const migration = { collectionPathname: normalizedCollectionPathname, cancelled: false };
+      activeYmlMigrations.set(migrationUid, migration);
+
+      try {
+        const result = await migrateCollectionToYml({
+          collectionPathname: normalizedCollectionPathname,
+          shouldCancel: () => migration.cancelled,
+          onProgress: (progress) => {
+            // Best-effort, same as every other main->renderer progress channel:
+            // the window can go away mid-run and that must not stop the work.
+            try {
+              if (mainWindow && !mainWindow.isDestroyed?.() && mainWindow.webContents) {
+                mainWindow.webContents.send('main:collection-yml-migration-progress', {
+                  migrationUid,
+                  collectionPathname: normalizedCollectionPathname,
+                  ...progress
+                });
+              }
+            } catch (_error) {
+              // window closing
+            }
+          }
+        });
+
+        if (result.status === 'migrated') {
+          // The collection on disk is a different format now, and the watcher and
+          // the index were both built for the old one. Detach them so neither
+          // keeps reporting a tree that no longer exists; the renderer tells the
+          // user to reopen the collection. Reloading it in place would mean
+          // rewriting the renderer's item tree from under the user, which is not
+          // this change's to do.
+          try {
+            if (watcher && mainWindow) {
+              watcher.removeWatcher(normalizedCollectionPathname, mainWindow, collectionUid);
+            }
+            if (collectionUid) {
+              cancelCollectionIndex(collectionUid);
+            }
+          } catch (error) {
+            console.error('Error detaching migrated collection:', error);
+          }
+        }
+
+        return result;
+      } finally {
+        activeYmlMigrations.delete(migrationUid);
+      }
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
+
+  ipcMain.handle('renderer:cancel-collection-yml-migration', async (event, { migrationUid } = {}) => {
+    const migration = activeYmlMigrations.get(migrationUid);
+    if (!migration) {
+      return false;
+    }
+    // Only phase 1 reads this. Once the commit starts the run is deliberately
+    // uncancellable — see the commit-point comment in collection-migration.js.
+    migration.cancelled = true;
+    return true;
   });
 
   ipcMain.handle('renderer:open-devtools', async () => {
