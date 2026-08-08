@@ -864,7 +864,7 @@ describe('workspace git workflows', () => {
 });
 
 describe('isProtectedWorkspaceGitPath', () => {
-  // What Gridman refuses to commit. The rule changed in 3.5.2-vasl.4: environment
+  // What Gridman refuses to commit. The rule changed in 4.0.0-vasl.1: environment
   // files are now SHARED by default, because a secret variable is written to them
   // as a name only — the value lives in an encrypted store under userData and
   // never enters the repository.

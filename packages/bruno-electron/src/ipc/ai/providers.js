@@ -171,7 +171,9 @@ const compatProviderEntry = (endpoint) => ({
 const getSdk = ({ providerId, apiKey, baseURL }) => {
   // Throws when a proxy is configured that we cannot route through, BEFORE any
   // SDK exists — so a misroutable request is never constructed, let alone sent.
-  const { fetch: fetchImpl, signature: proxySignature } = getAiFetch();
+  // providerId selects the per-endpoint TLS overrides as well as the proxy, so
+  // an internal endpoint behind a private CA is trusted only for itself.
+  const { fetch: fetchImpl, signature: proxySignature } = getAiFetch({ providerId });
 
   const key = sdkCacheKey({ providerId, apiKey, baseURL, proxySignature });
   let sdk = sdkCache.get(key);
@@ -457,7 +459,7 @@ const validateApiKeyForProvider = async ({ providerId, apiKey, aiPreferences }) 
 
   // Same routing as a real generation: if a proxy is configured and cannot be
   // honoured, this throws instead of testing a path the model will never use.
-  const { fetch: fetchImpl } = getAiFetch();
+  const { fetch: fetchImpl } = getAiFetch({ providerId });
 
   if (PROVIDERS[providerId]) {
     return PROVIDERS[providerId].validateApiKey({ apiKey, fetchImpl });

@@ -14,7 +14,7 @@ const {
 } = require('./context');
 const { preferencesUtil } = require('../../store/preferences');
 const { isBuiltInModelId } = require('./providers');
-const { logAiError, logAiWarning } = require('./errors');
+const { logAiError, logAiWarning, tlsTrustGuidance } = require('./errors');
 
 // Read fresh on every stream — the user can tighten redaction in Preferences
 // mid-conversation and the next message must honor it.
@@ -377,9 +377,13 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
       }
 
       logAiError('chat stream failed', error);
+      // A certificate failure is a configuration problem with a specific fix,
+      // so say what it is instead of leaving the SDK's "Cannot connect to API"
+      // as the user's only clue.
+      const tlsHint = tlsTrustGuidance(error);
       send('main:ai-chat-error', {
         requestId,
-        error: error?.message || 'Failed to get AI response'
+        error: tlsHint || error?.message || 'Failed to get AI response'
       });
     }
   });

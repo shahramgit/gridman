@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   IconAlertCircle,
   IconBolt,
+  IconCertificate,
   IconCheck,
   IconChevronDown,
   IconEye,
@@ -47,6 +48,8 @@ const CompatEndpointCard = ({
   onToggleModel,
   onChangeName,
   onChangeBaseURL,
+  onChangeCaCertFilePath,
+  onToggleAllowSelfSigned,
   onAddModel,
   onRemoveModel,
   onUpdateModel,
@@ -63,6 +66,14 @@ const CompatEndpointCard = ({
 
   const [newModelId, setNewModelId] = useState('');
   const [newModelLabel, setNewModelLabel] = useState('');
+  const caCertInputRef = useRef(null);
+
+  // Same mechanism as Preferences > General: the renderer never reads the file,
+  // it only learns the path Electron reports for the chosen file.
+  const pickCaCert = (e) => {
+    const filePath = window?.ipcRenderer?.getFilePath(e?.target?.files?.[0]);
+    if (filePath) onChangeCaCertFilePath?.(filePath);
+  };
 
   const prev = useRef({ enabled: providerEnabled });
   useEffect(() => {
@@ -255,6 +266,86 @@ const CompatEndpointCard = ({
                   data-testid={`ai-endpoint-${endpoint.id}-baseurl`}
                 />
               </div>
+            </div>
+
+            {/*
+              TLS for THIS endpoint.
+
+              An internal gateway usually presents a certificate from a private
+              CA, which fails with "unable to verify the first certificate".
+              The alternative to these two controls is switching
+              Preferences > General > SSL/TLS verification off — which stops
+              verifying certificates for every request the app makes, to every
+              host, permanently, to reach one URL. Scoped here it costs nothing
+              outside this base URL.
+            */}
+            <div onClick={stopBubble}>
+              <div className="key-section-label flex items-center justify-between gap-2 text-[11px] mb-1">
+                <span>Certificate</span>
+                <span className="text-[10.5px]">
+                  Only for this endpoint. App-wide settings in General still apply.
+                </span>
+              </div>
+
+              <div className="key-display-row flex items-center justify-between gap-2 h-8 box-border pl-2.5 pr-0.5">
+                <span className="text-xs truncate" title={endpoint.caCertFilePath || ''}>
+                  {endpoint.caCertFilePath || (
+                    <span className="provider-status">No CA certificate — using the app's certificate settings</span>
+                  )}
+                </span>
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    className="btn-icon w-7 h-7 box-border inline-flex items-center justify-center cursor-pointer"
+                    onClick={() => caCertInputRef.current?.click()}
+                    disabled={pending}
+                    title="Select a CA certificate (PEM)"
+                    aria-label="Select a CA certificate"
+                    data-testid={`ai-endpoint-${endpoint.id}-select-ca`}
+                  >
+                    <IconCertificate size={15} />
+                    <input
+                      type="file"
+                      className="hidden"
+                      ref={caCertInputRef}
+                      onChange={pickCaCert}
+                      data-testid={`ai-endpoint-${endpoint.id}-ca-input`}
+                    />
+                  </button>
+                  {endpoint.caCertFilePath ? (
+                    <button
+                      type="button"
+                      className="btn-icon danger w-7 h-7 box-border inline-flex items-center justify-center cursor-pointer"
+                      onClick={() => onChangeCaCertFilePath?.('')}
+                      disabled={pending}
+                      title="Remove CA certificate"
+                      aria-label="Remove CA certificate"
+                      data-testid={`ai-endpoint-${endpoint.id}-clear-ca`}
+                    >
+                      <IconTrash size={15} />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+
+              <label className="flex items-start gap-2 mt-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={Boolean(endpoint.allowSelfSigned)}
+                  onChange={(e) => onToggleAllowSelfSigned?.(e.target.checked)}
+                  disabled={pending}
+                  data-testid={`ai-endpoint-${endpoint.id}-allow-self-signed`}
+                />
+                <span className="text-[11px] leading-snug">
+                  Trust this endpoint's certificate without verifying it
+                  <span className="provider-status block text-[10.5px]">
+                    For a self-signed certificate you cannot get a CA file for. Traffic to this endpoint is still
+                    encrypted, but Gridman can no longer tell this server apart from one impersonating it — prefer the
+                    CA file above on any network you do not control.
+                  </span>
+                </span>
+              </label>
             </div>
 
             {/* API key */}

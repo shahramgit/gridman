@@ -14,6 +14,7 @@ const {
   providerLabel
 } = require('./providers');
 const registerChatIpc = require('./chat');
+const { tlsTrustGuidance } = require('./errors');
 
 const AI_DISABLED_MESSAGE = 'AI features are disabled. Enable them in Preferences > AI.';
 
@@ -246,7 +247,13 @@ const registerAiIpc = (mainWindow) => {
       }
       return { ok: false, error: `Could not verify endpoint (HTTP ${res.status})` };
     } catch (err) {
-      return { ok: false, error: err.message || 'Could not reach provider. Check your network connection.' };
+      // The Test button is where a user with a private CA lands first, so it is
+      // the most valuable place to say what is wrong and where to fix it.
+      const tlsHint = tlsTrustGuidance(err);
+      return {
+        ok: false,
+        error: tlsHint || err.message || 'Could not reach provider. Check your network connection.'
+      };
     }
   });
 

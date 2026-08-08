@@ -248,6 +248,15 @@ const preferencesSchema = Yup.object().shape({
         // Per-endpoint opt-in. Absent / false means the endpoint is configured
         // but dormant, so adding one never starts talking to it on its own.
         enabled: Yup.boolean().optional(),
+        // TLS, scoped to this endpoint. A path to a PEM CA bundle, and the
+        // escape hatch for a certificate no CA vouches for. Both exist so that
+        // reaching one internal gateway never requires turning
+        // `request.sslVerification` off, which would stop verifying
+        // certificates for every request the app makes, to every host.
+        // A path, not the certificate text: preferences.json is plaintext, and
+        // the file stays where the user's own tooling manages it.
+        caCertFilePath: Yup.string().max(4096).nullable(),
+        allowSelfSigned: Yup.boolean().optional(),
         models: Yup.array().of(
           Yup.object({
             id: Yup.string().required(),

@@ -21,6 +21,66 @@
 
 const SAFE_STATUS_FIELDS = ['statusCode', 'status'];
 
+/**
+ * Node's TLS failure codes for "this certificate does not verify". The two the
+ * user actually meets are UNABLE_TO_VERIFY_LEAF_SIGNATURE (a chain signed by a
+ * private CA — surfaced as "unable to verify the first certificate") and
+ * DEPTH_ZERO_SELF_SIGNED_CERT (a bare self-signed certificate).
+ */
+const TLS_TRUST_ERROR_CODES = new Set([
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'CERT_UNTRUSTED'
+]);
+
+const TLS_TRUST_MESSAGE_HINTS = [
+  'unable to verify the first certificate',
+  'self signed certificate',
+  'self-signed certificate'
+];
+
+const causeChain = function* (err) {
+  let node = err;
+  // Bounded: fetch wraps its cause, which wraps the TLS error, and a cycle in a
+  // hand-built error must not hang the handler.
+  for (let depth = 0; node && depth < 5; depth += 1) {
+    yield node;
+    node = node.cause;
+  }
+};
+
+/**
+ * True when a failure is "the certificate did not verify" rather than anything
+ * about the request. Checked by code first; the message strings are the
+ * fallback for a provider SDK that flattened the cause into text.
+ */
+const isTlsTrustError = (err) => {
+  for (const node of causeChain(err)) {
+    if (TLS_TRUST_ERROR_CODES.has(node?.code)) return true;
+  }
+  const message = String(err?.message || '').toLowerCase();
+  return TLS_TRUST_MESSAGE_HINTS.some((hint) => message.includes(hint));
+};
+
+/**
+ * What the user should be told when their endpoint's certificate does not
+ * verify. The raw SDK text ("Failed after 3 attempts. Last error: Cannot
+ * connect to API: unable to verify the first certificate") is accurate and
+ * completely unactionable — it does not say that this is fixable, or where.
+ *
+ * Returns null for every other failure, so nothing else is reworded.
+ */
+const tlsTrustGuidance = (err) => {
+  if (!isTlsTrustError(err)) return null;
+  return 'Gridman could not verify this endpoint\'s TLS certificate. If it is signed by your own CA, '
+    + 'select that CA certificate under the endpoint in Preferences > AI. If it is self-signed and you '
+    + 'have no CA file, tick "Trust this endpoint\'s certificate without verifying it" on the same '
+    + 'endpoint. Neither setting affects any other endpoint or any other request the app makes.';
+};
+
 const safeStatusOf = (err) => {
   for (const field of SAFE_STATUS_FIELDS) {
     const value = err?.[field];
@@ -57,4 +117,4 @@ const logAiWarning = (context, err) => {
   console.warn(`[AI] ${context}: ${describeAiError(err)}`);
 };
 
-module.exports = { describeAiError, logAiError, logAiWarning };
+module.exports = { describeAiError, logAiError, logAiWarning, isTlsTrustError, tlsTrustGuidance };

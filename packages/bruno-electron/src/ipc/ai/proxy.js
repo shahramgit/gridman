@@ -1,4 +1,5 @@
 const { preferencesUtil } = require('../../store/preferences');
+const { resolveAiTls } = require('./tls');
 
 /**
  * Proxy routing for AI traffic.
@@ -115,7 +116,8 @@ const proxySignature = (resolved) => {
   return `proxy:${resolved.url}:${resolved.token ? 'auth' : 'noauth'}`;
 };
 
-let cached = null; // { signature, fetch }
+// signature -> { fetch, dispatcher }, insertion-ordered for eviction.
+const cached = new Map();
 
 /**
  * undici is a DECLARED dependency of this package (`undici` in
@@ -133,58 +135,108 @@ let cached = null; // { signature, fetch }
  * be loaded we refuse rather than fall back to a direct fetch — going direct is
  * exactly the leak this module exists to prevent.
  */
-const buildDispatcher = (resolved) => {
+const buildDispatcher = (resolved, tlsOptions) => {
   let ProxyAgent;
+  let Agent;
   try {
-    ({ ProxyAgent } = require('undici'));
+    ({ ProxyAgent, Agent } = require('undici'));
   } catch (err) {
     ProxyAgent = null;
+    Agent = null;
   }
+
+  if (resolved.mode !== 'proxy') {
+    // No proxy, but the app's TLS configuration differs from undici's default,
+    // so we still need our own dispatcher. Unlike the proxy case this is NOT
+    // fail-closed: undici missing here means we fall back to global fetch, which
+    // is what shipped before TLS was honoured at all. Refusing instead would
+    // take AI away from users who have no certificate problem in the first place.
+    if (typeof Agent !== 'function') return null;
+    return new Agent({ connect: tlsOptions });
+  }
+
   if (typeof ProxyAgent !== 'function') {
     throw new Error(
       'A proxy is configured for this app, but AI requests cannot be routed through it on this build '
       + '(the HTTP proxy agent is unavailable). Refusing to send AI traffic outside the configured proxy.'
     );
   }
-  return new ProxyAgent(resolved.token ? { uri: resolved.url, token: resolved.token } : { uri: resolved.url });
+  return new ProxyAgent({
+    uri: resolved.url,
+    ...(resolved.token ? { token: resolved.token } : {}),
+    // TLS to the ORIGIN, through the tunnel — this is the handshake the model
+    // endpoint's certificate belongs to. `proxyTls` is deliberately left alone:
+    // the connection to the proxy itself is the corporate hop, and its
+    // certificate is not the one the user is configuring here.
+    ...(tlsOptions ? { requestTls: tlsOptions } : {})
+  });
+};
+
+// Bounded because the signature now varies per endpoint, not just per proxy: a
+// user with several internal endpoints on different CAs would otherwise build a
+// fresh dispatcher on every call. A dispatcher owns a connection pool, so a
+// discarded one has to be closed or its sockets stay open for the life of the
+// app — hence `destroy()` on eviction rather than just dropping the reference.
+const MAX_CACHED_DISPATCHERS = 8;
+
+const evictOldestDispatcher = () => {
+  const oldest = cached.keys().next();
+  if (oldest.done) return;
+  const entry = cached.get(oldest.value);
+  cached.delete(oldest.value);
+  try {
+    entry?.dispatcher?.destroy?.();
+  } catch (_err) {
+    // Nothing useful to do: the entry is already unreachable either way.
+  }
 };
 
 /**
- * Returns `{ fetch, signature }`.
+ * Returns `{ fetch, signature }` for one provider.
  *
- * `fetch` is null when no proxy applies (callers then leave the SDK on global
- * fetch). THROWS when a proxy is configured but cannot be honoured — callers
- * must let that propagate so the request never leaves the machine.
+ * `fetch` is null when neither the proxy nor the TLS configuration differs from
+ * undici's defaults (callers then leave the SDK on global fetch). THROWS when a
+ * proxy is configured but cannot be honoured — callers must let that propagate
+ * so the request never leaves the machine.
+ *
+ * `providerId` selects the per-endpoint TLS overrides. Omitting it is safe and
+ * means "app-wide settings only", which is the correct answer for the hosted
+ * providers and for any caller that is not talking to a specific endpoint.
  */
-const getAiFetch = () => {
+const getAiFetch = ({ providerId } = {}) => {
   const resolved = resolveAiProxy();
 
   if (resolved.mode === 'refuse') {
     throw new Error(resolved.reason);
   }
 
-  const signature = proxySignature(resolved);
+  const { options: tlsOptions, signature: tlsSig } = resolveAiTls(providerId);
+  const signature = `${proxySignature(resolved)}|${tlsSig}`;
 
-  if (resolved.mode === 'direct') {
-    cached = null;
+  // Nothing to apply: no proxy, and TLS matches undici's own defaults. Callers
+  // leave the SDK on global fetch, so an ordinary install builds no dispatcher.
+  if (resolved.mode === 'direct' && !tlsOptions) {
     return { fetch: null, signature };
   }
 
-  if (cached?.signature === signature) {
-    return { fetch: cached.fetch, signature };
-  }
+  const hit = cached.get(signature);
+  if (hit) return { fetch: hit.fetch, signature };
 
-  const dispatcher = buildDispatcher(resolved);
+  const dispatcher = buildDispatcher(resolved, tlsOptions);
+  if (!dispatcher) {
+    return { fetch: null, signature };
+  }
   // Resolve globalThis.fetch at call time so a test spy (or an Electron
   // override) is honoured, and so we never capture a stale reference.
   const proxiedFetch = (input, init) => globalThis.fetch(input, { ...(init || {}), dispatcher });
 
-  cached = { signature, fetch: proxiedFetch };
+  if (cached.size >= MAX_CACHED_DISPATCHERS) evictOldestDispatcher();
+  cached.set(signature, { fetch: proxiedFetch, dispatcher });
   return { fetch: proxiedFetch, signature };
 };
 
 const clearAiFetchCache = () => {
-  cached = null;
+  while (cached.size) evictOldestDispatcher();
 };
 
 module.exports = {

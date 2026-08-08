@@ -31,6 +31,8 @@ const aiPreferencesSchema = Yup.object().shape({
       id: Yup.string().required(),
       name: Yup.string().max(120).nullable(),
       baseURL: Yup.string().max(2048).nullable(),
+      caCertFilePath: Yup.string().max(4096).nullable(),
+      allowSelfSigned: Yup.boolean(),
       models: Yup.array().of(
         Yup.object().shape({
           id: Yup.string().required(),
@@ -372,6 +374,8 @@ const AI = () => {
         onToggleModel={handleToggleModel}
         onChangeName={(name) => updateEndpoint(endpoint.id, { name })}
         onChangeBaseURL={(baseURL) => updateEndpoint(endpoint.id, { baseURL })}
+        onChangeCaCertFilePath={(caCertFilePath) => updateEndpoint(endpoint.id, { caCertFilePath })}
+        onToggleAllowSelfSigned={(allowSelfSigned) => updateEndpoint(endpoint.id, { allowSelfSigned })}
         onAddModel={(model) => updateEndpointModels(endpoint.id, (models) => [...models, model])}
         onRemoveModel={(modelId) => updateEndpointModels(endpoint.id, (models) => models.filter((m) => m.id !== modelId))}
         onUpdateModel={(modelId, patch) =>
