@@ -26,7 +26,6 @@ import {
   CollectionFormat
 } from './types';
 import { DEFAULT_COLLECTION_FORMAT } from './constants';
-import { bruRequestParseAndRedactBodyData } from './formats/bru/utils/request-parse-and-redact-body-data';
 
 // request
 export const parseRequest = (content: string, options: ParseOptions = { format: DEFAULT_COLLECTION_FORMAT }): any => {
@@ -38,12 +37,17 @@ export const parseRequest = (content: string, options: ParseOptions = { format: 
   throw new Error(`Unsupported format: ${options.format}`);
 };
 
-export const parseRequestAndRedactBody = (content: string, options: ParseOptions = { format: 'bru' }): any => {
-  if (options.format === 'bru') {
-    return bruRequestParseAndRedactBodyData(content);
-  }
-  throw new Error(`Unsupported format: ${options.format}`);
-};
+/**
+ * There is deliberately no `parseRequestAndRedactBody` export here any more.
+ *
+ * It never returned a parsed request - it returned the REDACTION: a copy of the file with
+ * placeholders in it, plus the hook that undoes them. Its one caller (bruno-electron's
+ * parseLargeRequestWithRedaction) used to stitch the bodies back by hand from
+ * `extractedBodyContent`, and that field is now always empty, so calling it the way its own
+ * contract said left the placeholder text sitting in `request.body.json`. Redaction is an
+ * implementation detail of `parseRequest` / `parseRequestViaWorker` now - they put the
+ * payloads back before returning - and nothing outside this package referenced it.
+ */
 
 export const stringifyRequest = (requestObj: BrunoItem, options: StringifyOptions = { format: DEFAULT_COLLECTION_FORMAT }): string => {
   if (options.format === 'bru') {

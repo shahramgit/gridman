@@ -8,10 +8,42 @@ import {
   jsonToCollectionBru as _jsonToCollectionBru
 } from '@usebruno/lang';
 import { getOauth2AdditionalParameters } from './utils/oauth2-additional-params';
+import { bruRequestParseAndRedactBodyData } from './utils/request-parse-and-redact-body-data';
+
+/**
+ * Runs the grammar over a copy of the file whose leaf payloads - saved example bodies,
+ * request bodies, docs/tests/scripts - have been swapped for a handful of probe lines, then
+ * puts the original text back. The grammar's cost is per input character (a PosInfo per
+ * position and a CST node per character), so a 2.3 MB request with a 2.2 MB saved example
+ * costs what its 100 KB of structure costs instead of 9 s and 3.3 GB.
+ *
+ * Every failure mode ends up on the same line: parse what is actually on disk. That covers
+ * a file whose shape the redactor does not recognise, a redacted copy that fails to parse
+ * where the original may not, and a restore that cannot account for every probe.
+ */
+const bruRequestToJson = (data: string): any => {
+  const redaction = bruRequestParseAndRedactBodyData(data);
+  if (!redaction.redacted) {
+    return bruToJsonV2(data);
+  }
+
+  let json;
+  try {
+    json = bruToJsonV2(redaction.bruFileStringWithRedactedBody);
+  } catch (error) {
+    return bruToJsonV2(data);
+  }
+
+  if (!redaction.restoreRedactedBodyData(json)) {
+    return bruToJsonV2(data);
+  }
+
+  return json;
+};
 
 export const parseBruRequest = (data: string | any, parsed: boolean = false): any => {
   try {
-    const json = parsed ? data : bruToJsonV2(data);
+    const json = parsed ? data : bruRequestToJson(data);
 
     let requestType = _.get(json, 'meta.type');
     switch (requestType) {
