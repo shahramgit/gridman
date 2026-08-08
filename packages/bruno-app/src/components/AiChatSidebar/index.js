@@ -45,13 +45,26 @@ import {
   updateCollectionRequestScript,
   updateCollectionResponseScript,
   updateCollectionTests,
-  updateCollectionDocs
+  updateCollectionDocs,
+  requestUrlChanged,
+  updateRequestMethod,
+  setRequestHeaders,
+  updateRequestBody,
+  updateRequestBodyMode,
+  updateAuth
 } from 'providers/ReduxStore/slices/collections';
+import { newHttpRequest } from 'providers/ReduxStore/slices/collections/actions';
 import { updateIsDragging } from 'providers/ReduxStore/slices/app';
 import { findItemInCollection, findItemInCollectionByPathname, isItemAFolder, isItemARequest } from 'utils/collections';
 
 import StyledWrapper from './StyledWrapper';
 import DiffView from './DiffView';
+import RequestChangeView from './RequestChangeView';
+import WorkflowChangeView from './WorkflowChangeView';
+import { graphToSteps } from 'utils/workflows/graphToSteps';
+import { saveWorkflowDoc } from 'providers/ReduxStore/slices/workflows';
+import toast from 'react-hot-toast';
+import { sanitizeName } from 'utils/common/regex';
 import AssistantCodeBlock from './AssistantCodeBlock';
 import {
   PROCESSING_STAGES,
@@ -217,7 +230,7 @@ const HistoryPopover = ({ items, activeId, onPick, onDelete, onClose }) => {
  *   3. keep the existing `shell.openExternal` branch for http/https urls.
  * Until all three land, shipping the button would ship a dead control.
  */
-const AiChatSidebar = ({ collection }) => {
+const AiChatSidebar = ({ collection, workflow = null }) => {
   const dispatch = useDispatch();
   const [input, _setInput] = useState(() => draftInputCache);
   const setInput = useCallback((value) => {
@@ -267,6 +280,17 @@ const AiChatSidebar = ({ collection }) => {
 
   const aiContext = useMemo(() => {
     if (!focusedTab || !collection) return null;
+    // Checked before the item branches: a workflow tab has no collection item
+    // at all, so it would otherwise fall through to the collection-root case
+    // and get a prompt about scripts and docs it has neither of.
+    if (workflow?.pathname) {
+      return {
+        kind: 'workflow',
+        workflow,
+        pathname: workflow.pathname,
+        name: workflow.doc?.name || workflow.pathname.split('/').pop() || 'Workflow'
+      };
+    }
     if (activeItem && isItemARequest(activeItem)) {
       return {
         kind: 'request',
@@ -287,7 +311,7 @@ const AiChatSidebar = ({ collection }) => {
     // the collection root so the AI button always opens a useful chat instead
     // of a no-op.
     return { kind: 'collection', pathname: collection.pathname || '', name: collection.name || 'Untitled Collection' };
-  }, [focusedTab, collection, activeItem]);
+  }, [focusedTab, collection, activeItem, workflow]);
 
   const currentChat = allChats[activeTabUid] || { messages: [], isLoading: false, error: null, historyList: [] };
   const { messages, isLoading, error, historyList, conversationId } = currentChat;
@@ -349,6 +373,7 @@ const AiChatSidebar = ({ collection }) => {
   const requestPaneTab = focusedTab?.requestPaneTab;
   const scriptPaneTab = focusedTab?.scriptPaneTab;
   const contentType = useMemo(() => {
+    if (aiContext?.kind === 'workflow') return 'workflow';
     if (aiContext?.kind === 'folder') {
       const sub = collection?.folderLevelSettingsSelectedTab?.[aiContext.folder.uid];
       if (sub === 'test') return 'tests';
@@ -467,6 +492,20 @@ const AiChatSidebar = ({ collection }) => {
   }, [collection, aiContext, redactVariables]);
 
   const aiRequests = useMemo(() => buildAiRequestsPayload(collection), [collection]);
+
+  /**
+   * The open workflow, linearised into the step list the assistant authors in.
+   *
+   * `exact` is the honest part: a user can wire shapes a step list cannot
+   * express (an error port, a join, a backward jump). When that is the case the
+   * model is told so and writing is refused, because a replacement would
+   * silently flatten the structure the user built.
+   */
+  const aiWorkflow = useMemo(() => {
+    if (aiContext?.kind !== 'workflow' || !workflow?.doc) return null;
+    const { steps, exact, reason } = graphToSteps(workflow.doc);
+    return { name: workflow.doc.name || '', steps, exact, reason };
+  }, [aiContext, workflow]);
 
   const chatsWithMessages = useMemo(() => {
     if (!collection) return [];
@@ -593,7 +632,7 @@ const AiChatSidebar = ({ collection }) => {
 
     try {
       await dispatch(
-        sendAiMessage(activeTabUid, text, allContent, requestContext, modelForSend, contentType, aiVariables, aiRequests)
+        sendAiMessage(activeTabUid, text, allContent, requestContext, modelForSend, contentType, aiVariables, aiRequests, aiWorkflow)
       );
       setProcessingStage('applying');
       setTimeout(() => setProcessingStage(null), 500);
@@ -707,6 +746,205 @@ const AiChatSidebar = ({ collection }) => {
         messageIndex,
         status: 'rejected',
         writeIndex
+      })
+    );
+  };
+
+  /**
+   * `{ mode, content }` from the model -> the full body object the store keeps.
+   *
+   * The store holds every mode's slot side by side (json/text/xml/... plus the
+   * array-shaped ones) and reads whichever `mode` names. Handing it a bare
+   * `{ mode, content }` would leave those slots undefined and the request pane
+   * renders from them.
+   */
+  const buildRequestBodyPayload = (body) => {
+    const mode = body?.mode || 'none';
+    const base = {
+      mode,
+      json: null,
+      text: null,
+      xml: null,
+      sparql: null,
+      multipartForm: [],
+      formUrlEncoded: [],
+      file: []
+    };
+    if (mode === 'none' || body?.content === undefined) return base;
+    // Only the text-shaped modes can carry the string the tool schema allows;
+    // the others are tables the model has no way to express here.
+    if (['json', 'text', 'xml', 'sparql'].includes(mode)) {
+      return { ...base, [mode]: body.content };
+    }
+    if (mode === 'graphql') {
+      return { ...base, graphql: { query: body.content, variables: '' } };
+    }
+    return base;
+  };
+
+  /**
+   * The current shape of the open request, in the same vocabulary the model
+   * proposes in — so RequestChangeView can show old-vs-new without either side
+   * knowing about the other's field names.
+   */
+  const activeRequestShape = useMemo(() => {
+    if (aiContext?.kind !== 'request') return null;
+    const req = aiContext.item?.draft?.request || aiContext.item?.request || {};
+    return {
+      method: req.method || '',
+      url: req.url || '',
+      headers: (req.headers || []).map((h) => ({
+        name: h.name,
+        value: h.value,
+        ...(h.enabled === false ? { enabled: false } : {})
+      })),
+      body: { mode: req.body?.mode || 'none', content: req.body?.[req.body?.mode] || '' },
+      auth: { mode: req.auth?.mode || 'none' }
+    };
+  }, [aiContext]);
+
+  /**
+   * Accept a structured request proposal.
+   *
+   * Neither branch writes to disk. A create becomes a TRANSIENT request — the
+   * same unsaved request the sidebar's + button makes — and an update goes into
+   * `item.draft`, which is what every editor in the app does while you type. In
+   * both cases the user still performs the save, so accepting here can never
+   * put a file into their collection (or their git working tree) on its own.
+   */
+  const handleApplyRequestChange = async (change, messageIndex, requestChangeIndex) => {
+    if (!change || !collection) return;
+
+    const markApplied = () =>
+      dispatch(
+        setMessageCodeStatus({
+          tabUid: activeTabUid,
+          messageIndex,
+          status: 'accepted',
+          requestChangeIndex
+        })
+      );
+
+    if (change.op === 'create') {
+      // A folder the model named must exist and must be a folder in THIS
+      // collection; anything else falls back to the collection root rather than
+      // guessing, so a stale pathname cannot redirect the file somewhere else.
+      let parentItemUid;
+      if (change.folderPathname) {
+        const folder = findItemInCollectionByPathname(collection, change.folderPathname);
+        if (folder && isItemAFolder(folder)) parentItemUid = folder.uid;
+      }
+
+      try {
+        await dispatch(
+          newHttpRequest({
+            requestName: change.name || 'Untitled',
+            filename: sanitizeName(change.name || 'Untitled'),
+            requestType: 'http-request',
+            requestUrl: change.url || '',
+            requestMethod: change.method || 'GET',
+            collectionUid: collection.uid,
+            itemUid: parentItemUid,
+            headers: (change.headers || []).map((h) => ({
+              name: h.name,
+              value: h.value,
+              enabled: h.enabled !== false
+            })),
+            body: buildRequestBodyPayload(change.body),
+            auth: { mode: change.auth?.mode || 'none' },
+            isTransient: true
+          })
+        );
+        markApplied();
+      } catch (err) {
+        // Message-free for the same reason as the send path: the rejection text
+        // can echo the request back at us. The user sees the toast, not a log.
+        toast.error('Could not create the request');
+      }
+      return;
+    }
+
+    if (change.op !== 'update' || aiContext?.kind !== 'request') return;
+
+    const payload = { itemUid: aiContext.item.uid, collectionUid: collection.uid };
+    if (change.url !== undefined) dispatch(requestUrlChanged({ ...payload, url: change.url }));
+    if (change.method !== undefined) dispatch(updateRequestMethod({ ...payload, method: change.method }));
+    if (change.headers !== undefined) {
+      dispatch(
+        setRequestHeaders({
+          ...payload,
+          headers: change.headers.map((h) => ({ name: h.name, value: h.value, enabled: h.enabled !== false }))
+        })
+      );
+    }
+    if (change.body !== undefined) {
+      const mode = change.body?.mode || 'none';
+      dispatch(updateRequestBodyMode({ ...payload, mode }));
+      if (mode !== 'none' && change.body?.content !== undefined) {
+        dispatch(updateRequestBody({ ...payload, content: change.body.content }));
+      }
+    }
+    if (change.auth !== undefined) {
+      dispatch(updateAuth({ ...payload, mode: change.auth?.mode || 'none', content: {} }));
+    }
+    markApplied();
+  };
+
+  /**
+   * Accept a proposed workflow.
+   *
+   * Saves `steps` with `nodes` cleared, which makes the main process run the
+   * SAME v1 -> v2 normalisation that reads legacy workflow documents
+   * (`migrateStepsToGraph`) — so layout, wiring, the loop body's back edge and
+   * the condition branches all come from code that already had to be correct,
+   * not from anything written for the assistant.
+   *
+   * Unlike a request proposal this does write the file, because a workflow has
+   * no draft state to hold it in. The save path records an undo entry first, so
+   * the user can take it back.
+   */
+  const handleApplyWorkflowChange = async (change, messageIndex, workflowChangeIndex) => {
+    if (!change || !workflow?.pathname || !workflow?.doc) return;
+    try {
+      await dispatch(
+        saveWorkflowDoc(workflow.pathname, {
+          ...workflow.doc,
+          steps: change.steps,
+          nodes: undefined,
+          connections: undefined
+        })
+      );
+      dispatch(
+        setMessageCodeStatus({
+          tabUid: activeTabUid,
+          messageIndex,
+          status: 'accepted',
+          workflowChangeIndex
+        })
+      );
+    } catch (err) {
+      toast.error('Could not apply the workflow');
+    }
+  };
+
+  const handleRejectWorkflowChange = (messageIndex, workflowChangeIndex) => {
+    dispatch(
+      setMessageCodeStatus({
+        tabUid: activeTabUid,
+        messageIndex,
+        status: 'rejected',
+        workflowChangeIndex
+      })
+    );
+  };
+
+  const handleRejectRequestChange = (messageIndex, requestChangeIndex) => {
+    dispatch(
+      setMessageCodeStatus({
+        tabUid: activeTabUid,
+        messageIndex,
+        status: 'rejected',
+        requestChangeIndex
       })
     );
   };
@@ -904,7 +1142,54 @@ const AiChatSidebar = ({ collection }) => {
                   );
                 })}
 
-              {!isStreaming && !msg.writes && msg.code && msg.originalCode && msg.code !== msg.originalCode && (
+              {!isStreaming
+                && msg.requestChanges?.length > 0
+                && msg.requestChanges.map((change, changeIdx) => {
+                  // An update proposal is only meaningful against the request
+                  // it was made for. If the user has moved to a different tab,
+                  // applying it would silently edit something else.
+                  const wrongTarget = change.op === 'update' && aiContext?.kind !== 'request';
+                  return (
+                    <RequestChangeView
+                      key={`request-change-${changeIdx}`}
+                      change={change}
+                      current={change.op === 'update' ? activeRequestShape : null}
+                      warning={wrongTarget ? 'No request is open — reopen the request this was written for' : null}
+                      disableAccept={wrongTarget}
+                      onAccept={() => handleApplyRequestChange(change, index, changeIdx)}
+                      onReject={() => handleRejectRequestChange(index, changeIdx)}
+                      status={change.status}
+                    />
+                  );
+                })}
+
+              {!isStreaming
+                && msg.workflowChanges?.length > 0
+                && msg.workflowChanges.map((change, changeIdx) => {
+                  const notRead = !change.wasRead;
+                  // Refusing here rather than flattening: the linearisation
+                  // told us this graph holds shapes a step list cannot express.
+                  const lossy = aiWorkflow && aiWorkflow.exact === false;
+                  return (
+                    <WorkflowChangeView
+                      key={`workflow-change-${changeIdx}`}
+                      change={change}
+                      warning={
+                        lossy
+                          ? `Cannot replace this workflow — ${aiWorkflow.reason}. Applying would drop that.`
+                          : notRead
+                            ? 'The workflow was not read first — this may drop steps'
+                            : null
+                      }
+                      disableAccept={Boolean(lossy) || notRead}
+                      onAccept={() => handleApplyWorkflowChange(change, index, changeIdx)}
+                      onReject={() => handleRejectWorkflowChange(index, changeIdx)}
+                      status={change.status}
+                    />
+                  );
+                })}
+
+              {!isStreaming && !msg.writes && !msg.requestChanges && !msg.workflowChanges && msg.code && msg.originalCode && msg.code !== msg.originalCode && (
                 <DiffView
                   originalCode={msg.originalCode || ''}
                   newCode={msg.code}

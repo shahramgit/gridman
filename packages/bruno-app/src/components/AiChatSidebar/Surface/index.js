@@ -1,8 +1,8 @@
 import React from 'react';
-import find from 'lodash/find';
 import get from 'lodash/get';
 import { useSelector } from 'react-redux';
 import AiChatSidebar from '../index';
+import { useAiTarget } from '../useAiTarget';
 
 /**
  * The single mount point for the AI chat panel.
@@ -23,17 +23,14 @@ import AiChatSidebar from '../index';
 const AiChatSurface = () => {
   const aiEnabled = useSelector((state) => get(state?.app?.preferences, 'ai.enabled', false));
   const isOpen = useSelector((state) => Boolean(state?.ai?.isOpen));
-  const activeTabUid = useSelector((state) => state?.tabs?.activeTabUid);
-  const tabs = useSelector((state) => state?.tabs?.tabs);
-  const collections = useSelector((state) => state?.collections?.collections);
+  // Resolves `ai.enabled` too, but the cheap flag is still read first so the
+  // feature-off path does no tab or collection work at all.
+  const target = useAiTarget();
 
   if (!aiEnabled || !isOpen) return null;
+  if (!target) return null;
 
-  const focusedTab = find(tabs, (t) => t.uid === activeTabUid);
-  const collection = find(collections, (c) => c.uid === focusedTab?.collectionUid);
-  if (!collection) return null;
-
-  return <AiChatSidebar collection={collection} />;
+  return <AiChatSidebar collection={target.collection} workflow={target.workflow || null} />;
 };
 
 export default AiChatSurface;

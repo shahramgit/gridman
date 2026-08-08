@@ -1111,7 +1111,7 @@ export const aiSlice = createSlice({
       }
     },
     finalizeAiStreamingMessage: (state, action) => {
-      const { tabUid, content, code, originalCode, contentType, writes, cancelled } = action.payload;
+      const { tabUid, content, code, originalCode, contentType, writes, requestChanges, workflowChanges, cancelled } = action.payload;
       const chat = state.chats[tabUid];
       const last = chat?.messages[chat.messages.length - 1];
       if (last?.role === 'assistant') {
@@ -1120,14 +1120,28 @@ export const aiSlice = createSlice({
         last.originalCode = originalCode;
         last.contentType = contentType || 'docs';
         last.writes = writes || null;
+        // Structured request proposals travel beside the text writes: one turn
+        // can legitimately create a request AND write its tests.
+        last.requestChanges = requestChanges || null;
+        last.workflowChanges = workflowChanges || null;
         last.isStreaming = false;
         last.cancelled = Boolean(cancelled);
       }
     },
     markAiMessageCodeStatus: (state, action) => {
-      const { tabUid, messageIndex, status, writeIndex } = action.payload;
+      const { tabUid, messageIndex, status, writeIndex, requestChangeIndex, workflowChangeIndex } = action.payload;
       const message = state.chats[tabUid]?.messages[messageIndex];
       if (message?.role !== 'assistant') return;
+      // Checked before writeIndex: a message can carry both, and a request
+      // proposal accepted at index 0 must not mark the text write at index 0.
+      if (requestChangeIndex !== undefined && message.requestChanges?.[requestChangeIndex]) {
+        message.requestChanges[requestChangeIndex].status = status;
+        return;
+      }
+      if (workflowChangeIndex !== undefined && message.workflowChanges?.[workflowChangeIndex]) {
+        message.workflowChanges[workflowChangeIndex].status = status;
+        return;
+      }
       if (writeIndex !== undefined && message.writes?.[writeIndex]) {
         message.writes[writeIndex].status = status;
       } else {
@@ -1237,7 +1251,7 @@ export const persistCurrentConversation = (tabUid) => async (_dispatch, getState
  * talk to a provider, and it holds even if a caller forgets to check.
  */
 export const sendAiMessage
-  = (tabUid, userMessage, allContent, requestContext, model, contentType = 'docs', variables = [], requests = []) =>
+  = (tabUid, userMessage, allContent, requestContext, model, contentType = 'docs', variables = [], requests = [], workflow = null) =>
     async (dispatch, getState) => {
       const state = getState();
       if (!get(state, 'app.preferences.ai.enabled', false)) return;
@@ -1309,7 +1323,9 @@ export const sendAiMessage
             code: data.code,
             originalCode: resolvedOriginalCode,
             contentType: resolvedType,
-            writes: data.writes || null
+            writes: data.writes || null,
+            requestChanges: data.requestChanges || null,
+            workflowChanges: data.workflowChanges || null
           });
           resolve();
         };
@@ -1376,6 +1392,10 @@ export const sendAiMessage
             requestContext,
             variables,
             requests,
+            // Not in OUTBOUND_VERBATIM_KEYS on purpose: a workflow carries
+            // setvars values and script code the user typed, so it goes through
+            // the same masking as everything else here.
+            workflow,
             requestId,
             model
           })

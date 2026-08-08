@@ -54,7 +54,7 @@ const Main = require('pages/Bruno').default;
 
 const collection = { uid: 'col-1', name: 'Demo', pathname: '/c', items: [] };
 
-const makeStore = ({ aiEnabled, isOpen = false } = {}) =>
+const makeStore = ({ aiEnabled, isOpen = false, tabCollectionUid = 'col-1' } = {}) =>
   configureStore({
     reducer: {
       ai: aiReducer,
@@ -66,7 +66,7 @@ const makeStore = ({ aiEnabled, isOpen = false } = {}) =>
           showManageWorkspacePage: false
         }
       ) => state,
-      tabs: (state = { tabs: [{ uid: 'tab-1', collectionUid: 'col-1' }], activeTabUid: 'tab-1' }) => state,
+      tabs: (state = { tabs: [{ uid: 'tab-1', collectionUid: tabCollectionUid }], activeTabUid: 'tab-1' }) => state,
       collections: (state = { collections: [collection], saveTransientRequestModals: [] }) => state,
       apiSpec: (state = { activeApiSpecUid: null }) => state,
       logs: (state = { isConsoleOpen: false }) => state
@@ -90,6 +90,21 @@ describe('the AI feature is mounted in the app', () => {
   it('renders the toggle when ai.enabled is true', () => {
     renderApp({ aiEnabled: true });
     expect(screen.getByTestId('ai-toggle-button')).toBeInTheDocument();
+  });
+
+  // A workflow tab carries the WORKSPACE uid as its collectionUid, so it
+  // resolves to no collection. The panel already bailed on that; the button did
+  // not, which is how a visible toggle came to open nothing.
+  it('renders NO toggle on a tab that resolves to no collection', () => {
+    renderApp({ aiEnabled: true, tabCollectionUid: 'workspace-1' });
+    expect(screen.queryByTestId('ai-toggle-button')).not.toBeInTheDocument();
+  });
+
+  it('keeps the button and the panel in agreement on such a tab', () => {
+    // The failure this locks out: button rendered, panel did not.
+    renderApp({ aiEnabled: true, isOpen: true, tabCollectionUid: 'workspace-1' });
+    expect(screen.queryByTestId('ai-toggle-button')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-docked-panel')).not.toBeInTheDocument();
   });
 
   it('renders the docked panel when the feature is on and the panel is open', () => {

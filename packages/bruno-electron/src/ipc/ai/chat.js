@@ -102,6 +102,155 @@ const SEARCH_REQUESTS_PARAMS = z.object({
     .describe('Substring to match against request name, URL, pathname, folder path (case-insensitive), or an exact HTTP method like GET/POST.')
 });
 
+/**
+ * Structured request edits.
+ *
+ * Until these existed the assistant could write a request's tests, scripts and
+ * docs but not the request — so "create a request for X", the most obvious
+ * thing to ask an API client's assistant, came back as a paragraph telling the
+ * user what to type.
+ *
+ * The contract is the one write_content already follows and is the reason this
+ * is safe: NOTHING here touches disk. The tool records a proposal, the renderer
+ * shows it, and the user accepts it. On accept a create becomes a TRANSIENT
+ * request (the same unsaved-request concept the sidebar's + button uses) and an
+ * update becomes an unsaved draft — so even an accepted proposal still needs
+ * the user's own save before anything is written into their collection.
+ *
+ * Credential-shaped fields are deliberately absent. `auth.mode` is settable
+ * because "inherit from the collection" is a genuine, valueless choice; auth
+ * VALUES are not, because the model cannot see a real credential (redaction) so
+ * anything it produced would be a guess, and a wrong guess here sends the
+ * user's request somewhere with the wrong identity.
+ */
+const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+
+const HEADER_SCHEMA = z.object({
+  name: z.string().max(200),
+  value: z.string().max(4096),
+  enabled: z.boolean().optional().describe('Defaults to true.')
+});
+
+const BODY_SCHEMA = z.object({
+  mode: z
+    .enum(['none', 'json', 'text', 'xml', 'sparql', 'formUrlEncoded', 'multipartForm', 'graphql'])
+    .describe('Body mode. Use \'none\' for GET-style requests.'),
+  content: z
+    .string()
+    .max(100000)
+    .optional()
+    .describe('Raw body text for the json/text/xml/sparql modes. Omit for \'none\'.')
+});
+
+const AUTH_SCHEMA = z.object({
+  mode: z
+    .enum(['none', 'inherit'])
+    .describe('Only \'none\' or \'inherit\' (inherit the collection/folder auth). Credentials cannot be set from here — tell the user to fill those in the Auth tab.')
+});
+
+const CREATE_REQUEST_PARAMS = z.object({
+  name: z.string().max(200).describe('Display name for the request, e.g. "Tehran Weather".'),
+  method: z.enum(HTTP_METHODS).describe('HTTP method.'),
+  url: z.string().max(4096).describe('Full URL. Query parameters written here are parsed into the params table automatically — do not send them separately.'),
+  folderPathname: z
+    .string()
+    .max(4096)
+    .optional()
+    .describe('Absolute pathname of an existing folder in this collection to create it in, exactly as returned by list_requests / search_requests. Omit for the collection root.'),
+  headers: z.array(HEADER_SCHEMA).max(50).optional(),
+  body: BODY_SCHEMA.optional(),
+  auth: AUTH_SCHEMA.optional(),
+  docs: z.string().max(50000).optional().describe('Optional markdown documentation to create alongside the request.')
+});
+
+const UPDATE_REQUEST_PARAMS = z.object({
+  method: z.enum(HTTP_METHODS).optional(),
+  url: z.string().max(4096).optional().describe('Full replacement URL. Query parameters are re-parsed into the params table.'),
+  headers: z
+    .array(HEADER_SCHEMA)
+    .max(50)
+    .optional()
+    .describe('COMPLETE replacement header list, not a patch — omit the field entirely to leave headers alone.'),
+  body: BODY_SCHEMA.optional(),
+  auth: AUTH_SCHEMA.optional()
+});
+
+/**
+ * Workflow authoring.
+ *
+ * A workflow is stored as a node GRAPH — ids, ports, x/y coordinates, explicit
+ * connection records including a loop body's edge back into its own loop node.
+ * Asking a model to emit that is asking it to be a layout engine, and every
+ * mistake is an unrunnable flow.
+ *
+ * So the model writes an ordered STEP LIST instead, and Gridman converts it.
+ * That conversion is not new code written for the AI: it is the same
+ * `migrateStepsToGraph` normalisation that reads v1 workflow documents, which
+ * runs on save whenever a document has `steps` and no `nodes`. The assistant
+ * gets correct layout and wiring for free, and shares a code path that already
+ * had to be right.
+ */
+const WORKFLOW_STEP_TYPES = ['request', 'map', 'setvars', 'condition', 'delay', 'loop', 'script'];
+
+// The step schema is recursive (condition/loop nest a body), and depth is
+// bounded so a model that nests forever produces a validation error rather than
+// a document that blows the stack on normalisation.
+const workflowStepSchema = (depth) => {
+  const base = {
+    type: z.enum(WORKFLOW_STEP_TYPES),
+    name: z.string().max(200).optional(),
+    ref: z
+      .object({
+        collection: z.string().max(4096).describe('Collection pathname, verbatim from list_requests.'),
+        request: z.string().max(4096).describe('Request pathname, verbatim from list_requests.')
+      })
+      .optional()
+      .describe('request steps only.'),
+    mappings: z
+      .array(
+        z.object({
+          from: z.enum(['body', 'header', 'status']),
+          path: z.string().max(500),
+          target: z.string().max(200).describe('Flow variable to write, referenced later as {{target}}.')
+        })
+      )
+      .max(50)
+      .optional()
+      .describe('map steps only.'),
+    assignments: z
+      .array(z.object({ name: z.string().max(200), value: z.string().max(4096) }))
+      .max(50)
+      .optional()
+      .describe('setvars steps only.'),
+    expression: z.string().max(2000).optional().describe('condition steps only.'),
+    onFalse: z.enum(['stop', 'continue']).optional().describe('condition steps only.'),
+    mode: z.enum(['list', 'count']).optional().describe('loop steps only.'),
+    source: z.string().max(200).optional().describe('loop steps, list mode: the array flow variable to iterate.'),
+    itemVar: z.string().max(200).optional().describe('loop steps only. Defaults to "item".'),
+    count: z.string().max(200).optional().describe('loop steps, count mode. May be a {{template}}.'),
+    breakExpr: z.string().max(2000).optional().describe('loop steps only: truthy exits the loop early.'),
+    durationMs: z.number().int().min(0).max(300000).optional().describe('delay steps only.'),
+    code: z.string().max(50000).optional().describe('script steps only.'),
+    assignTo: z.string().max(200).optional().describe('script steps only: flow variable for the result.')
+  };
+  if (depth > 0) {
+    base.steps = z
+      .array(z.lazy(() => workflowStepSchema(depth - 1)))
+      .max(50)
+      .optional()
+      .describe('Nested body for LOOP steps only. A condition does not nest — it gates the steps that follow it.');
+  }
+  return z.object(base);
+};
+
+const READ_WORKFLOW_PARAMS = z.object({});
+const WRITE_WORKFLOW_PARAMS = z.object({
+  steps: z
+    .array(workflowStepSchema(4))
+    .max(100)
+    .describe('The COMPLETE ordered step list. A replacement, not a patch. Do not include a start step.')
+});
+
 const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEnabled }) => {
   ipcMain.on('renderer:ai-chat-stop', (_event, { requestId } = {}) => {
     const controller = activeStreams.get(requestId);
@@ -112,7 +261,7 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
   });
 
   ipcMain.on('renderer:ai-chat-stream', async (_event, payload) => {
-    const { messages, allContent, contentType, requestContext, variables, requests, requestId, model: modelId, appEnabled } = payload || {};
+    const { messages, allContent, contentType, requestContext, variables, requests, requestId, model: modelId, appEnabled, workflow } = payload || {};
 
     const send = (channel, data) => {
       if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
@@ -163,7 +312,10 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
     const security = getSecurityPrefs();
 
     const readState = {};
+    let workflowWasRead = false;
     const writeResults = [];
+    const requestChanges = [];
+    const workflowChanges = [];
 
     const tools = {
       read_content: {
@@ -250,6 +402,66 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
           const result = searchRequests(requests, query);
           return formatSearchRequestsResult(result, query, { security });
         }
+      },
+      create_request: {
+        description: 'Propose a NEW request in this collection. Does not create anything by itself — the user sees a preview and accepts it, and an accepted request is created UNSAVED so they still choose where it lands. Put query parameters in the url; they are parsed into the params table. Use this instead of telling the user what to type by hand.',
+        inputSchema: CREATE_REQUEST_PARAMS,
+        execute: async (input) => {
+          requestChanges.push({ op: 'create', ...input });
+          return 'Success: the new request is prepared for user review. The user will see a preview and can accept or reject it. Do not repeat the URL in your reply — describe what the request does.';
+        }
+      },
+      update_request: {
+        description: 'Propose changes to the request the user currently has open — url, method, headers, body, or auth mode. Does not change anything by itself: the user sees a preview and accepts, and an accepted change becomes an unsaved draft they still have to save. Only the ACTIVE request can be changed; to change a different one, ask the user to open it.',
+        inputSchema: UPDATE_REQUEST_PARAMS,
+        execute: async (input) => {
+          // `requestContext` is null unless a request is open — the renderer
+          // builds it only for `aiContext.kind === 'request'` (see
+          // buildAiRequestContext). Do NOT test a `kind` field on it: it has
+          // none, so that check would silently never fire and this tool would
+          // happily propose edits against a folder or collection chat.
+          if (!requestContext) {
+            return 'No request is open. update_request only edits the request the user currently has open — ask them to open one, or use create_request to propose a new one.';
+          }
+          const fields = Object.keys(input || {}).filter((k) => input[k] !== undefined);
+          if (fields.length === 0) {
+            return 'No fields given. Pass at least one of url, method, headers, body, auth.';
+          }
+          requestChanges.push({ op: 'update', ...input });
+          return 'Success: the change is prepared for user review. The user will see a before/after preview and can accept or reject it.';
+        }
+      },
+      read_workflow: {
+        description: 'Read the workflow the user has open, as an ordered step list. MUST be called before write_workflow.',
+        inputSchema: READ_WORKFLOW_PARAMS,
+        execute: async () => {
+          if (!workflow) {
+            return 'No workflow is open. These tools only apply on a workflow tab.';
+          }
+          workflowWasRead = true;
+          const steps = Array.isArray(workflow.steps) ? workflow.steps : [];
+          if (steps.length === 0) {
+            return '(empty workflow — it has no steps yet)';
+          }
+          return JSON.stringify(steps, null, 2);
+        }
+      },
+      write_workflow: {
+        description: 'Propose a COMPLETE new step list for the open workflow. A replacement, not a patch. Does not save anything: the user sees what the flow becomes and accepts or rejects it. MUST call read_workflow first.',
+        inputSchema: WRITE_WORKFLOW_PARAMS,
+        execute: async ({ steps }) => {
+          if (!workflow) {
+            return 'No workflow is open. These tools only apply on a workflow tab.';
+          }
+          workflowChanges.push({
+            steps,
+            originalSteps: Array.isArray(workflow.steps) ? workflow.steps : [],
+            // Same warning the text writes carry: a replacement written without
+            // reading first can silently drop steps the model never saw.
+            wasRead: workflowWasRead
+          });
+          return 'Success: the workflow change is prepared for user review. The user will see the new flow and can accept or reject it.';
+        }
       }
     };
 
@@ -262,19 +474,26 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
     activeStreams.set(requestId, controller);
     let fullText = '';
 
-    const finishWithWrites = () => {
+    // One completion payload for every kind of proposal, so a turn that both
+    // creates a request and writes its tests arrives as a single message with
+    // both cards rather than racing two completions for the same requestId.
+    const finishWithProposals = () => {
       const primary = writeResults[writeResults.length - 1];
       send('main:ai-chat-complete', {
         requestId,
         message: fullText || 'Here are the proposed changes:',
-        code: primary.content,
-        contentType: primary.type,
-        writes: writeResults.map((w) => ({
-          type: w.type,
-          content: w.content,
-          originalContent: w.originalContent,
-          wasRead: w.wasRead
-        }))
+        code: primary ? primary.content : null,
+        contentType: primary ? primary.type : effectiveType,
+        writes: writeResults.length
+          ? writeResults.map((w) => ({
+              type: w.type,
+              content: w.content,
+              originalContent: w.originalContent,
+              wasRead: w.wasRead
+            }))
+          : undefined,
+        requestChanges: requestChanges.length ? requestChanges : undefined,
+        workflowChanges: workflowChanges.length ? workflowChanges : undefined
       });
     };
 
@@ -335,8 +554,8 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
         return;
       }
 
-      if (writeResults.length > 0) {
-        finishWithWrites();
+      if (writeResults.length > 0 || requestChanges.length > 0 || workflowChanges.length > 0) {
+        finishWithProposals();
         return;
       }
 
@@ -368,11 +587,11 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
       // The AI SDK may surface a stream error after the model successfully
       // emitted tool calls. Treat partial writes as the result so the user
       // doesn't lose them.
-      if (writeResults.length > 0) {
+      if (writeResults.length > 0 || requestChanges.length > 0 || workflowChanges.length > 0) {
         // `error.message` folded the provider's response body — which echoes
         // the request — into the log line. See ./errors.js.
         logAiWarning('chat stream error after successful writes, surfacing writes', error);
-        finishWithWrites();
+        finishWithProposals();
         return;
       }
 
