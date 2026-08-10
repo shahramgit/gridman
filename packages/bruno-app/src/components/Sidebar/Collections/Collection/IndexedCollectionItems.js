@@ -444,19 +444,30 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, on
   // re-rendered EVERY mounted row in the collection (measured 20/20 in
   // IndexedCollectionItems.render.spec.jsx) when at most two rows — the one
   // losing focus and the one gaining it — can look any different.
+  //
+  // FOLDERS COUNT TOO. This used to `return null` for anything that was not a
+  // request, which meant a folder row could never report itself as the active
+  // tab — so clicking a folder opened its settings tab and highlighted nothing,
+  // while clicking a request highlighted normally. Reported against
+  // 4.0.0-vasl.1 as "the folder is not highlighted after closing search", but
+  // search was incidental: no folder anywhere in the sidebar was ever
+  // highlighted. A folder's tab is keyed by the node uid (openFolderSettingsTab
+  // below), so matching it costs the same single tabs scan this selector
+  // already performs.
   const requestTabState = useSelector((state) => {
-    if (!isRequest) {
-      return null;
-    }
-    const matchedTabUid = state.tabs.tabs.find((tab) => doesTabMatchRequestNode(tab, {
-      collectionUid,
-      pathname: node.pathname,
-      uid: node.uid
-    }))?.uid;
+    const matchedTabUid = isRequest
+      ? state.tabs.tabs.find((tab) => doesTabMatchRequestNode(tab, {
+        collectionUid,
+        pathname: node.pathname,
+        uid: node.uid
+      }))?.uid
+      : state.tabs.tabs.find((tab) => tab.uid === node.uid && tab.collectionUid === collectionUid)?.uid;
 
     return matchedTabUid ? { uid: matchedTabUid, isActive: matchedTabUid === state.tabs.activeTabUid } : null;
   }, shallowEqual);
-  const existingRequestTabUid = requestTabState?.uid || null;
+  // Requests only: openRequest is the sole consumer and is unreachable for a
+  // folder, but keeping it null there makes that impossible to get wrong later.
+  const existingRequestTabUid = isRequest ? requestTabState?.uid || null : null;
   const isActiveTabRow = Boolean(requestTabState?.isActive);
   // Subscribe to the reveal nonce OF THIS ROW ONLY — null for every other row.
   // state.app.sidebarReveal is rewritten as a FRESH object on every reveal, and
@@ -529,13 +540,29 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, on
   const getActionCompatibleItem = () => {
     const hydratedItem = item || displayItem;
 
-    return {
+    const base = {
       ...hydratedItem,
       ...node,
-      type: isFolder ? 'folder' : normalizeRequestType(hydratedItem.type || node.type),
-      items: isFolder ? (hydratedItem.items || []) : undefined,
-      request: isFolder ? undefined : (hydratedItem.request || displayItem.request)
+      type: isFolder ? 'folder' : normalizeRequestType(hydratedItem.type || node.type)
     };
+
+    if (isFolder) {
+      // `request` must be ABSENT, not undefined. Every consumer identifies a
+      // folder with `!item.hasOwnProperty('request') && item.type === 'folder'`
+      // (utils/collections and utils/tabs both), and `request: undefined` still
+      // creates the key — so this object described every folder as a request.
+      //
+      // Reported as "Delete on a sub-folder does nothing": the confirmation
+      // opened titled "Delete Request", and on confirm the folder's own tab was
+      // closed while its children's tabs stayed open, so the row appeared to
+      // survive. Same misread reached every other action built from this item.
+      delete base.request;
+      base.items = hydratedItem.items || [];
+      return base;
+    }
+
+    base.request = hydratedItem.request || displayItem.request;
+    return base;
   };
   const actionItem = getActionCompatibleItem();
   const displayDepth = getIndexedNodeDisplayDepth(index, node);

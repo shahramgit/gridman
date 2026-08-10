@@ -177,12 +177,24 @@ const getItemKindFromPath = (pathname, collectionPathname) => {
   return 'request';
 };
 
+/**
+ * The request type ('http-request', 'graphql-request', …) for a file.
+ *
+ * Reads the META BLOCK only. This used to full-parse the file to look at one
+ * word, on the browser process, on the rename / move / delete paths — the same
+ * class of freeze that took the request watcher off the main thread. Measured
+ * on the real workspace: a 1,096 KB request costs 3,081 ms to parse and 0.1 ms
+ * to read the meta of, for an identical answer; the largest files in that
+ * workspace (2.5 MB) can exhaust the heap outright.
+ *
+ * A file whose meta cannot be read still falls back to 'http-request', exactly
+ * as it did when a parse failure landed in the catch below.
+ */
 const getRequestTypeFromPath = (pathname, collectionPathname) => {
   const format = getCollectionFormat(collectionPathname);
   try {
     const data = fs.readFileSync(pathname, 'utf8');
-    const parsed = parseRequest(data, { format });
-    return parsed?.type || 'http-request';
+    return parseFileMeta(data, format)?.type || 'http-request';
   } catch (_err) {
     return 'http-request';
   }
@@ -222,7 +234,9 @@ const cloneRequestByPath = async ({ sourcePathname, targetPathname, newName, col
   }
 
   const data = await fs.promises.readFile(sourcePathname, 'utf8');
-  const jsonData = parseRequest(data, { format });
+  // Off the browser process for the same reason as rename: cloning a large
+  // example-heavy request otherwise blocks the whole window on the parse.
+  const jsonData = await parseRequestViaWorker(data, { format });
   jsonData.name = newName;
   const content = await stringifyRequestViaWorker(jsonData, { format });
   await writeFile(targetPathname, content);
@@ -1576,10 +1590,16 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         throw new Error(`path: ${itemPath} is not a valid request file`);
       }
 
-      const data = fs.readFileSync(itemPath, 'utf8');
-      const jsonData = parseRequest(data, { format });
+      // Parse and serialise OFF the browser process. A rename only edits the
+      // meta name, but the round-trip still costs a full parse of the file —
+      // 3,081 ms on a real 1,096 KB request in the reported workspace, and a
+      // fatal heap exhaustion past ~2.5 MB. That block IS the reported
+      // "pressing rename does nothing, then it applies minutes later with an
+      // error": the work was queued behind a frozen main thread.
+      const data = await fs.promises.readFile(itemPath, 'utf8');
+      const jsonData = await parseRequestViaWorker(data, { format });
       jsonData.name = newName;
-      const content = stringifyRequest(jsonData, { format });
+      const content = await stringifyRequestViaWorker(jsonData, { format });
       await writeFile(itemPath, content);
     } catch (error) {
       return Promise.reject(error);
@@ -1657,12 +1677,18 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       }
 
       // update name in file and save new copy, then delete old copy
-      const data = await fs.promises.readFile(oldPath, 'utf8'); // Use async read
-      const jsonData = parseRequest(data, { format });
+      // Parse and serialise OFF the browser process. A rename only edits the
+      // meta name, but the round-trip still costs a full parse of the file —
+      // 3,081 ms on a real 1,096 KB request in the reported workspace, and a
+      // fatal heap exhaustion past ~2.5 MB. That block IS the reported
+      // "pressing rename does nothing, then it applies minutes later with an
+      // error": the work was queued behind a frozen main thread.
+      const data = await fs.promises.readFile(oldPath, 'utf8');
+      const jsonData = await parseRequestViaWorker(data, { format });
       jsonData.name = newName;
       moveRequestUid(oldPath, newPath);
 
-      const content = stringifyRequest(jsonData, { format });
+      const content = await stringifyRequestViaWorker(jsonData, { format });
       await fs.promises.unlink(oldPath);
       await writeFile(newPath, content);
 
@@ -2258,7 +2284,9 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         } else {
           const format = getCollectionFormat(collectionPathname);
           const data = await fs.promises.readFile(oldPath, 'utf8');
-          const jsonData = parseRequest(data, { format });
+          // The write already went through the worker; the read did not, which
+          // left the expensive half on the browser process.
+          const jsonData = await parseRequestViaWorker(data, { format });
           jsonData.name = newName;
           const content = await stringifyRequestViaWorker(jsonData, { format });
           await writeFile(oldPath, content);
@@ -2305,7 +2333,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       }
 
       const data = await fs.promises.readFile(oldPath, 'utf8');
-      const jsonData = parseRequest(data, { format });
+      const jsonData = await parseRequestViaWorker(data, { format });
       jsonData.name = newName;
       const content = await stringifyRequestViaWorker(jsonData, { format });
       await writeFile(newPath, content);
