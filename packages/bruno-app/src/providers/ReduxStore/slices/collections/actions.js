@@ -3525,6 +3525,55 @@ export const cancelOauth2AuthorizationRequest = () => async () => {
 };
 
 // todo: could be removed
+/**
+ * Re-read the requests this renderer already has open, after a git operation
+ * rewrote the working tree.
+ *
+ * The watcher suppresses per-file events for the duration of a git operation
+ * (thousands of them on a pull would freeze the UI) and reindexes once at the
+ * end. That reindex rebuilds the sidebar TREE only — an open request panel
+ * renders from `loadedRequestsByPath`, which nothing invalidated, so the tab
+ * kept showing pre-operation content until the app was restarted. That is the
+ * reported "discard changes does nothing until you close and reopen".
+ *
+ * Bounded by what the user actually has open, not by what git touched, so a
+ * pull that rewrites 11,000 files still only re-reads the handful on screen.
+ *
+ * A request with UNSAVED CHANGES is deliberately left alone. Replacing a user's
+ * in-progress edit because git touched the same file underneath is data loss,
+ * and a stale buffer they can close is the better of the two failures.
+ */
+export const reloadOpenRequestsAfterGit = ({ collectionUid }) => async (dispatch, getState) => {
+  const state = getState();
+  const loaded = state.collections.loadedRequestsByPath?.[collectionUid];
+  if (!loaded) {
+    return;
+  }
+  const collection = findCollectionByUid(state.collections.collections, collectionUid);
+
+  const pathnames = Object.values(loaded)
+    .filter((entry) => entry?.pathname && !entry.draft)
+    .filter((entry) => {
+      // Once a request is open in a tab the tree item is where its draft
+      // lives; the loaded entry can predate that.
+      const treeItem = collection ? findItemInCollectionByPathname(collection, entry.pathname) : null;
+      return !treeItem?.draft;
+    })
+    .map((entry) => entry.pathname);
+
+  for (const pathname of pathnames) {
+    // Sequential: the reindex this follows is already streaming batches through
+    // the same worker pool, and firing every open request at once competes with
+    // it.
+
+    await dispatch(loadRequest({ collectionUid, pathname })).catch(() => {
+      // The file may be gone (a discard that removed a newly added request).
+      // The reindex already dropped its row; deleting the buffer here on a
+      // transient read failure would close a tab the user still has.
+    });
+  }
+};
+
 export const loadRequestViaWorker
   = ({ collectionUid, pathname }) =>
     (dispatch, getState) => {

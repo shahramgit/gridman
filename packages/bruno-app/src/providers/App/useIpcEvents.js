@@ -32,7 +32,7 @@ import {
   streamDataReceived,
   setDotEnvVariables
 } from 'providers/ReduxStore/slices/collections';
-import { collectionAddEnvFileEvent, openCollectionEvent, hydrateCollectionWithUiStateSnapshot, mergeAndPersistEnvironment } from 'providers/ReduxStore/slices/collections/actions';
+import { collectionAddEnvFileEvent, openCollectionEvent, hydrateCollectionWithUiStateSnapshot, mergeAndPersistEnvironment, reloadOpenRequestsAfterGit } from 'providers/ReduxStore/slices/collections/actions';
 import {
   workspaceOpenedEvent,
   workspaceConfigUpdatedEvent
@@ -471,6 +471,14 @@ const useIpcEvents = () => {
       dispatch(brunoConfigUpdateEvent(val))
     );
 
+    // A git operation suppressed every per-file watcher event and reindexed the
+    // tree at the end. The tree is not what an open request panel renders from,
+    // so refresh the buffers behind the tabs the user has open — otherwise a
+    // discard or pull only shows up after an app restart.
+    const removeGitReindexListener = ipcRenderer.on('main:collection-reindexed-after-git', ({ collectionUid }) => {
+      dispatch(reloadOpenRequestsAfterGit({ collectionUid }));
+    });
+
     const removeShowPreferencesListener = ipcRenderer.on('main:open-preferences', () => {
       const state = store.getState();
       const activeWorkspaceUid = state.workspaces?.activeWorkspaceUid;
@@ -563,6 +571,7 @@ const useIpcEvents = () => {
       removeDotEnvFileUpdateListener();
       removeConsoleLogListener();
       removeConfigUpdatesListener();
+      removeGitReindexListener();
       removeShowPreferencesListener();
       removePreferencesUpdatesListener();
       removeCookieUpdateListener();

@@ -955,6 +955,19 @@ class CollectionWatcher {
           brunoConfig,
           loadSessionId: uuid()
         });
+        // Reindexing rebuilds the TREE, and nothing else. An already-open
+        // request renders from the renderer's own loaded-request buffer, which
+        // a reindex never touches — so after a discard/pull rewrote the file,
+        // the tab kept showing the pre-operation content until the app was
+        // restarted. That was the reported "discard changes does nothing".
+        //
+        // The per-file change events that normally refresh those buffers were
+        // suppressed for the whole operation (that is the point of the
+        // suppression), so the renderer is told to re-read what it has open.
+        meta.win.webContents.send('main:collection-reindexed-after-git', {
+          collectionUid: meta.collectionUid,
+          collectionPathname: watchPath
+        });
       } catch (error) {
         console.error('Error reindexing collection after git operation:', error);
       }
