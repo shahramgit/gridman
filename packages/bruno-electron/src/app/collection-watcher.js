@@ -1047,14 +1047,32 @@ class CollectionWatcher {
       const watcher = chokidar.watch(watchPath, {
         ignoreInitial: Boolean(options.skipInitialLoad),
         usePolling: isWSLPath(watchPath) || forcePolling ? true : false,
+        // Runs SYNCHRONOUSLY, on the browser process, for every path chokidar
+        // considers — once per file during the initial scan and again on every
+        // event. It used to open with normalizeAndResolvePath, which stats the
+        // path to resolve symlinks, so watching this workspace cost one lstat
+        // per path per pass.
+        //
+        // That is 67 ms here (17,026 paths, 3.9 us each) and invisible on a local
+        // macOS disk. Behind Windows antivirus an lstat is commonly 1-5 ms, which
+        // turns the same pass into 17-85 seconds — and our users are Windows-only.
+        //
+        // chokidar hands us paths inside watchPath, so a plain relative path is
+        // both correct and free. Symlink resolution is kept for the case it was
+        // added for — a path that does NOT sit under watchPath literally, which
+        // is what a symlink out of the tree looks like — and only then is the
+        // filesystem touched.
         ignored: (filepath) => {
-          const normalizedPath = normalizeAndResolvePath(filepath);
-          const relativePath = path.relative(watchPath, normalizedPath);
           const basename = path.basename(filepath);
 
           // Ignore .env files - handled by dotenv-watcher
           if (basename === '.env' || basename.startsWith('.env.')) {
             return true;
+          }
+
+          let relativePath = path.relative(watchPath, path.resolve(filepath));
+          if (relativePath.startsWith('..')) {
+            relativePath = path.relative(watchPath, normalizeAndResolvePath(filepath));
           }
 
           // Check if any path segment matches a default ignore pattern (handles symlinks)
