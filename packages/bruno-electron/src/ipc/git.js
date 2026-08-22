@@ -46,6 +46,7 @@ const {
   listStashes,
   dropStash,
   discardWorkspaceChanges,
+  getWorkspaceMembershipChange,
   restoreWorkspaceDiscard,
   discardLocalCommits,
   getWorkspaceFileGitStatus,
@@ -225,6 +226,12 @@ const registerGitIpc = (mainWindow) => {
       remoteBranch,
       strategy
     }));
+  });
+
+  // Read-only preflight. The renderer asks before switching so it can warn that a
+  // branch carries a different workspace.yml — see getWorkspaceMembershipChange.
+  ipcMain.handle('renderer:preview-workspace-git-branch-change', async (event, { gitRootPath, ref }) => {
+    return getWorkspaceMembershipChange(gitRootPath, ref);
   });
 
   ipcMain.handle('renderer:checkout-workspace-git-branch', async (event, { gitRootPath, processUid, branchName }) => {

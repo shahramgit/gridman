@@ -3485,6 +3485,53 @@ const getFileGitHistory = async (gitRootPath, filePath) => {
  * @param {string} message - Stash message/identifier
  * @returns {Promise<void>}
  */
+/**
+ * Which collections a workspace would gain or lose by moving to another ref.
+ *
+ * A workspace's membership lives in `workspace.yml`, which is tracked, so a branch switch
+ * rewrites it like any other file. That is correct git behaviour and a nasty surprise: in
+ * the reported repository `main` lists 122 collections and `develop` lists ZERO, so
+ * switching branch empties the sidebar with no warning and no error — reported as
+ * "the previous workspace's collections are gone".
+ *
+ * Read-only, and never throws: a ref without a workspace.yml, an unreadable file, or a
+ * repository that has no such file at all all mean "nothing to warn about". The caller
+ * must not be able to block a checkout because this could not answer.
+ */
+const getWorkspaceMembershipChange = async (gitRootPath, targetRef) => {
+  const readNames = async (ref) => {
+    try {
+      const git = getReadOnlySimpleGitInstanceForPath(gitRootPath);
+      const content = String(await git.raw(['show', `${ref}:workspace.yml`]));
+      // Deliberately a line scan rather than a yaml parse: this runs before a
+      // checkout the user is waiting on, and a malformed file must degrade to
+      // "no warning" instead of throwing.
+      return content
+        .split('\n')
+        .map((line) => line.match(/^\s*-\s+name:\s*"?(.+?)"?\s*$/))
+        .filter(Boolean)
+        .map((m) => m[1]);
+    } catch (_err) {
+      return null;
+    }
+  };
+
+  const [current, target] = await Promise.all([readNames('HEAD'), readNames(targetRef)]);
+  if (!current || !target) {
+    return { comparable: false, removed: [], added: [], currentCount: 0, targetCount: 0 };
+  }
+
+  const targetSet = new Set(target);
+  const currentSet = new Set(current);
+  return {
+    comparable: true,
+    removed: current.filter((name) => !targetSet.has(name)),
+    added: target.filter((name) => !currentSet.has(name)),
+    currentCount: current.length,
+    targetCount: target.length
+  };
+};
+
 const createStash = async (gitRootPath, message) => {
   const git = getSimpleGitInstanceForPath(gitRootPath);
   // Use --include-untracked to stash untracked files as well
@@ -4337,6 +4384,7 @@ module.exports = {
   getFileGitHistory,
   getGitGraph,
   createStash,
+  getWorkspaceMembershipChange,
   listStashes,
   applyStash,
   dropStash,

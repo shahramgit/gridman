@@ -271,6 +271,7 @@ const WorkspaceGit = ({ workspace }) => {
   const [setupOperation, setSetupOperation] = useState(null);
   const [setupResult, setSetupResult] = useState('');
   const [confirmSetupAction, setConfirmSetupAction] = useState(null);
+  const [pendingBranchChange, setPendingBranchChange] = useState(null);
   const [sshKeyEmail, setSshKeyEmail] = useState('');
   const [gitIdentityName, setGitIdentityName] = useState('');
   const [gitIdentityEmail, setGitIdentityEmail] = useState('');
@@ -1346,14 +1347,41 @@ const WorkspaceGit = ({ workspace }) => {
     setMergeFromBranch('');
   };
 
-  const handleRepositoryBranchChange = (value) => {
-    if (!value || value === currentBranch) return null;
-
+  /**
+   * A workspace's collection list lives in `workspace.yml`, which is tracked — so
+   * switching branch rewrites it. In the reported repository `main` carries 122
+   * collections and `develop` carries none, so the switch emptied the sidebar with no
+   * warning at all. Ask first when collections would be dropped.
+   *
+   * Only a LOSS prompts: gaining collections needs no confirmation, and a ref we cannot
+   * compare (no workspace.yml, unreadable, brand-new branch) must never block the switch.
+   */
+  const performBranchChange = (value) => {
     if (value.startsWith(`${remote}/`)) {
       return checkoutRemoteBranch(value.slice(remote.length + 1));
     }
-
     return checkoutBranch(value);
+  };
+
+  const handleRepositoryBranchChange = async (value) => {
+    if (!value || value === currentBranch) return null;
+
+    let change = null;
+    try {
+      change = await window.ipcRenderer.invoke('renderer:preview-workspace-git-branch-change', {
+        ...getWorkspaceGitPayload(workspace),
+        ref: value
+      });
+    } catch (_err) {
+      change = null;
+    }
+
+    if (change?.comparable && change.removed.length) {
+      setPendingBranchChange({ value, change });
+      return null;
+    }
+
+    return performBranchChange(value);
   };
 
   const publishBranch = () => {
@@ -2501,6 +2529,48 @@ const WorkspaceGit = ({ workspace }) => {
               <p style={{ margin: 0, lineHeight: 1.5 }} className="text-muted text-sm">
                 All changes from those commits (plus any uncommitted work) move to "Recently discarded",
                 where they can be restored or deleted. Nothing is lost permanently.
+              </p>
+            </div>
+          </Modal>
+        </Portal>
+      )}
+      {pendingBranchChange && (
+        <Portal>
+          <Modal
+            size="md"
+            title="This branch has a different workspace"
+            confirmText="Switch anyway"
+            handleConfirm={() => {
+              const target = pendingBranchChange.value;
+              setPendingBranchChange(null);
+              performBranchChange(target);
+            }}
+            handleCancel={() => setPendingBranchChange(null)}
+          >
+            <div style={{ display: 'grid', gap: 12 }}>
+              <p style={{ margin: 0, lineHeight: 1.5 }}>
+                <strong>{pendingBranchChange.value}</strong> lists{' '}
+                <strong>{pendingBranchChange.change.targetCount}</strong> collection
+                {pendingBranchChange.change.targetCount === 1 ? '' : 's'} where this branch lists{' '}
+                <strong>{pendingBranchChange.change.currentCount}</strong>. Switching removes{' '}
+                <strong>
+                  {pendingBranchChange.change.removed.length} collection
+                  {pendingBranchChange.change.removed.length === 1 ? '' : 's'}
+                </strong>{' '}
+                from this workspace.
+              </p>
+              <div style={{ maxHeight: 180, overflowY: 'auto', fontSize: 12 }} className="text-muted">
+                {pendingBranchChange.change.removed.slice(0, 50).map((name) => (
+                  <div key={name} className="truncate" title={name}>{name}</div>
+                ))}
+                {pendingBranchChange.change.removed.length > 50 ? (
+                  <div>…and {pendingBranchChange.change.removed.length - 50} more</div>
+                ) : null}
+              </div>
+              <p style={{ margin: 0, lineHeight: 1.5 }} className="text-muted text-sm">
+                The collection folders stay on disk — it is this workspace's list of them that the
+                branch changes, because `workspace.yml` is part of the repository. Switching back
+                restores the list.
               </p>
             </div>
           </Modal>
