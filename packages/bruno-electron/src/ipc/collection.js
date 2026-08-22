@@ -25,7 +25,7 @@ const { utils } = require('@usebruno/common');
 const brunoConverters = require('@usebruno/converters');
 const { postmanToBruno } = brunoConverters;
 const { cookiesStore } = require('../store/cookies');
-const { parseLargeRequestWithRedaction } = require('../utils/parse');
+const { parseLargeRequestWithRedaction, isRequestTooExpensiveToParse } = require('../utils/parse');
 const { wsClient } = require('../ipc/network/ws-event-handlers');
 const { hasSubDirectories } = require('../utils/filesystem');
 const { transformProxyConfig } = require('@usebruno/requests');
@@ -114,7 +114,6 @@ const INDEXED_COLLECTION_WATCHER_ATTACH_DELAY_MS = 3000;
 // name an unparseable file the same way, since the sidebar renders from the index
 // and a name carrying the extension repaints the row.
 const {
-  MAX_FILE_SIZE,
   buildUnparseableRequestData,
   beginParseGeneration,
   claimNewestParseGeneration,
@@ -190,6 +189,29 @@ const getItemKindFromPath = (pathname, collectionPathname) => {
  * A file whose meta cannot be read still falls back to 'http-request', exactly
  * as it did when a parse failure landed in the catch below.
  */
+/**
+ * A failure the user can act on, from a parse error they cannot read.
+ *
+ * The one shape that actually reaches this in the reported workspace is a request whose
+ * payload sits in a block the redactor does not cover (`body:multipart-form`, `body:file`,
+ * `body:form-urlencoded`), so the grammar receives the whole file and needs roughly 1.4 GB
+ * of heap per MB of it. Saying "out of memory" tells the user nothing they can do; naming
+ * the cause does.
+ */
+const describeLoadFailure = (error) => {
+  const code = error?.code;
+  const message = String(error?.message || '');
+  if (code === 'ERR_WORKER_OUT_OF_MEMORY' || /out of memory|heap/i.test(message)) {
+    return 'This request needs more memory to parse than Gridman can give it. That happens when '
+      + 'the bulk of the file sits in a body Gridman cannot summarise while parsing — a '
+      + 'multipart-form, file, or form-urlencoded body. Splitting the large value out of the '
+      + 'request, or storing it as a saved example instead, makes the request open normally.';
+  }
+  return message
+    ? `This request could not be parsed: ${message}`
+    : 'This request could not be parsed.';
+};
+
 const getRequestTypeFromPath = (pathname, collectionPathname) => {
   const format = getCollectionFormat(collectionPathname);
   try {
@@ -3086,10 +3108,11 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         };
         let bruContent = fs.readFileSync(pathname, 'utf8');
         const metaJson = parseBruFileMeta(bruContent);
-        // Oversized requests stay meta-only, exactly like the watcher's scan
-        // classifies them: parsing one inline froze the app when the user
-        // clicked it in the sidebar. The UI offers "Load Request" instead.
-        if (fileStats?.size >= MAX_FILE_SIZE) {
+        // Requests too expensive to parse stay meta-only, exactly like the
+        // watcher's scan classifies them: parsing one inline froze the app when
+        // the user clicked it in the sidebar. The UI offers "Load Request"
+        // instead. Cost is post-redaction bytes, not file size — see utils/parse.js.
+        if (isRequestTooExpensiveToParse(bruContent, fileStats?.size, 'bru')) {
           // parseBruFileMeta returns null for a .bru with no meta block or one
           // caught half-written; the same fallback as renderer:load-request
           // keeps a null out of the tree the renderer builds from this.
@@ -3161,13 +3184,14 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         // dropped rather than emitted on top of the newer content.
         generation = beginParseGeneration(pathname);
         // This parse is synchronous and runs on the browser process, so a
-        // single sidebar click on a multi-MB request froze (and could kill)
-        // the app. Above the watcher's threshold, hand back the same meta-only
-        // snapshot the watcher produces so the UI shows its "not loaded" card.
-        if (fileStats?.size >= MAX_FILE_SIZE) {
+        // single sidebar click on an expensive request froze (and could kill)
+        // the app. Past the parse budget, hand back the same meta-only snapshot
+        // the watcher produces so the UI shows its "not loaded" card. The budget
+        // is measured in post-redaction bytes, not file size — see utils/parse.js.
+        if (isRequestTooExpensiveToParse(bruContent, fileStats?.size, format)) {
           // A meta parse can still come back null on a malformed file; never
           // hydrate null (that was the "Cannot set properties of null" crash).
-          // Bounded: this branch only ever runs on files at/above 2.5 MB, and the
+          // Bounded: this branch only runs on files past the parse budget, and the
           // yml meta parse is a synchronous whole-file js-yaml load — the very
           // freeze the size guard above exists to avoid, on the browser process.
           file.data = parseFileMetaBounded(bruContent, format, fileStats?.size) || buildUnparseableRequestData(pathname);
@@ -3327,9 +3351,15 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         file.partial = true;
         file.loading = false;
         file.size = sizeInMB(fileStats?.size);
+        // Say WHY. Without this the payload went back with no error, the card
+        // fell through to its generic "too large" text, and pressing the button
+        // looked like it did nothing at all — the reported "Load Request does
+        // nothing". Only the toast carried the failure, and it said nothing
+        // actionable either.
+        file.error = { message: describeLoadFailure(parseError) };
         hydrateRequestWithUuid(file.data, pathname);
         await mainWindow.webContents.send('main:collection-tree-updated', 'addFile', file);
-        throw parseError;
+        throw new Error(file.error.message);
       }
     } catch (error) {
       return Promise.reject(error);

@@ -41,6 +41,39 @@ const bruRequestToJson = (data: string): any => {
   return json;
 };
 
+/**
+ * How expensive will parsing this request actually be?
+ *
+ * The grammar's cost is per input CHARACTER, but `bruRequestToJson` does not hand it the
+ * file - it hands it the redacted copy, where every leaf payload has been swapped for a
+ * probe line. So the honest predictor of cost is the size of THAT string, not the size of
+ * the file, and the two differ by three orders of magnitude on exactly the requests users
+ * complain about.
+ *
+ * Measured on the reported workspace: a 3.72 MB request whose whole payload sits in an
+ * example's `body:json` parses in 11 ms, while a 1.07 MB request whose payload sits in
+ * `body:multipart-form` - which the redactor does not cover - takes 3.9 s and can exhaust
+ * the heap. A byte-size gate gets both of those backwards.
+ *
+ * `redacted: false` means the redactor declined, so the grammar will see the whole file.
+ */
+export const getBruRequestParseCost = (data: string): { effectiveBytes: number; redacted: boolean } => {
+  const fileBytes = Buffer.byteLength(String(data ?? ''), 'utf8');
+  try {
+    const redaction = bruRequestParseAndRedactBodyData(data);
+    if (!redaction.redacted) {
+      return { effectiveBytes: fileBytes, redacted: false };
+    }
+    return {
+      effectiveBytes: Buffer.byteLength(redaction.bruFileStringWithRedactedBody, 'utf8'),
+      redacted: true
+    };
+  } catch (_error) {
+    // The redactor throwing is itself a decline: the caller would parse the original.
+    return { effectiveBytes: fileBytes, redacted: false };
+  }
+};
+
 export const parseBruRequest = (data: string | any, parsed: boolean = false): any => {
   try {
     const json = parsed ? data : bruRequestToJson(data);

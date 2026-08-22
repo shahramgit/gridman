@@ -25,28 +25,10 @@ const { setBrunoConfig } = require('../store/bruno-config');
 const EnvironmentSecretsStore = require('../store/env-secrets');
 const UiStateSnapshot = require('../store/ui-state-snapshot');
 const { parseFileMeta, hydrateRequestWithUuid } = require('../utils/collection');
-const { parseLargeRequestWithRedaction } = require('../utils/parse');
+const { parseLargeRequestWithRedaction, isRequestTooExpensiveToParse } = require('../utils/parse');
 const { transformBrunoConfigAfterRead } = require('../utils/transformBrunoConfig');
 const dotEnvWatcher = require('./dotenv-watcher');
 const { isPathUnderActiveGitOperation, gitOperationEvents } = require('./git-operation-state');
-
-// The one threshold every "parse this request fully vs. hand back meta only"
-// guard reads — the watcher's add/change here, and the renderer:load-request /
-// renderer:load-request-via-worker IPC handlers, which import it from this module.
-// Keeping it in one place is what makes a sidebar click classify a file exactly
-// the way the watcher's own scan does.
-//
-// It does NOT bound the cost of a parse, it only decides who pays it: above the
-// threshold the user gets a meta-only row and an explicit "Load Request" button.
-// Measured on the real GSB workspace (one file per process, 4 GB heap):
-// 0.58 MB -> 1.5 s / 1.5 GB RSS, 1.12 MB -> 2.8 s / 2.1 GB, 2.33 MB -> 7.1 s / 3.5 GB,
-// 2.47 MB -> fatal "JS heap out of memory". The parser costs ~1.4 GB per MB of
-// input on this corpus, so 2.5 MB sits just past the point where a parse can
-// exhaust a 4 GB heap. The largest .bru in that workspace is 2,590,667 bytes,
-// which means this guard currently fires on nothing there.
-// Raising/lowering it is a product decision — do not change the value here
-// without the CTO; see the report attached to this change.
-const MAX_FILE_SIZE = 2.5 * 1024 * 1024;
 
 // The meta-only fallback is only cheap for bru. parseBruFileMeta is a regex over
 // the text, but parseYmlFileMeta hands the WHOLE file to js-yaml synchronously
@@ -498,7 +480,7 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
     try {
       file.size = sizeInMB(fileStats?.size);
 
-      if (fileStats.size < MAX_FILE_SIZE) {
+      if (!isRequestTooExpensiveToParse(content, fileStats.size, format)) {
         file.data = await parseRequestViaWorker(content, {
           format,
           filename: pathname,
@@ -726,7 +708,7 @@ const change = async (win, pathname, collectionUid, collectionPath, watcher) => 
     const generation = beginParseGeneration(pathname);
 
     try {
-      if (fileStats.size >= MAX_FILE_SIZE && format === 'bru') {
+      if (isRequestTooExpensiveToParse(content, fileStats.size, format) && format === 'bru') {
         file.data = await parseLargeRequestWithRedaction(content, 'bru');
       } else {
         // Off the browser process. This parse used to run inline here on every
@@ -1318,7 +1300,6 @@ const collectionWatcher = new CollectionWatcher();
 module.exports = collectionWatcher;
 // Shared with the load-request IPC handlers so a sidebar click classifies an
 // oversized request exactly like this scan does, instead of parsing it inline.
-module.exports.MAX_FILE_SIZE = MAX_FILE_SIZE;
 // Same reason: a sidebar click that cannot parse the file must name the partial
 // item the way this scan (and the indexer) names it, or it repaints the row with
 // the filename.

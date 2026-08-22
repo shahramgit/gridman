@@ -6,7 +6,8 @@ import {
   parseBruEnvironment,
   stringifyBruRequest,
   stringifyBruCollection,
-  stringifyBruEnvironment
+  stringifyBruEnvironment,
+  getBruRequestParseCost
 } from './formats/bru';
 import {
   parseYmlItem,
@@ -137,6 +138,22 @@ export const stringifyEnvironment = (envObj: BrunoEnvironment, options: Stringif
 
 export const parseDotEnv = (content: string): Record<string, string> => {
   return dotenvToJson(content);
+};
+
+/**
+ * Predicted cost of parsing a bru request, in the units that actually drive it.
+ *
+ * Callers use this to decide whether to parse at all. See the bru implementation for why
+ * file size is the wrong question. yml has no equivalent redaction, so its cost is its size.
+ */
+export const getRequestParseCost = (
+  content: string,
+  options: ParseOptions = { format: DEFAULT_COLLECTION_FORMAT }
+): { effectiveBytes: number; redacted: boolean } => {
+  if (options.format === 'bru') {
+    return getBruRequestParseCost(content);
+  }
+  return { effectiveBytes: Buffer.byteLength(String(content ?? ''), 'utf8'), redacted: false };
 };
 
 export { BruParserWorker };

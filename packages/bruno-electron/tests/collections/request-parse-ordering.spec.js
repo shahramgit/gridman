@@ -56,7 +56,10 @@ const yaml = require('js-yaml');
 
 const collectionWatcher = require('../../src/app/collection-watcher');
 const { add, change } = collectionWatcher.__handlers;
-const { MAX_SYNC_YML_META_SIZE, MAX_FILE_SIZE } = collectionWatcher;
+const { MAX_SYNC_YML_META_SIZE } = collectionWatcher;
+// yml keeps a file-size budget; bru moved to post-redaction bytes. This suite is
+// about the yml meta fallback, so it is the yml budget that has to be exceeded.
+const { MAX_YML_PARSE_BYTES } = require('../../src/utils/parse');
 
 const COLLECTION_UID = 'collection-uid';
 
@@ -400,7 +403,7 @@ describe('collection watcher — the yml meta fallback is size bounded', () => {
     const chunk = (i) => [`  - name: example_${i}`, '    response:', '      status: 200', `      body: "${'z'.repeat(120)}"`, ''].join('\n');
     let content = head;
     let i = 0;
-    while (Buffer.byteLength(content, 'utf8') <= MAX_FILE_SIZE) {
+    while (Buffer.byteLength(content, 'utf8') <= MAX_YML_PARSE_BYTES) {
       content += chunk(i++);
     }
     fs.writeFileSync(requestPath, content, 'utf8');
