@@ -173,6 +173,10 @@ export const renameGlobalEnvironment = ({ name: newName, environmentUid }) => (d
     if (!environment) {
       return reject(new Error('Environment not found'));
     }
+    // Captured BEFORE the reload below overwrites it: a workspace environment's
+    // uid is a hash of its file path, so renaming mints a new one and the old
+    // selection points at a file that no longer exists.
+    const wasActiveEnvironment = state.globalEnvironments.activeGlobalEnvironmentUid === environmentUid;
     environmentSchema
       .validate(environment)
       .then(() => ipcRenderer.invoke('renderer:rename-global-environment', { name: newName, environmentUid, workspaceUid, workspacePath }))
@@ -193,7 +197,14 @@ export const renameGlobalEnvironment = ({ name: newName, environmentUid }) => (d
             return resolvedUid;
           });
       })
-      .then((resolvedUid) => dispatch(_selectGlobalEnvironment({ environmentUid: resolvedUid })))
+      .then((resolvedUid) => {
+        // Only carry the selection across. This used to select unconditionally,
+        // so renaming an environment you were NOT using switched you onto it.
+        if (wasActiveEnvironment) {
+          dispatch(_selectGlobalEnvironment({ environmentUid: resolvedUid }));
+        }
+        return resolvedUid;
+      })
       .then(resolve)
       .catch(reject);
   });

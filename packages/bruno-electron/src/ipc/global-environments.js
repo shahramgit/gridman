@@ -94,7 +94,22 @@ const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager)
   ipcMain.handle('renderer:rename-global-environment', async (event, { environmentUid, name, workspaceUid, workspacePath }) => {
     try {
       if (workspacePath && workspaceEnvironmentsManager) {
-        return await workspaceEnvironmentsManager.renameGlobalEnvironmentByPath(workspacePath, { environmentUid, name });
+        const renamed = await workspaceEnvironmentsManager.renameGlobalEnvironmentByPath(workspacePath, { environmentUid, name });
+
+        // A workspace environment's uid is a hash of its FILE PATH, so renaming
+        // it mints a new one. The stored "active environment" is that uid, so
+        // renaming the selected environment left the selection pointing at a
+        // file that no longer exists — the next lookup failed with
+        // "Environment file not found for uid: ...", which is what users
+        // reported as "rename on the current env does not work".
+        //
+        // Delete already re-points this (it clears it); rename did not.
+        const activeUid = globalEnvironmentsStore.getActiveGlobalEnvironmentUidForWorkspace(workspacePath);
+        if (activeUid === environmentUid && renamed?.uid) {
+          globalEnvironmentsStore.setActiveGlobalEnvironmentUidForWorkspace(workspacePath, renamed.uid);
+        }
+
+        return renamed;
       }
 
       globalEnvironmentsStore.renameGlobalEnvironment({ environmentUid, name });
