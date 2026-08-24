@@ -177,6 +177,31 @@ const Wrapper = styled.div`
       opacity: 0.9;
     }
   }
+
+  /* Reorder + delete live together in the last column. Kept compact so adding
+     two buttons does not widen the row on a table that is already dense. */
+  .row-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .reorder-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.65;
+    padding: 0;
+  }
+
+  .reorder-btn:hover:not(:disabled) {
+    opacity: 1;
+  }
+
+  .reorder-btn:disabled {
+    opacity: 0.2;
+    cursor: not-allowed;
+  }
 `;
 
 export default Wrapper;

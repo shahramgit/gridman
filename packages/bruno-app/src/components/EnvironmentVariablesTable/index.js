@@ -1,12 +1,13 @@
 import React, { useCallback, useRef, useState, useEffect, useMemo } from 'react';
 import { TableVirtuoso } from 'react-virtuoso';
 import cloneDeep from 'lodash/cloneDeep';
-import { IconTrash, IconAlertCircle, IconInfoCircle } from '@tabler/icons';
+import { IconTrash, IconAlertCircle, IconInfoCircle, IconChevronUp, IconChevronDown } from '@tabler/icons';
 import { useTheme } from 'providers/Theme';
 import { useSelector, useDispatch } from 'react-redux';
 import { updateTableColumnWidths } from 'providers/ReduxStore/slices/tabs';
 import MultiLineEditor from 'components/MultiLineEditor/index';
 import StyledWrapper from './StyledWrapper';
+import { moveEnvironmentVariable, movableRowCount } from './reorder';
 import { uuid } from 'utils/common';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
@@ -299,6 +300,31 @@ const EnvironmentVariablesTable = ({
     );
   };
 
+  /**
+   * Move a variable one row up or down.
+   *
+   * Buttons rather than drag: every other editable table in the app reorders by
+   * dragging, but this one is virtualised (TableVirtuoso), where a drag has to
+   * cope with rows that unmount mid-gesture. Buttons also work with a keyboard
+   * and on a trackpad, which is what the users asking for this actually wanted.
+   *
+   * The trailing empty "add a row" placeholder never moves and nothing moves
+   * past it — it has to stay last or the table loses the row you type into.
+   */
+  const handleMoveVar = useCallback(
+    (index, direction) => {
+      const currentValues = formik.values || [];
+      const reordered = moveEnvironmentVariable(currentValues, index, direction);
+      // Same reference back means the move was not allowed (an edge row, or the
+      // trailing placeholder) — nothing to update.
+      if (reordered === currentValues) return;
+      // No explicit notify: the effect watching formik.values already raises
+      // onDraftChange, which is what marks the environment unsaved.
+      formik.setValues(reordered, false);
+    },
+    [formik]
+  );
+
   const handleRemoveVar = useCallback(
     (id) => {
       const currentValues = formik.values;
@@ -510,6 +536,9 @@ const EnvironmentVariablesTable = ({
             const isLastRow = actualIndex === formik.values.length - 1;
             const isEmptyRow = !variable.name || variable.name.trim() === '';
             const isLastEmptyRow = isLastRow && isEmptyRow;
+            // The trailing "add a row" placeholder is not reorderable, so the
+            // last real row must not offer a Move down that swaps with it.
+            const movableRows = movableRowCount(formik.values);
 
             return (
               <>
@@ -614,9 +643,31 @@ const EnvironmentVariablesTable = ({
                 </td>
                 <td>
                   {!isLastEmptyRow && (
-                    <button onClick={() => handleRemoveVar(variable.uid)}>
-                      <IconTrash strokeWidth={1.5} size={18} />
-                    </button>
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="reorder-btn"
+                        onClick={() => handleMoveVar(actualIndex, -1)}
+                        disabled={actualIndex === 0}
+                        title="Move up"
+                        aria-label="Move up"
+                      >
+                        <IconChevronUp strokeWidth={1.5} size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        className="reorder-btn"
+                        onClick={() => handleMoveVar(actualIndex, 1)}
+                        disabled={actualIndex >= movableRows - 1}
+                        title="Move down"
+                        aria-label="Move down"
+                      >
+                        <IconChevronDown strokeWidth={1.5} size={16} />
+                      </button>
+                      <button type="button" onClick={() => handleRemoveVar(variable.uid)} title="Delete" aria-label="Delete">
+                        <IconTrash strokeWidth={1.5} size={18} />
+                      </button>
+                    </div>
                   )}
                 </td>
               </>
