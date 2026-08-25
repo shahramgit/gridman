@@ -17,6 +17,7 @@ import openapiSyncReducer from './slices/openapi-sync';
 import workflowsReducer from './slices/workflows';
 import historyReducer from './slices/history';
 import aiReducer from './slices/ai';
+import mockServerReducer from './slices/mock-server/index';
 import historyMiddleware from './middlewares/history/middleware';
 import { draftDetectMiddleware } from './middlewares/draft/middleware';
 import { autosaveMiddleware } from './middlewares/autosave/middleware';
@@ -123,6 +124,7 @@ if (isDevEnv() && isReduxDebugEnabled()) {
 export const store = configureStore({
   reducer: {
     app: appReducer,
+    mockServer: mockServerReducer,
     collections: collectionsReducer,
     tabs: tabsReducer,
     notifications: notificationsReducer,

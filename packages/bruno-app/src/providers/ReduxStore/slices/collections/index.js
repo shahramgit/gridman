@@ -881,6 +881,8 @@ const applyCollectionIndexNodeToTree = (state, collectionUid, node, scanCache) =
 
 const initialState = {
   collections: [],
+  // Draft state for the mock-response editor, keyed by response uid.
+  mockResponseEditors: {},
   collectionIndexes: {},
   // Per-collection sidebar state restored from disk at mount (open folders).
   // Keyed by uid and separate from `collections` because it arrives before the
@@ -924,6 +926,8 @@ const initiatedWsResponse = {
   metadata: [],
   trailers: []
 };
+
+import * as mockResponseEditorReducers from './mockResponseEditorReducers';
 
 export const collectionsSlice = createSlice({
   name: 'collections',
@@ -1679,6 +1683,11 @@ export const collectionsSlice = createSlice({
         collection.items.push(item);
       }
     },
+    initMockResponseEditor: mockResponseEditorReducers.initMockResponseEditor,
+    syncMockResponseEditorSaved: mockResponseEditorReducers.syncMockResponseEditorSaved,
+    updateMockResponseRules: mockResponseEditorReducers.updateMockResponseRules,
+    cancelMockResponseEditorEdit: mockResponseEditorReducers.cancelMockResponseEditorEdit,
+    removeMockResponseEditor: mockResponseEditorReducers.removeMockResponseEditor,
     collectionUiStateHydrated: (state, action) => {
       const { collectionUid, uiState } = action.payload || {};
       if (!collectionUid) {
@@ -4695,6 +4704,11 @@ export const collectionsSlice = createSlice({
 });
 
 export const {
+  initMockResponseEditor,
+  syncMockResponseEditorSaved,
+  updateMockResponseRules,
+  cancelMockResponseEditorEdit,
+  removeMockResponseEditor,
   collectionUiStateHydrated,
   createCollection,
   updateCollectionMountStatus,

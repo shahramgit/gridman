@@ -9,6 +9,7 @@ import CollectionsSection from './Sections/CollectionsSection/index';
 import ApiSpecsSection from './Sections/ApiSpecsSection/index';
 import WorkflowsSection from './Sections/WorkflowsSection/index';
 import HistorySection from './Sections/HistorySection/index';
+import MockServersSection from './Sections/MockServersSection/index';
 import useKeybinding from 'hooks/useKeybinding';
 
 const MIN_LEFT_SIDEBAR_WIDTH = 220;
@@ -30,6 +31,10 @@ const SIDEBAR_SECTIONS = [
   {
     id: 'api-specs',
     component: ApiSpecsSection
+  },
+  {
+    id: 'mock-servers',
+    component: MockServersSection
   }
 ];
 
@@ -37,6 +42,10 @@ const Sidebar = () => {
   const leftSidebarWidth = useSelector((state) => state.app.leftSidebarWidth);
   const sidebarCollapsed = useSelector((state) => state.app.sidebarCollapsed);
   const showApiSpecFeature = useSelector((state) => state.app.preferences?.features?.apiSpec ?? true);
+  // Mock servers bind a port and answer requests, so the section stays hidden
+  // until the user opts in — the same flag the main process checks before it
+  // will start one.
+  const showMockServers = useSelector((state) => state.app.preferences?.beta?.['mock-server'] ?? false);
   const [asideWidth, setAsideWidth] = useState(leftSidebarWidth);
   const lastWidthRef = useRef(leftSidebarWidth);
 
@@ -117,7 +126,11 @@ const Sidebar = () => {
               <div className="flex flex-col flex-grow sidebar-sections-container" style={{ minHeight: 0, overflow: 'hidden' }}>
                 <div className="sidebar-sections flex flex-col flex-1">
                   <SidebarContent
-                    sections={showApiSpecFeature ? SIDEBAR_SECTIONS : SIDEBAR_SECTIONS.filter((section) => section.id !== 'api-specs')}
+                    sections={SIDEBAR_SECTIONS.filter((section) => {
+                      if (section.id === 'api-specs') return showApiSpecFeature;
+                      if (section.id === 'mock-servers') return showMockServers;
+                      return true;
+                    })}
                   />
                 </div>
               </div>
