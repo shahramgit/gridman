@@ -261,15 +261,49 @@ updates — a JSON cache rewrites the whole file on every save.
   charges per file and per byte — unverified from here. Cost: 47 of 5,410
   example-bearing files lose the sidebar chevron until the request is opened.
 
-**Deferred, not rejected:** mock server (69 files ADDED, zero collisions with our
-divergences — genuinely additive, but 8 of its own fixes shipped in the same
-release, so take it one release later and port it once).
+**Deferred, and the reason on file was wrong.** Mock server was recorded as "69
+files ADDED, zero collisions with our divergences — genuinely additive". It is
+not additive. Re-checked 2026-08-25: 71 files upstream, of which we have none,
+PLUS wiring into the three most-diverged files in the fork —
+`Sidebar/Collections/Collection/index.js` (12 mock references upstream; 23 of our
+commits since divergence), `slices/collections/index.js` (12 references; 24 of
+ours), `collection-watcher.js` (3; 14 of ours) — PLUS a
+`Sidebar/Sections/MockServersSection` that belongs to a sidebar architecture we
+replaced with the indexed renderer. It is a project, not a cherry-pick. Do it if
+someone asks for a mock server; do not do it as sync hygiene.
 
-**Still open:** sidebar-state persistence (build ours), yml migration entry point
-(their UI, our reversible engine), presets restyle, `#8722` folder sequencing
-(needs adapting to our diverged sidebar), `#8733` secrets env table (cosmetic —
-an empty placeholder row inherits `secret`). Bruno Apps was on this list; it is
-resolved, see below.
+**Still open — verified against the code 2026-08-25, not from the note:**
+
+- `#8722` **folder sequencing. We have the bug.** Proved with
+  `getReorderedItemsInTargetDirectory`: dragging Alpha onto Gamma in
+  `[Alpha, Beta, Gamma]` yields `Beta, Alpha, Gamma` — a folder cannot be moved
+  to the BOTTOM of its folder list, because our drop model has one `'adjacent'`
+  type that always means "above". Upstream's fix splits it into `'above'` /
+  `'below'` and rewrites the reorder as a splice. The shared half
+  (`utils/collections/index.js`) ports cleanly; the component half targets
+  `CollectionItem`, which we deleted, so it needs redoing against
+  `IndexedCollectionItems`. GSB has 4,789 directories — this is the kind of
+  friction that reads as "the old version was better".
+- **Sidebar-state persistence.** Confirmed absent: `collapsed` lives only in the
+  collections slice and defaults to `true`, with nothing writing it to the store
+  or localStorage. Every restart re-collapses all 124 GSB collections and every
+  folder in them. Build ours — a set of expanded uids per collection, restored
+  on mount.
+- **Presets restyle.** Cosmetic, no behaviour. Lowest priority on the list.
+
+**Closed, was never open:**
+
+- **yml migration entry point.** Already built and mounted:
+  `CollectionSettings/MigrateToYml` renders from `CollectionSettings/Overview`
+  with progress, cancel, rollback-failure and error states, and invokes
+  `renderer:migrate-collection-to-yml`. The note predated the UI.
+- `#8733` **secrets env table. Does not apply to us.** The fix stops a trailing
+  empty "add new" row from inheriting `secret` from the active tab — we have no
+  Plain/Secret tab split. Every row-creation site in our
+  `EnvironmentVariablesTable` writes `secret: false` explicitly (8 of them), and
+  the `useEffect` upstream deleted never existed here.
+
+Bruno Apps was on this list; it is resolved, see below.
 
 **Closed by re-verification, not by work:** the old backlog carried "yml writer
 gaps — request.auth, meta.seq, ws/grpc message names, assertions". Re-tested
