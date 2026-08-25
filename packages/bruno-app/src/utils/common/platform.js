@@ -14,9 +14,24 @@ export const resolveRequestFilename = (name, extension = 'bru') => {
   return `${trim(name)}.${extension}`;
 };
 
+/**
+ * The folder segments between a collection root and a path inside it.
+ *
+ * A path that is NOT inside the root has no segments — returning them anyway is how a
+ * transient request (whose file lives in a temp directory outside the collection) put
+ * phantom '..' folders into the sidebar tree. usebruno/bruno#8977.
+ *
+ * Two ways a path can be outside: `path.relative` walks up ('..'), or the target is on a
+ * different root entirely, where relative() returns an absolute path — which happens on
+ * Windows across drive letters, and our users are Windows-only.
+ */
 export const getSubdirectoriesFromRoot = (rootPath, pathname) => {
   const relativePath = path.relative(rootPath, pathname);
-  return relativePath ? relativePath.split(path.sep) : [];
+  if (!relativePath || path.isAbsolute(relativePath)) {
+    return [];
+  }
+  const segments = relativePath.split(path.sep);
+  return segments[0] === '..' ? [] : segments;
 };
 
 export const isWindowsOS = () => {
