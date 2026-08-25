@@ -5,6 +5,13 @@ const chokidar = require('chokidar');
 const yaml = require('js-yaml');
 const { generateUidBasedOnHash, uuid } = require('../utils/common');
 const { getWorkspaceUid, hasGitConflictMarkers } = require('../utils/workspace-config');
+const {
+  getMocksDirPath,
+  getMockServerFromFile,
+  getMockServerUid,
+  invalidateMockServerFile,
+  removeMockServerFileFromCache
+} = require('./mock-server/mock-server-store');
 const { parseEnvironment } = require('@usebruno/filestore');
 const EnvironmentSecretsStore = require('../store/env-secrets');
 const { decryptStringSafe } = require('../utils/encryption');
@@ -132,10 +139,93 @@ const handleGlobalEnvironmentFileUnlink = async (win, pathname, workspaceUid) =>
   }
 };
 
+const handleMockServerFileAddOrChange = (win, pathname, workspaceUid, channel) => {
+  if (win.isDestroyed()) {
+    return;
+  }
+
+  try {
+    invalidateMockServerFile(pathname);
+    const mockServerFile = getMockServerFromFile(pathname, workspaceUid);
+    win.webContents.send(channel, workspaceUid, mockServerFile);
+  } catch (error) {
+    console.error('Error handling mock server file change:', error);
+  }
+};
+
+const handleMockServerFileUnlink = (win, pathname, workspaceUid) => {
+  if (win.isDestroyed()) {
+    return;
+  }
+
+  try {
+    removeMockServerFileFromCache(pathname);
+    win.webContents.send('main:workspace-mock-server-deleted', workspaceUid, getMockServerUid(pathname));
+  } catch (error) {
+    console.error('Error handling mock server file unlink:', error);
+  }
+};
+
 class WorkspaceWatcher {
   constructor() {
     this.watchers = {};
+    this.mockServerWatchers = {};
     this.environmentWatchers = {};
+  }
+
+  _closeMockServerWatcher(workspacePath) {
+    if (this.mockServerWatchers[workspacePath]) {
+      this.mockServerWatchers[workspacePath].close();
+      delete this.mockServerWatchers[workspacePath];
+    }
+  }
+
+  _addMockServerWatcher(win, workspacePath, workspaceUid) {
+    const mocksDir = getMocksDirPath(workspacePath);
+    const self = this;
+
+    this._closeMockServerWatcher(workspacePath);
+
+    if (!fs.existsSync(mocksDir)) {
+      const dirWatcher = chokidar.watch(mocksDir, {
+        ignoreInitial: false,
+        persistent: true,
+        ignorePermissionErrors: true,
+        depth: 0
+      });
+
+      dirWatcher.on('addDir', () => {
+        dirWatcher.close();
+        self._addMockServerWatcher(win, workspacePath, workspaceUid);
+      });
+
+      this.mockServerWatchers[workspacePath] = dirWatcher;
+      return;
+    }
+
+    const mockServerWatcher = chokidar.watch(path.join(mocksDir, '*.yml'), {
+      ignoreInitial: true,
+      persistent: true,
+      ignorePermissionErrors: true,
+      awaitWriteFinish: {
+        stabilityThreshold: 100,
+        pollInterval: 10
+      }
+    });
+
+    mockServerWatcher.on('add', (pathname) => {
+      handleMockServerFileAddOrChange(win, pathname, workspaceUid, 'main:workspace-mock-server-added');
+    });
+
+    mockServerWatcher.on('change', (pathname) => {
+      handleMockServerFileAddOrChange(win, pathname, workspaceUid, 'main:workspace-mock-server-changed');
+    });
+
+    mockServerWatcher.on('unlink', (pathname) => {
+      handleMockServerFileUnlink(win, pathname, workspaceUid);
+    });
+
+    this.mockServerWatchers[workspacePath] = mockServerWatcher;
   }
 
   addWatcher(win, workspacePath) {
@@ -149,12 +239,15 @@ class WorkspaceWatcher {
     if (this.environmentWatchers[workspacePath]) {
       this.environmentWatchers[workspacePath].close();
     }
+    this._closeMockServerWatcher(workspacePath);
 
     const self = this;
     setTimeout(() => {
       if (win.isDestroyed()) {
         return;
       }
+
+      self._addMockServerWatcher(win, workspacePath, workspaceUid);
 
       const watcher = chokidar.watch(workspaceFilePath, {
         ignoreInitial: true,
@@ -224,6 +317,7 @@ class WorkspaceWatcher {
         this.environmentWatchers[workspacePath].close();
         delete this.environmentWatchers[workspacePath];
       }
+      this._closeMockServerWatcher(workspacePath);
       dotEnvWatcher.removeWorkspaceWatcher(workspacePath);
     } catch (error) {
       console.error('Error removing workspace watcher:', error);
@@ -248,6 +342,13 @@ class WorkspaceWatcher {
       } catch (err) {}
     }
     this.environmentWatchers = {};
+
+    for (const [, watcher] of Object.entries(this.mockServerWatchers)) {
+      try {
+        watcher?.close();
+      } catch (err) {}
+    }
+    this.mockServerWatchers = {};
 
     dotEnvWatcher.closeAll();
   }

@@ -55,7 +55,11 @@ const defaultPreferences = {
     responsePaneOrientation: 'horizontal'
   },
   beta: {
-    'openapi-sync': false
+    'openapi-sync': false,
+    // Ships default-off. The engine is complete but the UI is not, and a mock
+    // server binds a port and answers requests — not something to switch on for
+    // everyone by way of an upgrade.
+    'mock-server': false
   },
   onboarding: {
     hasLaunchedBefore: false,
@@ -195,7 +199,8 @@ const preferencesSchema = Yup.object().shape({
     responsePaneOrientation: Yup.string().oneOf(['horizontal', 'vertical'])
   }),
   beta: Yup.object({
-    'openapi-sync': Yup.boolean()
+    'openapi-sync': Yup.boolean(),
+    'mock-server': Yup.boolean()
   }),
   onboarding: Yup.object({
     hasLaunchedBefore: Yup.boolean(),

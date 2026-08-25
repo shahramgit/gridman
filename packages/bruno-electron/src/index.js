@@ -47,6 +47,7 @@ const registerWorkspaceCatalogIpc = require('./ipc/workspace-catalog');
 const registerApiSpecIpc = require('./ipc/apiSpec');
 const registerGitIpc = require('./ipc/git');
 const registerTrashIpc = require('./ipc/trash');
+const registerMockServerIpc = require('./ipc/mock-server');
 const registerHistoryIpc = require('./ipc/history');
 const registerWorkflowsIpc = require('./ipc/workflows');
 const registerOpenAPISyncIpc = require('./ipc/openapi-sync');
@@ -529,6 +530,7 @@ app.on('ready', async () => {
   registerSystemMonitorIpc(mainWindow, systemMonitor);
   registerGitIpc(mainWindow);
   registerTrashIpc();
+  registerMockServerIpc(mainWindow);
   registerHistoryIpc();
   registerWorkflowsIpc(mainWindow);
   registerAiIpc(mainWindow);
