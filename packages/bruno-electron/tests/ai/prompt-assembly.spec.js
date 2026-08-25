@@ -97,7 +97,6 @@ describe('chat buildContextMessage — the message prepended to EVERY conversati
     jsonRequestContext(),
     variables(),
     null, // strict defaults
-    true,
     [{
       name: 'Deliver',
       method: 'POST',
@@ -137,7 +136,7 @@ describe('chat buildContextMessage — the message prepended to EVERY conversati
    */
   it('does NOT rewrite the user\'s own code — that would corrupt what comes back', () => {
     const code = 'const u = "https://api.example.com/v1?api_key=" + bru.getEnvVar("k");';
-    const out = buildContextMessage('tests', { tests: code }, null, [], null, true, []);
+    const out = buildContextMessage('tests', { tests: code }, null, [], null, []);
     expect(out).toContain(code);
     expect(out).not.toContain('api_key=<redacted>');
   });

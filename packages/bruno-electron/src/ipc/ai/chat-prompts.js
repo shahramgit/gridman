@@ -97,55 +97,7 @@ Post-response scripts run AFTER the response is received, before tests. Availabl
 1. Use markdown format
 2. Be concise but thorough
 3. Use the request context (URL, method, headers, body, params) for accurate docs
-4. Write the COMPLETE documentation when using write_content`,
-
-  'app': `You are an AI assistant that helps users build small in-Gridman apps.
-
-An app is a self-contained HTML/CSS/JS document rendered inside a sandboxed <webview> in Gridman. The user's code is injected into the body of a generated HTML document at runtime. Plain HTML, CSS, and JavaScript only — no bundler, no module imports, no JSX. Output can be a bare HTML fragment or a full \`<html>\` document.
-
-Before any user script runs, the host provides a global \`window.bru\`; the app context lives under \`bru.ctx\`. The surface depends on where the app lives:
-
-### Request-level app — the app you edit via read_content/write_content('app') is ALWAYS this kind
-\`\`\`js
-bru.ctx.theme                 // { name, mode: 'light'|'dark', config } — also reflected as a class on document.body
-bru.ctx.http.response         // { status, statusText, headers, data, size, duration } | null
-bru.ctx.assertions            // array of assertion result objects
-bru.ctx.tests                 // array of test result objects
-bru.ctx.variables.resolved    // merged env + global + collection + runtime variables (read-only snapshot)
-
-bru.ctx.submitRequest(options?)          // executes THIS request; returns Promise<response>; options may carry { runtimeVariables: {...} }
-bru.ctx.variables.runtime.set(name, value) // persist a runtime variable on the collection
-bru.ctx.log(...args)                     // forwarded to the Gridman devtools console
-
-bru.ctx.onInit              = (bru) => { ... }   // called ONCE when the initial state arrives — do the first render here
-bru.ctx.onThemeChange       = (theme) => { ... }
-bru.ctx.http.onResponseChange = (response) => { ... }
-bru.ctx.onAssertionsChange  = (assertions) => { ... }
-bru.ctx.onTestsChange       = (tests) => { ... }
-bru.ctx.onVariablesChange   = (variables) => { ... }
-\`\`\`
-
-### Collection-/folder-level app (edited from the collection's own app editor)
-\`\`\`js
-bru.ctx.theme / bru.ctx.variables / bru.ctx.variables.runtime.set / bru.ctx.log / bru.ctx.onInit   // as above
-bru.ctx.collection                        // { name, pathname } | null
-bru.ctx.listRequests()                    // Promise<Array<{ uid, name, pathname, type, method, url }>>
-bru.ctx.runRequest(pathname, options?)    // run a request by pathname; returns Promise<response>
-bru.ctx.onThemeChange / bru.ctx.onVariablesChange / bru.ctx.onCollectionChange
-\`\`\`
-There is NO \`bru.ctx.http\` / \`bru.ctx.submitRequest\` / \`bru.ctx.assertions\` / \`bru.ctx.tests\` at collection level. Reference requests by the \`pathname\` from \`bru.ctx.listRequests()\`, not by name.
-
-At design time you also have list_requests() and search_requests(query) tools that return the same shape — call them to enumerate the collection before hard-coding pathnames, and to locate specific requests the user asked about (e.g. "create an app for the login request"). For a targeted app that runs a small known set, you may embed the resolved pathnames directly instead of calling \`bru.ctx.listRequests()\` at runtime.
-
-## RULES
-1. Generate a single self-contained HTML document (inline styles and scripts are fine — no external CDN)
-2. Use ONLY the \`bru.ctx\` APIs listed above for the app's level — do not invent \`bru.ctx\` methods, do not use \`fetch\` to call the API directly, and do not rely on Gridman internals beyond \`bru.ctx\`
-3. CRITICAL: ctx data (\`bru.ctx.http.response\`, \`bru.ctx.variables.resolved\`, \`bru.ctx.collection\`, …) is delivered asynchronously AFTER the page loads — reading it at the top level or in \`DOMContentLoaded\` yields null/empty. Do the initial render inside \`bru.ctx.onInit = (bru) => { ... }\` and react to later changes via the \`on*Change\` callbacks
-4. Always handle loading and error states around \`bru.ctx.submitRequest\` / \`bru.ctx.runRequest\`; bind UI updates to the \`on*Change\` callbacks instead of polling
-5. Theme changes toggle a \`light\`/\`dark\` class on \`document.body\` (from \`bru.ctx.theme.mode\`) — style both states; \`bru.ctx.theme.config\` is the full resolved theme object
-6. Keep the UI clean, readable, and accessible — neutral styling, no heavy gradients
-7. When building a collection/folder-level app that runs specific requests, call list_requests / search_requests first to get real pathnames from this workspace — never invent one. Pass the returned \`pathname\` verbatim to \`bru.ctx.runRequest\`.
-8. Write the COMPLETE document when using write_content`
+4. Write the COMPLETE documentation when using write_content`
 };
 
 SYSTEM_PROMPTS.workflow = `You are an AI assistant that helps users build workflows in Gridman API client.
@@ -234,7 +186,7 @@ read_content / write_content do NOT apply to a workflow and there is nothing for
 - write_workflow({ steps }): the COMPLETE new step list. A replacement, not a patch.
 - create_request({ name, method, url, folderPathname?, headers?, body?, auth?, docs? }): propose a new request in this collection. Use \`folderPathname\` from list_requests / search_requests to place it in an existing folder; omit for the collection root.
 - update_request({ url?, method?, headers?, body?, auth? }): propose changes to the request the user currently has OPEN. Pass only the fields that change. \`headers\` is a complete replacement list, not a patch — omit it to leave headers alone. It cannot target a different request; if the user means another one, ask them to open it.
-- read_content(type): reads a section. type ∈ { 'app', 'tests', 'pre-request', 'post-response', 'docs' }. MUST be called before write_content for the same type.
+- read_content(type): reads a section. type ∈ { 'tests', 'pre-request', 'post-response', 'docs' }. MUST be called before write_content for the same type.
 - write_content(type, content): writes complete new content. The content must be the ENTIRE file, not a diff. read_content must be called first for the same type.
 - read_response(): returns the redacted shape (keys + types) of the last response body. No parameters. Use it to learn paths and types — not to read actual values.
 - If read_response reports that no response is available and the task depends on the response structure (tests on body fields, extracting values, rendering response data), do NOT invent fields or guess the shape. Ask the user to run the request once so you can read the response shape, then continue from there.
@@ -252,18 +204,24 @@ read_content / write_content do NOT apply to a workflow and there is nothing for
 // 'workflow' is deliberately NOT here: this list is what read_content /
 // write_content accept, and a workflow is edited through its own tools. Adding
 // it would let the model write a step list into a text section.
-const CONTENT_TYPES = ['app', 'tests', 'pre-request', 'post-response', 'docs'];
+// 'app' is deliberately absent: Gridman has no Apps feature (no app tab, no
+// appEnabled, no editor). It used to be here because the AI stack was ported from
+// upstream wholesale — with the result that the model could call
+// write_content('app'), the user got an Apply button, and accepting it hit the
+// renderer's `default: return` and did nothing at all.
+//
+// If Bruno Apps is ever adopted, restore 'app' here, the app system prompt, and the
+// TOOL_LABELS entries — see AGENTS-BRUNO-SYNC.md.
+const CONTENT_TYPES = ['tests', 'pre-request', 'post-response', 'docs'];
 
 const TOOL_LABELS = {
   read_content: {
-    'app': 'Reading app code',
     'tests': 'Reading tests',
     'pre-request': 'Reading pre-request script',
     'post-response': 'Reading post-response script',
     'docs': 'Reading documentation'
   },
   write_content: {
-    'app': 'Writing app code',
     'tests': 'Writing tests',
     'pre-request': 'Writing pre-request script',
     'post-response': 'Writing post-response script',
@@ -280,8 +238,8 @@ const TOOL_LABELS = {
 };
 
 const buildSystemPrompt = (contentType, hasMultipleContent) => {
-  const base = SYSTEM_PROMPTS[contentType] || SYSTEM_PROMPTS.app;
-  const hint = `\nThe user's active tab is '${contentType || 'app'}' — use that as the type for read_content / write_content unless they specify otherwise.`;
+  const base = SYSTEM_PROMPTS[contentType] || SYSTEM_PROMPTS.docs;
+  const hint = `\nThe user's active tab is '${contentType || 'docs'}' — use that as the type for read_content / write_content unless they specify otherwise.`;
   let prompt = SCOPE_GUARD + TOOL_INSTRUCTIONS + hint + '\n\n' + base;
   if (hasMultipleContent) {
     prompt += '\n\nNote: The user may ask you to modify other content types too (app, tests, pre-request, post-response, docs). The context message shows all available content.';

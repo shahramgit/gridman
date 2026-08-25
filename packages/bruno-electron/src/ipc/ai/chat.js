@@ -23,20 +23,14 @@ const getSecurityPrefs = () => preferencesUtil.getAiSecurityPreferences();
 const activeStreams = new Map();
 
 const CONTENT_LABELS = {
-  'app': 'App Code',
   'tests': 'Test Code',
   'pre-request': 'Pre-Request Script',
   'post-response': 'Post-Response Script',
   'docs': 'Documentation'
 };
 
-const APP_DISABLED_NOTICE = 'App mode is currently DISABLED for this request. The App tab is hidden and any code written to \'app\' will not be visible or runnable. Do NOT call write_content(\'app\'); instead, tell the user to open the request\'s Settings tab and turn on "Enable App" first, then ask them to run the request again.';
-
-const buildContextMessage = (contentType, allContent, requestContext, variables, security, appEnabled, requests) => {
+const buildContextMessage = (contentType, allContent, requestContext, variables, security, requests) => {
   const parts = [];
-  if (appEnabled === false) {
-    parts.push(`Note: ${APP_DISABLED_NOTICE}`);
-  }
   const ctx = formatRequestContext(requestContext, { includeResponse: true, security });
   if (ctx) {
     parts.push(`HTTP Request Context:\n${ctx}`);
@@ -82,10 +76,10 @@ const extractFencedCode = (text) => {
 };
 
 const READ_PARAMS = z.object({
-  type: z.string().describe('Section to read. One of: \'app\', \'tests\', \'pre-request\', \'post-response\', \'docs\'.')
+  type: z.string().describe('Section to read. One of: \'tests\', \'pre-request\', \'post-response\', \'docs\'.')
 });
 const WRITE_PARAMS = z.object({
-  type: z.string().describe('Section to write. One of: \'app\', \'tests\', \'pre-request\', \'post-response\', \'docs\'.'),
+  type: z.string().describe('Section to write. One of: \'tests\', \'pre-request\', \'post-response\', \'docs\'.'),
   content: z.string().describe('The complete new content for the section.')
 });
 const READ_RESPONSE_PARAMS = z.object({});
@@ -261,7 +255,7 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
   });
 
   ipcMain.on('renderer:ai-chat-stream', async (_event, payload) => {
-    const { messages, allContent, contentType, requestContext, variables, requests, requestId, model: modelId, appEnabled, workflow } = payload || {};
+    const { messages, allContent, contentType, requestContext, variables, requests, requestId, model: modelId, workflow } = payload || {};
 
     const send = (channel, data) => {
       if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
@@ -307,7 +301,7 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
     }
 
     const normalizedContent = allContent || {};
-    const effectiveType = contentType || 'app';
+    const effectiveType = contentType || 'docs';
     const hasMultiple = Object.values(normalizedContent).filter((c) => c && c.trim()).length > 1;
     const security = getSecurityPrefs();
 
@@ -333,9 +327,6 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
         inputSchema: WRITE_PARAMS,
         execute: async ({ type, content }) => {
           const resolved = resolveContentType(type, effectiveType);
-          if (resolved === 'app' && appEnabled === false) {
-            return APP_DISABLED_NOTICE;
-          }
           if (!(resolved in readState)) {
             // Tolerate models that skip read_content. We still record the
             // original snapshot so the diff renders correctly, but the UI
@@ -383,7 +374,7 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
         }
       },
       list_requests: {
-        description: 'List every HTTP / GraphQL / gRPC / WebSocket request in this collection. Returns each request\'s name, method, url, folder path, and `pathname`. Use `pathname` — never the name — when generating code that calls `bru.ctx.runRequest(pathname)` (collection/folder-level apps) or when telling the user which file to open. Prefer search_requests when the collection is large or you already know a keyword.',
+        description: 'List every HTTP / GraphQL / gRPC / WebSocket request in this collection. Returns each request\'s name, method, url, folder path, and `pathname`. Use `pathname` — never the name — when generating code that calls `bru.ctx.runRequest(pathname)` in a script or test, or when telling the user which file to open. Prefer search_requests when the collection is large or you already know a keyword.',
         inputSchema: LIST_REQUESTS_PARAMS,
         execute: async () => {
           if (!Array.isArray(requests) || requests.length === 0) {
@@ -393,7 +384,7 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
         }
       },
       search_requests: {
-        description: 'Search this collection\'s requests by a case-insensitive substring matched against name / url / pathname / folder path (or an exact HTTP method like GET/POST). Returns each match\'s name, method, url, folder path, and `pathname`. Use `pathname` verbatim when generating `bru.ctx.runRequest(pathname)` calls for a collection/folder-level app.',
+        description: 'Search this collection\'s requests by a case-insensitive substring matched against name / url / pathname / folder path (or an exact HTTP method like GET/POST). Returns each match\'s name, method, url, folder path, and `pathname`. Use `pathname` verbatim when generating `bru.ctx.runRequest(pathname)` calls in a script or test.',
         inputSchema: SEARCH_REQUESTS_PARAMS,
         execute: async ({ query }) => {
           if (!Array.isArray(requests) || requests.length === 0) {
@@ -466,7 +457,7 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
     };
 
     const allMessages = [
-      { role: 'user', content: buildContextMessage(effectiveType, normalizedContent, requestContext, variables, security, appEnabled, requests) },
+      { role: 'user', content: buildContextMessage(effectiveType, normalizedContent, requestContext, variables, security, requests) },
       ...messages.map((m) => ({ role: m.role, content: m.content }))
     ];
 
