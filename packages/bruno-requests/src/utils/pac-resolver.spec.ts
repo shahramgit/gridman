@@ -64,7 +64,13 @@ describe('pac-resolver (shared)', () => {
 
     const directives = await wrapper.resolve('http://foo.example/');
     expect(directives).toEqual(['PROXY p.example:8080', 'DIRECT']);
-    expect(createPacResolverMock).toHaveBeenCalledWith(expect.any(Object), pacScript);
+    expect(createPacResolverMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      pacScript,
+      // myIpAddress is overridden so PAC evaluation never opens a socket to a
+      // public host — see getLocalIpAddress in pac-resolver.ts.
+      expect.objectContaining({ sandbox: expect.objectContaining({ myIpAddress: expect.any(Function) }) })
+    );
     expect(axiosGet).toHaveBeenCalledWith(pacSource, expect.objectContaining({ proxy: false }));
   });
 
@@ -196,7 +202,13 @@ describe('pac-resolver (shared)', () => {
 
     expect(readFile).toHaveBeenCalledWith(expectedPath, 'utf8');
     expect(axiosGetMock).not.toHaveBeenCalled();
-    expect(createPacResolverMock).toHaveBeenCalledWith(expect.any(Object), pacScript);
+    expect(createPacResolverMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      pacScript,
+      // myIpAddress is overridden so PAC evaluation never opens a socket to a
+      // public host — see getLocalIpAddress in pac-resolver.ts.
+      expect.objectContaining({ sandbox: expect.objectContaining({ myIpAddress: expect.any(Function) }) })
+    );
 
     const directives = await wrapper.resolve('http://foo.example/');
     expect(directives).toEqual(['PROXY p.example:8080']);

@@ -31,8 +31,24 @@ class BrunoResponse {
     return this.res ? this.res.statusText : null;
   }
 
+  /**
+   * HTTP header names are case-insensitive, and axios stores them lowercased — so
+   * `res.getHeader('Content-Type')` returned undefined while `'content-type'`
+   * worked, which is not a distinction a script author should have to know.
+   * usebruno/bruno#8461.
+   *
+   * Exact match is tried first so a response carrying a non-normalised header
+   * (a hand-built fixture, a mocked response) still resolves.
+   */
   getHeader(name) {
-    return this.res && this.res.headers ? this.res.headers[name] : null;
+    if (typeof name !== 'string' || !this.res?.headers) {
+      return null;
+    }
+    const headers = this.res.headers;
+    if (name in headers) {
+      return headers[name];
+    }
+    return headers[name.toLowerCase()];
   }
 
   getHeaders() {
