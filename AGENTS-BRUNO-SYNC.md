@@ -299,13 +299,22 @@ express and cors are new dependencies.
   or localStorage. Every restart re-collapses all 124 GSB collections and every
   folder in them. Build ours — a set of expanded uids per collection, restored
   on mount.
-- **Presets.** Called "cosmetic, restyle only" here; it is not. It bundles
-  `#8889`, a live bug WE HAD — the Presets form saved `requestType: 'ws'` and
-  `CreateTransientRequest` switched on `'websocket'` with no default, so a
-  WebSocket collection preset made the + button do nothing at all. Fixed in
-  `e18f0e997`. Still outstanding from that group: `#8612`, a default
-  environment in presets (33 files, a real feature), and the restyle itself
-  (segmented control, dropdown).
+- **Presets.** Called "cosmetic, restyle only" here; it was not, and the label
+  hid two things worth having. `#8889` was a live bug WE HAD — the Presets form
+  saved `requestType: 'ws'` while `CreateTransientRequest` switched on
+  `'websocket'` with no default, so a WebSocket collection preset made the +
+  button do nothing at all (`e18f0e997`). `#8612`, a default environment per
+  collection, is DONE in `89e62045c` — storage half theirs, wiring ours,
+  because their app and electron hunks are written against a snapshotManager
+  and a hydrate payload we do not have. Still outstanding: only the restyle
+  itself (segmented control, dropdown).
+
+**Fixed while porting, unrelated to any upstream feature:** the
+bruno-converters build. `mime-types` was missing from the rollup externals, so
+the build tried to bundle `mime-db/db.json` and died — and since `dist/` is
+gitignored, the failure was invisible until someone ran the build and was left
+with no dist, while bruno-electron requires the package at runtime. Upstream
+externalizes it. Fixed in `89e62045c`.
 
 **Closed, was never open:**
 
