@@ -265,9 +265,29 @@ updates — a JSON cache rewrites the whole file on every save.
 divergences — genuinely additive, but 8 of its own fixes shipped in the same
 release, so take it one release later and port it once).
 
-**Still open:** Bruno Apps (we do not have them, yet our AI ships app support —
-see below), sidebar-state persistence (build ours), yml migration entry point
-(their UI, our reversible engine), presets restyle.
+**Still open:** sidebar-state persistence (build ours), yml migration entry point
+(their UI, our reversible engine), presets restyle, `#8722` folder sequencing
+(needs adapting to our diverged sidebar), `#8733` secrets env table (cosmetic —
+an empty placeholder row inherits `secret`). Bruno Apps was on this list; it is
+resolved, see below.
+
+**Closed by re-verification, not by work:** the old backlog carried "yml writer
+gaps — request.auth, meta.seq, ws/grpc message names, assertions". Re-tested
+2026-08-25 by round-tripping a `.bru` request with bearer auth, `seq: 7`, two
+assertions and a pre-request var through `stringifyRequest`/`parseRequest`, and
+a two-message gRPC request through the same: every field survives. The
+migration work fixed these; the note was stale.
+
+**Prompt-vs-runtime drift is its own bug class.** Fixed in `4f95fcc47`: the AI
+prompt taught `bru.ctx.runRequest` (no `bru.ctx` on either sandbox — it is
+`bru.runRequest`), `bru.getSecretVar` and `bru.visualize` (neither exists on the
+Bru class, here or upstream). Every script the model wrote for those tasks threw
+on the first line. `tests/ai/prompt-api-exists.spec.js` now resolves every
+`bru.<path>(` the model is shown against a real Bru instance, covering both
+chat-prompts.js and chat.js's tool descriptions. Related and NOT fixed: the
+quickjs shim exposes `visualize` and `getSecretVar` handles that call those same
+missing methods, so hand-written scripts hit it too — upstream's bug, needs a
+decision.
 
 **Known defect this review surfaced — FIXED in `5738bb47a`.** Our AI's
 `CONTENT_TYPES` included `'app'` and carried a full Apps system prompt, but
