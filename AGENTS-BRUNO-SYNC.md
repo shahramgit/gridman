@@ -244,16 +244,22 @@ updates — a JSON cache rewrites the whole file on every save.
   0.005 MB lane, and their parse cost (1,628 ms of the 2,213 ms total — the cost
   is per-file, not per-byte: the two files over 1 MB cost 25 ms between them)
   serializes through one thread with 1,067 postMessage round-trips.
-- `collection-indexer.js` reads the FULL text of every file to extract five
-  fields that are all inside the first 8 KB. Measured over all 12,088 files: 210
-  MB and 390 ms warm / 1,055 ms cooler, against 25 MB and 163/176 ms for an
-  8 KB head read — 6x less I/O, which is the part Windows antivirus taxes. Zero
-  files needed more than 8 KB for meta + method + url. The cost is
-  `countExamples`, which scans the whole body: a tiered read (full below 64 KB,
-  8 KB head above) reads 34 MB and leaves 47 of 5,401 example-bearing files
-  without their sidebar chevron until they hydrate. Worth doing only if the
-  Windows win is confirmed on a Windows machine; on macOS the absolute saving at
-  one collection open is ~17 ms.
+  NOT changed, for the same reason the cache was not: nothing bursts through it.
+  `parseRequestViaWorker` has three callers — the watcher's `add` (a burst only
+  on the eager path, which is capped at 100 files), `renderer:load-request` (one
+  request), and the yml migration (already a long batch job with progress). Make
+  it concurrent only if a fourth caller appears, and note it needs a worker POOL
+  or request-id correlation: the responses carry no id, so raising concurrency
+  on the shared Worker would mismatch results to callers.
+- `collection-indexer.js` read the FULL text of every file to extract five
+  fields that are all inside the first 8 KB. DONE in `074ad47e9`, tiered: whole
+  file to 64 KB, 8 KB head above. 34 MB of I/O per full scan instead of 210 MB.
+  **Do not quote the 6x as a speedup.** Measured end to end through the real
+  indexer over all 122 GSB collections: 1,755 ms -> 1,601 ms, 9%, because the
+  page cache makes the read the small part and readdir + regex + uid + IPC are
+  the rest. The 6x is bytes, and the case for it is Windows, where Defender
+  charges per file and per byte — unverified from here. Cost: 47 of 5,410
+  example-bearing files lose the sidebar chevron until the request is opened.
 
 **Deferred, not rejected:** mock server (69 files ADDED, zero collisions with our
 divergences — genuinely additive, but 8 of its own fixes shipped in the same
