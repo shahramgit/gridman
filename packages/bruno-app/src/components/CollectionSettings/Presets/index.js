@@ -5,10 +5,11 @@ import { updateCollectionPresets } from 'providers/ReduxStore/slices/collections
 import { saveCollectionSettings } from 'providers/ReduxStore/slices/collections/actions';
 import { get } from 'lodash';
 import Button from 'ui/Button';
+import { PRESET_REQUEST_TYPES } from 'utils/common/constants';
 
 const PresetsSettings = ({ collection }) => {
   const dispatch = useDispatch();
-  const initialPresets = { requestType: 'http', requestUrl: '' };
+  const initialPresets = { requestType: PRESET_REQUEST_TYPES.HTTP, requestUrl: '' };
 
   // Get presets from draft.brunoConfig if it exists, otherwise from brunoConfig
   const currentPresets = collection.draft?.brunoConfig
@@ -52,7 +53,7 @@ const PresetsSettings = ({ collection }) => {
               name="requestType"
               onChange={handleRequestTypeChange}
               value="http"
-              checked={(currentPresets.requestType || 'http') === 'http'}
+              checked={(currentPresets.requestType || PRESET_REQUEST_TYPES.HTTP) === PRESET_REQUEST_TYPES.HTTP}
             />
             <label htmlFor="http" className="ml-1 cursor-pointer select-none">
               HTTP
@@ -65,7 +66,7 @@ const PresetsSettings = ({ collection }) => {
               name="requestType"
               onChange={handleRequestTypeChange}
               value="graphql"
-              checked={(currentPresets.requestType || 'http') === 'graphql'}
+              checked={(currentPresets.requestType || PRESET_REQUEST_TYPES.HTTP) === PRESET_REQUEST_TYPES.GRAPHQL}
             />
             <label htmlFor="graphql" className="ml-1 cursor-pointer select-none">
               GraphQL
@@ -78,7 +79,7 @@ const PresetsSettings = ({ collection }) => {
               name="requestType"
               onChange={handleRequestTypeChange}
               value="grpc"
-              checked={(currentPresets.requestType || 'http') === 'grpc'}
+              checked={(currentPresets.requestType || PRESET_REQUEST_TYPES.HTTP) === PRESET_REQUEST_TYPES.GRPC}
             />
             <label htmlFor="grpc" className="ml-1 cursor-pointer select-none">
               gRPC
@@ -91,7 +92,7 @@ const PresetsSettings = ({ collection }) => {
               name="requestType"
               onChange={handleRequestTypeChange}
               value="ws"
-              checked={(currentPresets.requestType || 'http') === 'ws'}
+              checked={(currentPresets.requestType || PRESET_REQUEST_TYPES.HTTP) === PRESET_REQUEST_TYPES.WS}
             />
             <label htmlFor="ws" className="ml-1 cursor-pointer select-none">
               WebSocket
