@@ -43,7 +43,7 @@ const buildContextMessage = (contentType, allContent, requestContext, variables,
 
   const requestsStr = formatRequestsList(requests, { security });
   if (requestsStr) {
-    parts.push(`Requests in this collection (preview — call list_requests / search_requests for full details, use \`pathname\` with bru.ctx.runRequest):\n${requestsStr}`);
+    parts.push(`Requests in this collection (preview — call list_requests / search_requests for full details, use \`pathname\` with bru.runRequest):\n${requestsStr}`);
   }
 
   const activeLabel = CONTENT_LABELS[contentType] || 'Code';
@@ -363,7 +363,7 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
         }
       },
       search_variables: {
-        description: 'Search environment / collection / global / runtime variables by name (case-insensitive substring match). Use this when the user has many variables or you need to confirm a name before referencing it in code. Values are returned, but variables marked `secret` (or whose names match patterns like `*_token`, `*_secret`, `password`, etc.) come back as `<redacted>`. Each result has a `scope` field — use it to pick the right runtime accessor: `bru.getEnvVar` for `env`, `bru.getGlobalEnvVar` for `global`, `bru.getCollectionVar` / `bru.getFolderVar` / `bru.getRequestVar` for `collection`, `bru.getVar` for `runtime`, and `bru.getSecretVar` for any value that came back redacted. Never hard-code a returned value.',
+        description: 'Search environment / collection / global / runtime variables by name (case-insensitive substring match). Use this when the user has many variables or you need to confirm a name before referencing it in code. Values are returned, but variables marked `secret` (or whose names match patterns like `*_token`, `*_secret`, `password`, etc.) come back as `<redacted>`. Each result has a `scope` field — use it to pick the right runtime accessor: `bru.getEnvVar` for `env`, `bru.getGlobalEnvVar` for `global`, `bru.getCollectionVar` / `bru.getFolderVar` / `bru.getRequestVar` for `collection`, `bru.getVar` for `runtime`, and `bru.getEnvVar` for a value that came back redacted — secrets live in the environment map like any other variable. Never hard-code a returned value.',
         inputSchema: SEARCH_VARS_PARAMS,
         execute: async ({ query }) => {
           if (!Array.isArray(variables) || variables.length === 0) {
@@ -374,7 +374,7 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
         }
       },
       list_requests: {
-        description: 'List every HTTP / GraphQL / gRPC / WebSocket request in this collection. Returns each request\'s name, method, url, folder path, and `pathname`. Use `pathname` — never the name — when generating code that calls `bru.ctx.runRequest(pathname)` in a script or test, or when telling the user which file to open. Prefer search_requests when the collection is large or you already know a keyword.',
+        description: 'List every HTTP / GraphQL / gRPC / WebSocket request in this collection. Returns each request\'s name, method, url, folder path, and `pathname`. Use `pathname` — never the name — when generating code that calls `bru.runRequest(pathname)` in a script or test, or when telling the user which file to open. Prefer search_requests when the collection is large or you already know a keyword.',
         inputSchema: LIST_REQUESTS_PARAMS,
         execute: async () => {
           if (!Array.isArray(requests) || requests.length === 0) {
@@ -384,7 +384,7 @@ const registerChatIpc = ({ mainWindow, resolveModel, pickDefaultModelId, isAiEna
         }
       },
       search_requests: {
-        description: 'Search this collection\'s requests by a case-insensitive substring matched against name / url / pathname / folder path (or an exact HTTP method like GET/POST). Returns each match\'s name, method, url, folder path, and `pathname`. Use `pathname` verbatim when generating `bru.ctx.runRequest(pathname)` calls in a script or test.',
+        description: 'Search this collection\'s requests by a case-insensitive substring matched against name / url / pathname / folder path (or an exact HTTP method like GET/POST). Returns each match\'s name, method, url, folder path, and `pathname`. Use `pathname` verbatim when generating `bru.runRequest(pathname)` calls in a script or test.',
         inputSchema: SEARCH_REQUESTS_PARAMS,
         execute: async ({ query }) => {
           if (!Array.isArray(requests) || requests.length === 0) {

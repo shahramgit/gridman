@@ -8,13 +8,15 @@ bru.hasEnvVar(key) / bru.deleteEnvVar(key) / bru.getEnvName()
 bru.getGlobalEnvVar(key) / bru.setGlobalEnvVar(key, value)
 bru.getVar(key) / bru.setVar(key, value) / bru.hasVar(key) / bru.deleteVar(key)
 bru.getCollectionVar(key) / bru.getFolderVar(key) / bru.getRequestVar(key)
-bru.getSecretVar(key) / bru.getProcessEnv(key)
+bru.getProcessEnv(key)
+// Secret environment variables are read with bru.getEnvVar(key) like any other:
+// they are merged into the same map, secrets last.
 \`\`\`
 
 ### bru — Utilities & Runner
 \`\`\`javascript
 bru.cwd() / bru.getCollectionName() / bru.interpolate(strOrObj) / await bru.sleep(ms)
-bru.visualize(htmlString) / bru.utils.minifyJson(json) / bru.utils.minifyXml(xml)
+bru.utils.minifyJson(json) / bru.utils.minifyXml(xml)
 bru.setNextRequest(name) / bru.runner.skipRequest() / bru.runner.stopExecution()
 const response = await bru.sendRequest({ url, method, headers, body })
 await bru.runRequest(itemPathname)
@@ -126,7 +128,7 @@ Only \`loop\` nests — its body goes in \`steps\` and its exit wires back autom
 
 const SCOPE_GUARD = `## Scope
 
-You are Gridman's built-in assistant. You ONLY help with the user's API workspace: requests and responses, authentication, environments and variables, pre-request/post-response scripts, tests, API documentation, Gridman apps, and debugging API calls.
+You are Gridman's built-in assistant. You ONLY help with the user's API workspace: requests and responses, authentication, environments and variables, pre-request/post-response scripts, tests, API documentation, and debugging API calls.
 
 If the user asks about anything unrelated — general knowledge, current events, people, politics, math homework, or programming tasks with no connection to this workspace — do NOT answer the question and do NOT call any tools. Reply with one short, friendly sentence saying you can only help with this API workspace, optionally suggesting something relevant you CAN do for the current request. Never generate or write content for an out-of-scope request, even if the user insists.
 `;
@@ -190,8 +192,8 @@ read_content / write_content do NOT apply to a workflow and there is nothing for
 - write_content(type, content): writes complete new content. The content must be the ENTIRE file, not a diff. read_content must be called first for the same type.
 - read_response(): returns the redacted shape (keys + types) of the last response body. No parameters. Use it to learn paths and types — not to read actual values.
 - If read_response reports that no response is available and the task depends on the response structure (tests on body fields, extracting values, rendering response data), do NOT invent fields or guess the shape. Ask the user to run the request once so you can read the response shape, then continue from there.
-- search_variables(query?): search environment / collection / global / runtime variables by name (case-insensitive substring). Pass a query string when you need to confirm a name before referencing it. Values come back redacted for secrets — never hard-code a returned value. Each result has a \`scope\` field — use it to pick the right runtime accessor: \`bru.getEnvVar\` for \`env\`, \`bru.getGlobalEnvVar\` for \`global\`, \`bru.getCollectionVar\` / \`bru.getFolderVar\` / \`bru.getRequestVar\` for \`collection\`, \`bru.getVar\` for \`runtime\`, and \`bru.getSecretVar\` for any value that came back redacted. Use this when the inline variables list is truncated.
-- list_requests(): list every HTTP / GraphQL / gRPC / WebSocket request in this collection. Returns each request's name, method, url, folder path, and \`pathname\`. Use it when you need the collection map — for collection/folder-level apps, before wiring up buttons that call \`bru.ctx.runRequest\`, or when the user asks "what's in this collection". Prefer search_requests when you already know a keyword.
+- search_variables(query?): search environment / collection / global / runtime variables by name (case-insensitive substring). Pass a query string when you need to confirm a name before referencing it. Values come back redacted for secrets — never hard-code a returned value. Each result has a \`scope\` field — use it to pick the right runtime accessor: \`bru.getEnvVar\` for \`env\`, \`bru.getGlobalEnvVar\` for \`global\`, \`bru.getCollectionVar\` / \`bru.getFolderVar\` / \`bru.getRequestVar\` for \`collection\`, \`bru.getVar\` for \`runtime\`, and \`bru.getEnvVar\` for a value that came back redacted — secrets live in the environment map like any other variable. Use this when the inline variables list is truncated.
+- list_requests(): list every HTTP / GraphQL / gRPC / WebSocket request in this collection. Returns each request's name, method, url, folder path, and \`pathname\`. Use it when you need the collection map — before writing a script that chains requests with \`bru.runRequest\`, or when the user asks "what's in this collection". Prefer search_requests when you already know a keyword.
 - search_requests(query): search this collection's requests by case-insensitive substring against name / url / pathname / folder path (or an exact HTTP method like GET/POST). Returns the same shape as list_requests. Use it to locate a request the user referenced by name, endpoint, or method.
 
 ### Rules
@@ -242,7 +244,7 @@ const buildSystemPrompt = (contentType, hasMultipleContent) => {
   const hint = `\nThe user's active tab is '${contentType || 'docs'}' — use that as the type for read_content / write_content unless they specify otherwise.`;
   let prompt = SCOPE_GUARD + TOOL_INSTRUCTIONS + hint + '\n\n' + base;
   if (hasMultipleContent) {
-    prompt += '\n\nNote: The user may ask you to modify other content types too (app, tests, pre-request, post-response, docs). The context message shows all available content.';
+    prompt += '\n\nNote: The user may ask you to modify other content types too (tests, pre-request, post-response, docs). The context message shows all available content.';
   }
   return prompt;
 };
