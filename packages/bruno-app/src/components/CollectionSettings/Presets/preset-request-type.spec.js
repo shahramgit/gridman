@@ -21,7 +21,10 @@ const path = require('path');
 
 const read = (...segments) => fs.readFileSync(path.join(__dirname, ...segments), 'utf8');
 
-const PRESETS_FORM = read('index.js');
+// The form is two files since the restyle: index.js renders it and
+// constants.jsx holds the segmented-control items. The invariant is that
+// neither carries a private spelling of a request type.
+const PRESETS_FORM = read('index.js') + read('constants.jsx');
 const TRANSIENT_BUTTON = read('..', '..', 'CreateTransientRequest', 'index.js');
 
 const KEYS = Object.keys(PRESET_REQUEST_TYPES);
@@ -40,7 +43,9 @@ describe('collection preset request types', () => {
     // A literal 'websocket' anywhere in either file is the old bug coming back.
     expect(TRANSIENT_BUTTON).not.toMatch(/['"]websocket['"]/);
     expect(PRESETS_FORM).not.toMatch(/['"]websocket['"]/);
-    expect(PRESETS_FORM).toContain('PRESET_REQUEST_TYPES');
+    // index.js imports DEFAULT_PRESET_REQUEST_TYPE, constants.jsx imports the
+    // map itself — either way the values come from the shared module.
+    expect(PRESETS_FORM).toMatch(/PRESET_REQUEST_TYPES|DEFAULT_PRESET_REQUEST_TYPE/);
     expect(TRANSIENT_BUTTON).toContain('PRESET_REQUEST_TYPES');
   });
 });

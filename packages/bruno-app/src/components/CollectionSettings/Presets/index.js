@@ -5,11 +5,15 @@ import { updateCollectionPresets } from 'providers/ReduxStore/slices/collections
 import { saveCollectionSettings } from 'providers/ReduxStore/slices/collections/actions';
 import { get } from 'lodash';
 import Button from 'ui/Button';
-import { PRESET_REQUEST_TYPES } from 'utils/common/constants';
+import MenuDropdown from 'ui/MenuDropdown';
+import SegmentedControl from 'ui/SegmentedControl';
+import { IconCaretDown } from '@tabler/icons';
+import { DEFAULT_PRESET_REQUEST_TYPE } from 'utils/common/constants';
+import { requestTypeItems } from './constants';
 
 const PresetsSettings = ({ collection }) => {
   const dispatch = useDispatch();
-  const initialPresets = { requestType: PRESET_REQUEST_TYPES.HTTP, requestUrl: '', defaultEnvironment: '' };
+  const initialPresets = { requestType: DEFAULT_PRESET_REQUEST_TYPE, requestUrl: '' };
 
   // Get presets from draft.brunoConfig if it exists, otherwise from brunoConfig
   const currentPresets = collection.draft?.brunoConfig
@@ -25,150 +29,102 @@ const PresetsSettings = ({ collection }) => {
     }));
   };
 
+  // Default environment is part of the collection presets; like Request Type and Base URL
+  // it is written to the draft and persisted via the Save button (or autosave).
+  const environments = collection?.environments || [];
+  const defaultEnvironmentName = currentPresets.defaultEnvironment || '';
+
+  const handleDefaultEnvironmentChange = (name) => {
+    if (name) {
+      updatePresets({ defaultEnvironment: name });
+    } else {
+      // "None" — remove the default from the draft presets.
+      const { defaultEnvironment, ...rest } = currentPresets;
+      dispatch(updateCollectionPresets({ collectionUid: collection.uid, presets: rest }));
+    }
+  };
+
+  const defaultEnvironmentItems = [
+    { id: '', label: 'None', onClick: () => handleDefaultEnvironmentChange('') },
+    ...environments.map((env) => ({
+      id: env.name,
+      label: env.name,
+      onClick: () => handleDefaultEnvironmentChange(env.name)
+    }))
+  ];
+
   const handleSave = () => dispatch(saveCollectionSettings(collection.uid));
 
-  const handleRequestTypeChange = (e) => {
-    updatePresets({ requestType: e.target.value });
+  const handleRequestTypeChange = (value) => {
+    updatePresets({ requestType: value });
   };
 
   const handleRequestUrlChange = (e) => {
     updatePresets({ requestUrl: e.target.value });
   };
 
-  const handleDefaultEnvironmentChange = (e) => {
-    updatePresets({ defaultEnvironment: e.target.value });
-  };
-
-  const environments = collection.environments || [];
-  // An environment named in the config but since renamed or deleted would
-  // otherwise vanish from the select while staying in the file — show it, so
-  // the user can see what is set and change it.
-  const configuredEnvironment = currentPresets.defaultEnvironment || '';
-  const missingEnvironment = configuredEnvironment
-    && !environments.some((environment) => environment.name === configuredEnvironment);
+  const requestType = currentPresets.requestType || DEFAULT_PRESET_REQUEST_TYPE;
 
   return (
     <StyledWrapper className="h-full w-full">
-      <div className="text-xs mb-4 text-muted">
-        These presets will be used as the default values for new requests in this collection.
-      </div>
       <div className="bruno-form">
-        <div className="mb-3 flex items-center">
-          <label className="settings-label flex items-center" htmlFor="http">
-            Request Type
-          </label>
-          <div className="flex items-center">
-            <input
-              id="http"
-              className="cursor-pointer"
-              type="radio"
-              name="requestType"
-              onChange={handleRequestTypeChange}
-              value="http"
-              checked={(currentPresets.requestType || PRESET_REQUEST_TYPES.HTTP) === PRESET_REQUEST_TYPES.HTTP}
-            />
-            <label htmlFor="http" className="ml-1 cursor-pointer select-none">
-              HTTP
-            </label>
-
-            <input
-              id="graphql"
-              className="ml-4 cursor-pointer"
-              type="radio"
-              name="requestType"
-              onChange={handleRequestTypeChange}
-              value="graphql"
-              checked={(currentPresets.requestType || PRESET_REQUEST_TYPES.HTTP) === PRESET_REQUEST_TYPES.GRAPHQL}
-            />
-            <label htmlFor="graphql" className="ml-1 cursor-pointer select-none">
-              GraphQL
-            </label>
-
-            <input
-              id="grpc"
-              className="ml-4 cursor-pointer"
-              type="radio"
-              name="requestType"
-              onChange={handleRequestTypeChange}
-              value="grpc"
-              checked={(currentPresets.requestType || PRESET_REQUEST_TYPES.HTTP) === PRESET_REQUEST_TYPES.GRPC}
-            />
-            <label htmlFor="grpc" className="ml-1 cursor-pointer select-none">
-              gRPC
-            </label>
-
-            <input
-              id="ws"
-              className="ml-4 cursor-pointer"
-              type="radio"
-              name="requestType"
-              onChange={handleRequestTypeChange}
-              value="ws"
-              checked={(currentPresets.requestType || PRESET_REQUEST_TYPES.HTTP) === PRESET_REQUEST_TYPES.WS}
-            />
-            <label htmlFor="ws" className="ml-1 cursor-pointer select-none">
-              WebSocket
-            </label>
-          </div>
-        </div>
-        <div className="mb-3 flex items-center">
-          <label className="settings-label" htmlFor="request-url">
-            Base URL
-          </label>
-          <div className="flex items-center w-full">
-            <div className="flex items-center flex-grow input-container h-full">
-              <input
-                id="request-url"
-                type="text"
-                name="requestUrl"
-                placeholder="Request URL"
-                className="block textbox"
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck="false"
-                onChange={handleRequestUrlChange}
-                value={currentPresets.requestUrl || ''}
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
+        <div className="preset-field">
+          <label className="preset-field-label">Default Request Type</label>
+          <p className="preset-field-subtitle">Selected by default for new requests.</p>
+          <SegmentedControl
+            ariaLabel="Default Request Type"
+            name="requestType"
+            value={requestType}
+            onChange={handleRequestTypeChange}
+            items={requestTypeItems}
+            size="sm"
+          />
         </div>
 
-        <div className="mb-3 flex items-center">
-          <label className="settings-label" htmlFor="default-environment">
-            Default Environment
-          </label>
-          <div className="flex items-center w-full">
-            <div className="flex items-center flex-grow input-container h-full">
-              <select
+        <div className="preset-field">
+          <label className="preset-field-label" htmlFor="request-url">Default Base URL</label>
+          <p className="preset-field-subtitle">Pre-fills the URL field for new requests.</p>
+          <input
+            id="request-url"
+            data-testid="presets-request-url"
+            type="text"
+            name="requestUrl"
+            placeholder="Request URL"
+            className="block textbox preset-input"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck="false"
+            onChange={handleRequestUrlChange}
+            value={currentPresets.requestUrl || ''}
+          />
+        </div>
+
+        <div className="preset-field">
+          <label className="preset-field-label" htmlFor="default-environment">Default Environment</label>
+          <p className="preset-field-subtitle">Selected when this collection is shared and first opened.</p>
+          <div className="default-env-dropdown">
+            <MenuDropdown
+              items={defaultEnvironmentItems}
+              selectedItemId={defaultEnvironmentName}
+              data-testid="presets-default-environment"
+              placement="bottom-start"
+              sameWidth
+            >
+              <button
+                type="button"
                 id="default-environment"
-                name="defaultEnvironment"
-                className="block textbox"
-                onChange={handleDefaultEnvironmentChange}
-                value={configuredEnvironment}
-                style={{ width: '100%' }}
+                className="default-env-trigger flex items-center justify-between cursor-pointer"
               >
-                <option value="">No environment</option>
-                {missingEnvironment && (
-                  <option value={configuredEnvironment}>{configuredEnvironment} (not found)</option>
-                )}
-                {environments.map((environment) => (
-                  <option key={environment.uid} value={environment.name}>
-                    {environment.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+                <span className="truncate">{defaultEnvironmentName || 'None'}</span>
+                <IconCaretDown className="caret" size={14} strokeWidth={2} />
+              </button>
+            </MenuDropdown>
           </div>
-        </div>
-        <div className="text-xs mb-4 text-muted">
-          Selected the first time this collection is opened. It does not override an
-          environment you pick later.
         </div>
 
         <div className="mt-6">
-          <Button type="button" size="sm" onClick={handleSave}>
+          <Button type="button" size="sm" data-testid="presets-save-btn" onClick={handleSave}>
             Save
           </Button>
         </div>

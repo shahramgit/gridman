@@ -18,3 +18,5 @@ export const PRESET_REQUEST_TYPES = {
   GRPC: 'grpc',
   WS: 'ws'
 };
+
+export const DEFAULT_PRESET_REQUEST_TYPE = PRESET_REQUEST_TYPES.HTTP;
