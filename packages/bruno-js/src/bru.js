@@ -192,6 +192,32 @@ class Bru {
     return this.interpolate(this.envVariables[key]);
   }
 
+  /**
+   * Both sandboxes expose `bru.getSecretVar` and `bru.visualize` as script
+   * functions, and neither method existed on this class — here or upstream. The
+   * quickjs shim calls straight through to them, so a script using either one
+   * died with a TypeError from inside the shim, and on the nodevm runtime the
+   * name was simply missing. The functions are advertised, so make them real
+   * rather than removing them and diverging from upstream's shim.
+   *
+   * Secrets are not a separate store at runtime: getEnvVars merges them into
+   * the same map as plain variables, secrets last, so this reads the same place
+   * getEnvVar does. It exists so a script can SAY it is reading a secret.
+   */
+  getSecretVar(key) {
+    return this.getEnvVar(key);
+  }
+
+  /**
+   * There is no visualization surface to render into, so this refuses clearly
+   * instead of failing as `undefined is not a function` several frames deep in
+   * the sandbox shim. If a response-pane visualizer is ever built, this is
+   * where it hooks in.
+   */
+  visualize() {
+    throw new Error('bru.visualize is not supported: Gridman has no visualization pane to render into.');
+  }
+
   setEnvVar(key, value, options = {}) {
     if (!key) {
       throw new Error('Creating a env variable without specifying a name is not allowed.');
