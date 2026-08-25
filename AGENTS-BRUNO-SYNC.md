@@ -215,7 +215,18 @@ release, so take it one release later and port it once).
 see below), sidebar-state persistence (build ours), yml migration entry point
 (their UI, our reversible engine), presets restyle.
 
-**Known defect this review surfaced:** our AI's `CONTENT_TYPES` includes `'app'`
-and carries a full Apps system prompt, but Gridman has no Apps feature — no
-`appEnabled`, no app tab. An accepted "Apply" on an app diff hits `default: return`
-and silently does nothing. Either adopt Apps or strip app support from the AI.
+**Known defect this review surfaced — FIXED in `5738bb47a`.** Our AI's
+`CONTENT_TYPES` included `'app'` and carried a full Apps system prompt, but
+Gridman has no Apps feature — no `appEnabled`, no app tab. An accepted "Apply" on
+an app diff hit `default: return` and silently did nothing: a change the user
+approved, dropped. Stripped rather than adopted, because stripping is reversible
+in an afternoon and adopting Apps is not.
+
+To restore it if Bruno Apps is ever adopted, put back, in
+`packages/bruno-electron/src/ipc/ai/chat-prompts.js`: `'app'` in `CONTENT_TYPES`,
+the `app` entry in `SYSTEM_PROMPTS` (upstream's `chat-prompts.js` still has the
+text), and the two `TOOL_LABELS` rows. In `chat.js`: the `'App Code'` label. Then
+add the `case 'app':` arm to the three `switch (targetType)` blocks in
+`AiChatSidebar/index.js` and the label in its `constants.js` — the new
+`content-type-contract.spec.js` fails until all three switches have it, which is
+the point of it.
