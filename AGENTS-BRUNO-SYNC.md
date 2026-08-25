@@ -261,16 +261,26 @@ updates — a JSON cache rewrites the whole file on every save.
   charges per file and per byte — unverified from here. Cost: 47 of 5,410
   example-bearing files lose the sidebar chevron until the request is opened.
 
-**Deferred, and the reason on file was wrong.** Mock server was recorded as "69
-files ADDED, zero collisions with our divergences — genuinely additive". It is
-not additive. Re-checked 2026-08-25: 71 files upstream, of which we have none,
-PLUS wiring into the three most-diverged files in the fork —
-`Sidebar/Collections/Collection/index.js` (12 mock references upstream; 23 of our
-commits since divergence), `slices/collections/index.js` (12 references; 24 of
-ours), `collection-watcher.js` (3; 14 of ours) — PLUS a
-`Sidebar/Sections/MockServersSection` that belongs to a sidebar architecture we
-replaced with the indexed renderer. It is a project, not a cherry-pick. Do it if
-someone asks for a mock server; do not do it as sync hygiene.
+**Mock server: DONE**, in four stages (`1a73a74f8`, `9806cbb6c`, `b194e74b8`,
+`6d51adfeb`), default OFF behind `beta.mock-server`.
+
+The note that deferred it said "69 files ADDED, zero collisions — genuinely
+additive". That was wrong twice over. It is not additive: it wires into
+`Sidebar/Collections/Collection/index.js` (12 references upstream, 23 of our
+commits since divergence), the collections slice (12 / 24) and the workspace
+watcher (3 / 14). And the deferral itself was not a valid skip — "it is a big
+port" is effort, not one of the four reasons above. Adapting upstream code to
+our architecture is the house style, not an excuse to decline it.
+
+What adapting actually meant: the workspace watcher took a PORT OF HUNKS, never
+the file — ours carries git conflict-marker detection, the #8679 secret/plain
+collision fix, our own environment channel names. The sidebar needed no rework
+at all; our Sections registry is the generic accordion one and SidebarSection
+already took the props upstream's section passes. `extractMockRoutePath` and
+`getMockResponseRouteKey` went into their own bruno-common module rather than
+merging upstream's `utils/url` over ours.
+
+express and cors are new dependencies.
 
 **Still open — verified against the code 2026-08-25, not from the note:**
 
@@ -289,7 +299,13 @@ someone asks for a mock server; do not do it as sync hygiene.
   or localStorage. Every restart re-collapses all 124 GSB collections and every
   folder in them. Build ours — a set of expanded uids per collection, restored
   on mount.
-- **Presets restyle.** Cosmetic, no behaviour. Lowest priority on the list.
+- **Presets.** Called "cosmetic, restyle only" here; it is not. It bundles
+  `#8889`, a live bug WE HAD — the Presets form saved `requestType: 'ws'` and
+  `CreateTransientRequest` switched on `'websocket'` with no default, so a
+  WebSocket collection preset made the + button do nothing at all. Fixed in
+  `e18f0e997`. Still outstanding from that group: `#8612`, a default
+  environment in presets (33 files, a real feature), and the restyle itself
+  (segmented control, dropdown).
 
 **Closed, was never open:**
 
