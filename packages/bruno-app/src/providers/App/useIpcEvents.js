@@ -6,6 +6,13 @@ import {
   setGitVersion
 } from 'providers/ReduxStore/slices/app';
 import {
+  updateServerStatus,
+  addRequestLogEntries,
+  syncRunningMockServers
+} from 'providers/ReduxStore/slices/mock-server/index';
+import { isMockServerLogListening } from 'utils/mock-server/mock-server-log-subscription';
+import { mockServerFileEvent, mockServerFileDeletedEvent } from 'utils/mock-server/mock-server-instances';
+import {
   addTab
 } from 'providers/ReduxStore/slices/tabs';
 import {
@@ -545,7 +552,44 @@ const useIpcEvents = () => {
       dispatch(setGitVersion(val));
     });
 
+    // Mock server events. Without these the back end talks to nobody: the
+    // workspace watcher emits add/change/delete for mocks/*.yml and the server
+    // emits status and request-log batches, and every one of them was landing
+    // on a channel with no listener.
+    const removeMockServerStatusListener = ipcRenderer.on('main:mock-server-status-changed', (val) => {
+      dispatch(updateServerStatus(val));
+    });
+
+    const removeMockServerRequestLogListener = ipcRenderer.on('main:mock-server-request-log-batch', (val) => {
+      // The dashboard subscribes per server; without this guard every open
+      // window accumulates the log of every running mock.
+      if (!isMockServerLogListening(val?.mockServerUid)) {
+        return;
+      }
+      dispatch(addRequestLogEntries(val));
+    });
+
+    const removeMockServerAddedListener = ipcRenderer.on('main:workspace-mock-server-added', (workspaceUid, mockServerFile) => {
+      dispatch(mockServerFileEvent(workspaceUid, mockServerFile));
+    });
+
+    const removeMockServerChangedListener = ipcRenderer.on('main:workspace-mock-server-changed', (workspaceUid, mockServerFile) => {
+      dispatch(mockServerFileEvent(workspaceUid, mockServerFile));
+    });
+
+    const removeMockServerDeletedListener = ipcRenderer.on('main:workspace-mock-server-deleted', (workspaceUid, mockServerUid) => {
+      dispatch(mockServerFileDeletedEvent(workspaceUid, mockServerUid));
+    });
+
+    // A window opened after a server was started has to learn it is running.
+    dispatch(syncRunningMockServers());
+
     return () => {
+      removeMockServerStatusListener();
+      removeMockServerRequestLogListener();
+      removeMockServerAddedListener();
+      removeMockServerChangedListener();
+      removeMockServerDeletedListener();
       removeCollectionTreeUpdateListener();
       removeCollectionIndexStartedListener();
       removeCollectionIndexBatchListener();
