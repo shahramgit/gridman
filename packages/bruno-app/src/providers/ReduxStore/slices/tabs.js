@@ -438,6 +438,16 @@ export const tabsSlice = createSlice({
 
       state.tabs = tabs;
     },
+    // Which tab of the environment editor is open (variables vs secrets).
+    // syncTabUid and restoreTabs came along in the same upstream commit from
+    // unrelated work of theirs and have no caller here.
+    updateTabState: (state, action) => {
+      const { uid, tabState } = action.payload;
+      const tab = find(state.tabs, (t) => t.uid === uid);
+      if (tab) {
+        tab.tabState = { ...tab.tabState, ...tabState };
+      }
+    },
     reopenLastClosedTab: (state, action) => {
       const collectionUid = action.payload?.collectionUid;
       // Find the last closed tab for this collection (LIFO). If no collectionUid is
@@ -537,6 +547,7 @@ export const {
   expandRequestPane,
   expandResponsePane,
   reorderTabs,
+  updateTabState,
   reopenLastClosedTab,
   updateQueryBuilderOpen,
   updateQueryBuilderWidth,
