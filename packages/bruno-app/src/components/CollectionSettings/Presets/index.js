@@ -9,7 +9,7 @@ import { PRESET_REQUEST_TYPES } from 'utils/common/constants';
 
 const PresetsSettings = ({ collection }) => {
   const dispatch = useDispatch();
-  const initialPresets = { requestType: PRESET_REQUEST_TYPES.HTTP, requestUrl: '' };
+  const initialPresets = { requestType: PRESET_REQUEST_TYPES.HTTP, requestUrl: '', defaultEnvironment: '' };
 
   // Get presets from draft.brunoConfig if it exists, otherwise from brunoConfig
   const currentPresets = collection.draft?.brunoConfig
@@ -34,6 +34,18 @@ const PresetsSettings = ({ collection }) => {
   const handleRequestUrlChange = (e) => {
     updatePresets({ requestUrl: e.target.value });
   };
+
+  const handleDefaultEnvironmentChange = (e) => {
+    updatePresets({ defaultEnvironment: e.target.value });
+  };
+
+  const environments = collection.environments || [];
+  // An environment named in the config but since renamed or deleted would
+  // otherwise vanish from the select while staying in the file — show it, so
+  // the user can see what is set and change it.
+  const configuredEnvironment = currentPresets.defaultEnvironment || '';
+  const missingEnvironment = configuredEnvironment
+    && !environments.some((environment) => environment.name === configuredEnvironment);
 
   return (
     <StyledWrapper className="h-full w-full">
@@ -121,6 +133,38 @@ const PresetsSettings = ({ collection }) => {
               />
             </div>
           </div>
+        </div>
+
+        <div className="mb-3 flex items-center">
+          <label className="settings-label" htmlFor="default-environment">
+            Default Environment
+          </label>
+          <div className="flex items-center w-full">
+            <div className="flex items-center flex-grow input-container h-full">
+              <select
+                id="default-environment"
+                name="defaultEnvironment"
+                className="block textbox"
+                onChange={handleDefaultEnvironmentChange}
+                value={configuredEnvironment}
+                style={{ width: '100%' }}
+              >
+                <option value="">No environment</option>
+                {missingEnvironment && (
+                  <option value={configuredEnvironment}>{configuredEnvironment} (not found)</option>
+                )}
+                {environments.map((environment) => (
+                  <option key={environment.uid} value={environment.name}>
+                    {environment.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="text-xs mb-4 text-muted">
+          Selected the first time this collection is opened. It does not override an
+          environment you pick later.
         </div>
 
         <div className="mt-6">

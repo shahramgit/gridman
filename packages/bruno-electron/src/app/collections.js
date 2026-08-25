@@ -29,6 +29,13 @@ const configSchema = Yup.object({
   version: Yup.string().oneOf(['1']).notRequired(),
   // For YAML format collections (opencollection)
   opencollection: Yup.string().notRequired(),
+  // Collection-level defaults for new requests, and the environment to select
+  // the first time the collection is opened.
+  presets: Yup.object({
+    requestType: Yup.string().notRequired(),
+    requestUrl: Yup.string().notRequired(),
+    defaultEnvironment: Yup.string().notRequired()
+  }).notRequired(),
   // OpenAPI sync configuration (array, one entry per synced spec)
   openapi: Yup.array().of(
     Yup.object({

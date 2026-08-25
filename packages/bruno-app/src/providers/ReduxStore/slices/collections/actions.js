@@ -3626,6 +3626,7 @@ export const mountCollection
             // Before the first sidebar render, so the tree opens where the user
             // left it instead of flashing collapsed and then expanding.
             dispatch(collectionUiStateHydrated({ collectionUid, uiState: mountResult?.uiState || null }));
+            dispatch(applyCollectionEnvironmentOnMount({ collectionUid, uiState: mountResult?.uiState || null }));
             if (transientDirPath) {
               dispatch(addTransientDirectory({ collectionUid, pathname: transientDirPath }));
             }
@@ -3645,6 +3646,40 @@ export const mountCollection
  * Map of pathname -> fresh uuid, so a uid persisted today resolves to nothing
  * tomorrow.
  */
+/**
+ * Which environment a collection opens with.
+ *
+ * Two sources, in order: the environment the user last chose (from the UI-state
+ * snapshot), and failing that the collection's own `presets.defaultEnvironment`
+ * — the point of the preset is to be the FIRST choice, not to override a
+ * later one.
+ *
+ * This runs on mount, which is the only path a lazy collection takes. The
+ * older `main:hydrate-app-with-ui-state-snapshot` route fires from
+ * onWatcherSetupComplete, and that runs on the eager path only — so for any
+ * collection over 100 files no environment was ever restored at all.
+ */
+export const applyCollectionEnvironmentOnMount = ({ collectionUid, uiState }) => (dispatch, getState) => {
+  const collection = findCollectionByUid(getState().collections.collections, collectionUid);
+  if (!collection) {
+    return;
+  }
+
+  const remembered = uiState?.selectedEnvironment;
+  const preset = collection.brunoConfig?.presets?.defaultEnvironment;
+  const wanted = remembered || preset;
+  if (!wanted) {
+    return;
+  }
+
+  const environment = findEnvironmentInCollectionByName(collection, wanted);
+  // A renamed or deleted environment leaves the collection on none rather than
+  // on something arbitrary.
+  if (environment) {
+    dispatch(_selectEnvironment({ environmentUid: environment.uid, collectionUid }));
+  }
+};
+
 export const persistExpandedFolders = ({ collectionPathname, expandedFolders }) => () => {
   if (!collectionPathname) {
     return Promise.resolve();

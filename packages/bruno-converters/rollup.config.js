@@ -24,6 +24,11 @@ const externalDeps = [
   'jscodeshift',
   'nanoid',
   'xml2js',
+  // Bundling this drags in mime-db/db.json, which rollup cannot parse without
+  // @rollup/plugin-json — the build has been failing on it, and because dist/
+  // is gitignored the failure is invisible until someone runs the build and is
+  // left with no dist at all. Upstream externalizes it for the same reason.
+  'mime-types',
   // Node built-ins
   'path',
   'fs'

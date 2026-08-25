@@ -61,7 +61,8 @@ const hasRequestScripts = (collectionRoot: any): boolean => {
 
 const hasPresets = (brunoConfig: any): boolean => {
   return brunoConfig?.presets?.requestType?.length
-    || brunoConfig?.presets?.requestUrl?.length;
+    || brunoConfig?.presets?.requestUrl?.length
+    || brunoConfig?.presets?.defaultEnvironment?.length;
 };
 
 const stringifyCollection = (collectionRoot: any, brunoConfig: any): string => {
@@ -244,9 +245,15 @@ const stringifyCollection = (collectionRoot: any, brunoConfig: any): string => {
         if (brunoConfig.presets.requestUrl?.length) {
           presetsRequest.url = brunoConfig.presets.requestUrl;
         }
-        brunoExtension.presets = {
-          request: presetsRequest
-        };
+        brunoExtension.presets = {};
+        // An empty `request: {}` in the file reads as "presets exist but say
+        // nothing"; omit it when only a default environment is set.
+        if (Object.keys(presetsRequest).length) {
+          brunoExtension.presets.request = presetsRequest;
+        }
+        if (brunoConfig.presets.defaultEnvironment?.length) {
+          brunoExtension.presets.defaultEnvironment = brunoConfig.presets.defaultEnvironment;
+        }
       }
 
       oc.extensions.bruno = brunoExtension;

@@ -176,6 +176,7 @@ export interface BrunoConfig {
   presets?: {
     requestType?: string;
     requestUrl?: string;
+    defaultEnvironment?: string;
   };
   protobuf?: {
     protoFiles?: { path: string }[];

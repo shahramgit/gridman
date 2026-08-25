@@ -33,13 +33,20 @@ const parseCollection = (ymlString: string): ParsedCollection => {
     // presets
     if (brunoExtension?.presets) {
       const presets = brunoExtension.presets as any;
-      if (presets.request) {
+      if (presets.request || presets.defaultEnvironment) {
         // presets are strings, not lists - defaulting to [] made yml collection presets
         // non-functional. Upstream: 2d4d4e403 (#8027).
         brunoConfig.presets = {
-          requestType: presets.request.type || '',
-          requestUrl: presets.request.url || ''
+          requestType: presets.request?.type || '',
+          requestUrl: presets.request?.url || ''
         };
+        // Only when the file actually carries one. Adding the key
+        // unconditionally would change the presets object for every collection
+        // that has never used the feature, which several tests pin — and which
+        // a diff of a user's bruno.json would show for no reason.
+        if (presets.defaultEnvironment) {
+          brunoConfig.presets.defaultEnvironment = presets.defaultEnvironment;
+        }
       }
     }
 
