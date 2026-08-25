@@ -38,6 +38,7 @@ import {
   selectEnvironment as _selectEnvironment,
   sortCollections as _sortCollections,
   updateCollectionMountStatus,
+  collectionUiStateHydrated,
   moveCollection,
   workspaceEnvUpdateEvent,
   requestCancelled,
@@ -3622,6 +3623,9 @@ export const mountCollection
           .then((mountResult) => {
             const transientDirPath = typeof mountResult === 'string' ? mountResult : mountResult?.tempDirectoryPath;
             dispatch(updateCollectionMountStatus({ collectionUid, mountStatus: 'mounted' }));
+            // Before the first sidebar render, so the tree opens where the user
+            // left it instead of flashing collapsed and then expanding.
+            dispatch(collectionUiStateHydrated({ collectionUid, uiState: mountResult?.uiState || null }));
             if (transientDirPath) {
               dispatch(addTransientDirectory({ collectionUid, pathname: transientDirPath }));
             }
@@ -3633,6 +3637,24 @@ export const mountCollection
           });
       });
     };
+
+/**
+ * Remember which folders are open, so a restart does not collapse a workspace.
+ *
+ * Collection-relative posix paths, not uids: `getRequestUid` is a per-process
+ * Map of pathname -> fresh uuid, so a uid persisted today resolves to nothing
+ * tomorrow.
+ */
+export const persistExpandedFolders = ({ collectionPathname, expandedFolders }) => () => {
+  if (!collectionPathname) {
+    return Promise.resolve();
+  }
+  const { ipcRenderer } = window;
+  return ipcRenderer.invoke('renderer:update-ui-state-snapshot', {
+    type: 'COLLECTION_EXPANDED_FOLDERS',
+    data: { collectionPath: collectionPathname, expandedFolders }
+  });
+};
 
 export const showInFolder = (collectionPath) => () => {
   return new Promise((resolve, reject) => {

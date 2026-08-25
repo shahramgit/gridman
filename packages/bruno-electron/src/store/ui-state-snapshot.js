@@ -1,5 +1,7 @@
 const Store = require('electron-store');
 
+const MAX_PERSISTED_EXPANDED_FOLDERS = 500;
+
 class UiStateSnapshotStore {
   constructor() {
     this.store = new Store({
@@ -45,12 +47,38 @@ class UiStateSnapshotStore {
     this.setCollectionByPathname({ collection });
   }
 
+  /**
+   * Which folders the user had open, as collection-relative posix paths.
+   *
+   * Paths and not uids: `getRequestUid` hands out a fresh uuid per pathname
+   * per process (see cache/requestUids.js — it is a Map, not a hash), so a uid
+   * written today means nothing tomorrow.
+   *
+   * The cap is not defensive dressing. This file is rewritten on every toggle,
+   * and the workspace this ships for has 4,789 directories in one collection;
+   * an "expand all" on that would put a quarter of a megabyte of paths in a
+   * settings file that is read synchronously at startup.
+   */
+  updateCollectionExpandedFolders({ collectionPath, expandedFolders }) {
+    const collection = this.getCollectionByPathname({ pathname: collectionPath });
+    collection.expandedFolders = (Array.isArray(expandedFolders) ? expandedFolders : [])
+      .filter((entry) => typeof entry === 'string' && entry)
+      .slice(0, MAX_PERSISTED_EXPANDED_FOLDERS);
+    this.setCollectionByPathname({ collection });
+  }
+
   update({ type, data }) {
     switch (type) {
-      case 'COLLECTION_ENVIRONMENT':
+      case 'COLLECTION_ENVIRONMENT': {
         const { collectionPath, environmentName } = data;
         this.updateCollectionEnvironment({ collectionPath, environmentName });
         break;
+      }
+      case 'COLLECTION_EXPANDED_FOLDERS': {
+        const { collectionPath, expandedFolders } = data;
+        this.updateCollectionExpandedFolders({ collectionPath, expandedFolders });
+        break;
+      }
       default:
         break;
     }

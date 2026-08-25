@@ -35,6 +35,7 @@ import {
   moveCollectionItemByPath,
   newFolderByPath,
   pasteItem,
+  persistExpandedFolders,
   renameCollectionItemByPath,
   saveRequest,
   sendRequest,
@@ -56,6 +57,7 @@ import ExportFolder from './CollectionItem/ExportFolder';
 import ImportIntoFolder from './ImportIntoFolder';
 import { getDefaultRequestPaneTab, getInitialExampleName } from 'utils/collections';
 import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname, isAdjacentDrop, determineCollectionItemDrop } from 'utils/collections';
+import { toCollectionRelativePathname } from 'utils/collections/relativePath';
 import { excludeDescendantItems } from 'utils/collections/multiSelect';
 import { buildVisibleRows, sortNodes } from 'utils/collections/visibleRows';
 import { createEmptyStateMenuItems } from 'utils/collections/emptyStateRequest';
@@ -1553,6 +1555,12 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
   const index = useDeferredValue(liveIndex);
   const deferredSearchMatches = useDeferredValue(searchMatches);
   const [expandedNodeUids, setExpandedNodeUids] = useState(() => new Set());
+  const collectionPathnameForPersist = useSelector(
+    (state) => state.collections.collections?.find((c) => c.uid === collectionUid)?.pathname
+  );
+  const persistedExpandedFolders = useSelector(
+    (state) => state.collections.collectionUiState?.[collectionUid]?.expandedFolders
+  );
   // null = still capped at rowCap; a number = the user asked for the rest and
   // this many rows are mounted so far (see the progressive growth effect).
   const [expandedRowCount, setExpandedRowCount] = useState(null);
@@ -1777,6 +1785,63 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
     revealAncestorsOnlyRef.current = null;
     dispatch(clearSidebarReveal());
   }, [visibleRows, filterActive, dispatch, scrollParent]);
+
+  /**
+   * REOPEN THE TREE WHERE THE USER LEFT IT.
+   *
+   * Restart used to collapse everything — 124 collections and 4,789
+   * directories in the reported workspace, re-navigated by hand every morning.
+   *
+   * Restore runs once, and only once the index has nodes to resolve the saved
+   * paths against; the saved entries are collection-relative because uids are
+   * per-process (cache/requestUids.js hands out a fresh uuid per pathname), so
+   * yesterday's uid means nothing today. A folder that has since been deleted
+   * or renamed simply does not resolve and is dropped.
+   */
+  const restoredExpansionRef = useRef(false);
+  useEffect(() => {
+    if (restoredExpansionRef.current || !persistedExpandedFolders?.length || !index?.nodesByUid || !collectionPathnameForPersist) {
+      return;
+    }
+    const wanted = new Set(persistedExpandedFolders.map((entry) => normalizeForPathCompare(entry)));
+    const uids = new Set();
+    for (const node of Object.values(index.nodesByUid)) {
+      if (node?.type !== 'folder') continue;
+      const relative = toCollectionRelativePathname(collectionPathnameForPersist, node.pathname);
+      if (relative && wanted.has(normalizeForPathCompare(relative))) {
+        uids.add(node.uid);
+      }
+    }
+    restoredExpansionRef.current = true;
+    if (uids.size) {
+      setExpandedNodeUids((current) => new Set([...current, ...uids]));
+    }
+  }, [persistedExpandedFolders, index, collectionPathnameForPersist]);
+
+  // Write back on a trailing debounce. Expanding a deep path fires this once
+  // per level, and the store rewrites its whole JSON file on every set.
+  useEffect(() => {
+    if (!restoredExpansionRef.current || !collectionPathnameForPersist || !index?.nodesByUid) {
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      const expandedFolders = [];
+      for (const uid of expandedNodeUids) {
+        const relative = toCollectionRelativePathname(collectionPathnameForPersist, index.nodesByUid[uid]?.pathname);
+        if (relative) expandedFolders.push(relative);
+      }
+      dispatch(persistExpandedFolders({ collectionPathname: collectionPathnameForPersist, expandedFolders }));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [expandedNodeUids, collectionPathnameForPersist, index, dispatch]);
+
+  // Nothing was saved for this collection, so there is nothing to wait for and
+  // the first toggle should already be written.
+  useEffect(() => {
+    if (persistedExpandedFolders && !persistedExpandedFolders.length) {
+      restoredExpansionRef.current = true;
+    }
+  }, [persistedExpandedFolders]);
 
   // Stable identity so memoized rows don't re-render on unrelated parent
   // renders just because the handler was recreated.

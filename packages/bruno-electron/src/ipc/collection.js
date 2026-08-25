@@ -3402,11 +3402,21 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     // Add watcher for transient directory
     watcher.addTempDirectoryWatcher(mainWindow, tempDirectoryPath, collectionUid, collectionPathname);
 
+    // The UI snapshot is otherwise only delivered from onWatcherSetupComplete,
+    // which runs exclusively on the eager path — so on a large collection
+    // (which is every large collection: >100 files goes lazy) nothing was ever
+    // restored, not the open folders and not even the selected environment.
+    // Returning it from mount reaches both paths and arrives before the first
+    // render instead of after a watcher scan.
+    const uiState = uiStateSnapshotStore.getCollections()
+      ?.find((entry) => entry?.pathname && path.normalize(entry.pathname) === path.normalize(collectionPathname)) || null;
+
     return {
       tempDirectoryPath,
       indexed: true,
       lazyHydration: shouldLoadCollectionAsync,
-      loadSessionId
+      loadSessionId,
+      uiState
     };
   });
 
