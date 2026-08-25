@@ -1,4 +1,6 @@
 const URL = require('url');
+// The WHATWG parser, kept under its own name because `URL` above is the legacy module.
+const { URL: WhatwgURL } = require('url');
 const Socket = require('net').Socket;
 const axios = require('axios');
 const connectionCache = new Map(); // Cache to store checkConnection() results
@@ -14,6 +16,88 @@ const LOCAL_IPV4 = '127.0.0.1';
 const LOCALHOST = 'localhost';
 const version = electronApp?.app?.getVersion() ?? '';
 const redirectResponseCodes = [301, 302, 303, 307, 308];
+
+/**
+ * Credentials must not follow a redirect to another origin.
+ *
+ * We do not use axios's own redirect handling (`maxRedirects: 0` below) — we follow them
+ * ourselves so the timeline, cookies and method rewriting are ours. That also means axios's
+ * own cross-origin header stripping never runs, and the redirect config was built with
+ * `headers: { ...error.config.headers }`: every header, verbatim, to whatever host the
+ * Location pointed at. Verified against a local server before this change — a request
+ * carrying `Authorization: Bearer …` and `x-api-key` handed both to a different host.
+ *
+ * Two deliberate differences from upstream's fix (usebruno/bruno#8380, #8893):
+ *
+ *  1. SECURE BY DEFAULT. Upstream gates stripping behind `forwardAuthorizationHeader`,
+ *     which defaults to true — you have to know the setting exists to be protected. Here
+ *     the absence of the setting means "strip", and only an explicit `true` forwards.
+ *     A file written by stock Bruno that sets it true is still honoured.
+ *  2. It is not only `authorization`. Upstream strips authorization and
+ *     proxy-authorization; the leak test also carried `cookie` and `x-api-key` across.
+ *     Anything credential-shaped goes.
+ *
+ * Same-origin redirects keep every header — that is the normal case (a login flow bouncing
+ * within one host) and stripping there would break it.
+ */
+const ALWAYS_STRIPPED_ON_CROSS_ORIGIN = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'www-authenticate'
+]);
+
+// Custom headers that carry a credential by convention. Deliberately narrow: a
+// false positive here breaks a legitimate request, so this matches names that
+// are about identity, not merely names containing "key".
+const CREDENTIAL_HEADER_PATTERN = /(^|[-_])(api[-_]?key|auth|authz|token|secret|password|credential|session)([-_]|$)/i;
+
+const isCredentialHeader = (name) => {
+  const lower = String(name || '').toLowerCase();
+  return ALWAYS_STRIPPED_ON_CROSS_ORIGIN.has(lower) || CREDENTIAL_HEADER_PATTERN.test(lower);
+};
+
+/**
+ * Same origin = same protocol, host AND port, matching the web platform's definition.
+ * Implemented here rather than imported from bruno-common: v4's `utils/index.ts` replaces
+ * the export block our entry points live in (see AGENTS-BRUNO-SYNC.md), and this is four
+ * lines.
+ *
+ * An unparseable URL is treated as a DIFFERENT origin — if we cannot prove the target is
+ * the same host, the credential does not travel.
+ */
+const isSameOrigin = (fromUrl, toUrl) => {
+  try {
+    // WhatwgURL, NOT the module-level `URL` — this file binds that name to the
+    // legacy `url` module (it calls URL.resolve above). `new URL(...)` against the
+    // module object throws, which the catch below turned into "different origin",
+    // so every redirect looked cross-origin and every same-origin login flow lost
+    // its Authorization header. A fail-safe default hid a plain bug.
+    const from = new WhatwgURL(fromUrl);
+    const to = new WhatwgURL(toUrl);
+    return from.protocol === to.protocol && from.hostname === to.hostname && from.port === to.port;
+  } catch (_err) {
+    // Unparseable: treat as a different origin so the credential does not travel.
+    return false;
+  }
+};
+
+const stripCredentialsForCrossOriginRedirect = ({ headers, fromUrl, toUrl, forwardAuthorizationHeader }) => {
+  if (forwardAuthorizationHeader === true) {
+    return [];
+  }
+  if (isSameOrigin(fromUrl, toUrl)) {
+    return [];
+  }
+  const removed = [];
+  for (const key of Object.keys(headers || {})) {
+    if (isCredentialHeader(key)) {
+      delete headers[key];
+      removed.push(key);
+    }
+  }
+  return removed;
+};
 
 const saveCookies = (url, headers) => {
   if (preferencesUtil.shouldStoreCookies()) {
@@ -364,6 +448,20 @@ function makeAxiosInstance({
               ...error.config.headers
             }
           };
+
+          const strippedHeaders = stripCredentialsForCrossOriginRedirect({
+            headers: requestConfig.headers,
+            fromUrl: error.config.url,
+            toUrl: redirectUrl,
+            forwardAuthorizationHeader: error.config?.settings?.forwardAuthorizationHeader
+          });
+          if (strippedHeaders.length) {
+            timeline.push({
+              timestamp: new Date(),
+              type: 'info',
+              message: `Cross-origin redirect to a different host — not forwarding: ${strippedHeaders.join(', ')}`
+            });
+          }
 
           // Apply proper HTTP redirect behavior based on status code
           const statusCode = error.response.status;
