@@ -13,7 +13,14 @@ const WSBody = ({ item, collection, handleRun }) => {
   const body = item.draft ? get(item, 'draft.request.body') : get(item, 'request.body');
 
   const methodType = item.draft ? get(item, 'draft.request.methodType') : get(item, 'request.methodType');
-  const canClientSendMultipleMessages = false;
+  // A WebSocket connection is bidirectional and long-lived, so unlike gRPC —
+  // where this depends on the method being client- or bidi-streaming — a client
+  // can always send more than one message. This was pinned to `false` by
+  // upstream's revert of its own multi-message PR (7c2b64731) and inherited
+  // here, which left the pane showing message 1 while the connection handler
+  // queued every message in `body.ws`: a request imported or written with three
+  // messages displayed one and sent three.
+  const canClientSendMultipleMessages = true;
 
   // Auto-scroll to the latest message when messages are added
   useEffect(() => {
@@ -28,6 +35,7 @@ const WSBody = ({ item, collection, handleRun }) => {
 
     currentMessages.push({
       name: `message ${currentMessages.length + 1}`,
+      type: 'text',
       content: '{}'
     });
 
