@@ -115,9 +115,18 @@ Recorded so a future sync does not re-open them.
   11,700 files. Architecture conflict; still a no.
 - ~~**"Bruno Apps"**~~ — RE-OPENED 2026-08-25. This was filed with no technical
   reason, which the corrected test above does not accept. See the v4.1.0 record.
-- ~~**WebSocket multi-message**~~ — the note said "we reverted it deliberately in
-  7c2b64731". Wrong: that is UPSTREAM's own revert, which we inherited. There is
-  no Gridman divergence here; if upstream re-lands it, take it normally.
+- ~~**WebSocket multi-message**~~ — CLOSED 2026-08-25 in `86cedcdc8`, and both
+  earlier notes were wrong. The first said we reverted it deliberately in
+  `7c2b64731`; that is UPSTREAM's own revert (#7921 reverting #7719), which we
+  inherited. The second said there was nothing to take; upstream re-landed the
+  feature as `b9d8bdf2e` (#8115, 2026-06-08) and we do not have that commit.
+  But the port was not needed: every layer here except the pane already handled
+  a LIST — the `.bru` writer emits one `body:ws` block per message and parses
+  them back (verified by round-trip), the yml writer emits a variant list, and
+  `renderer:ws:start-connection` queues every entry in `body.ws`. Only
+  `canClientSendMultipleMessages` was pinned to `false`, so a three-message
+  request DISPLAYED one and SENT three. Fixed by making the flag true, not by
+  taking #8115.
 - **`plugins/remote-images`** — an rsbuild loader that downloads assets from a
   CloudFront CDN at build time. Our build must stay offline-capable.
 
@@ -199,13 +208,52 @@ no new top-level blocks this cycle. Re-test next release regardless.
 - `#8588` PAC `myIpAddress` no longer opens a socket to a public host.
 - `#8977` a path outside the collection no longer yields phantom sidebar folders.
 
-**Measured, then rejected: `bruno-sqlite`.** The caching STRATEGY is a large win
-— on a 21,000-node collection our scan is 1,173 ms vs 9 ms warm, and we do 20x
-more per-path syscalls (one `open+read+close` per FILE vs one `stat` per
-DIRECTORY), which is what Windows antivirus taxes. But SQLite is not the reason:
-the same payload through a plain JSON file is FASTER (4 ms write / 6 ms read vs
-21/11) and smaller on disk. Build our own index cache; do not take the package,
-which also imposes a `node:sqlite` (Node 22.5+) floor.
+**Measured, then rejected: `bruno-sqlite`.** Re-measured 2026-08-25 against the
+real GSB workspace (124 collections, 12,088 `.bru`, 210 MB) rather than a
+synthetic tree, and the earlier "large win" framing was measuring a workload we
+do not run.
+
+Upstream needs a parse cache because it eagerly loads and parses whole
+collections. We do not: `shouldUseIndexedCollectionLoad` (>100 files, >20 MB, or
+any file >5 MB) puts every large collection on the lazy path, and collections
+mount on demand. On GSB, 33 of 124 collections are lazy and they hold 9,733 of
+the 12,088 files.
+
+| on GSB's largest collection (1,192 files, 10.3 MB) | ms |
+| --- | --- |
+| index build — what actually runs when you open it | **29** (26 read + 3 regex) |
+| full eager parse — what a cache would save | 2,339 (2,196 of it parse) |
+| warm read of a JSON cache of that parse | 28 |
+
+The 2,339 ms is real but unreachable for that collection: it is on the lazy
+path. Whole-workspace figures are the same shape — index 421-827 ms, full parse
+38.3 s. We pay the first and not the second, so a parse cache would buy roughly
+nothing and cost ~220 MB on disk plus a staleness class of bug we do not have.
+
+If one is ever built it is not SQLite. On the same real payload (Node 25.8.1):
+JSON 43 ms write / 29 ms read / 10.7 MB; SQLite 69 / 24 / 11.4 MB. SQLite reads
+marginally faster, writes 60% slower, is bigger on disk, and `node:sqlite` would
+put a Node >=22.5 floor on the project. Its one genuine advantage is single-row
+updates — a JSON cache rewrites the whole file on every save.
+
+**Two things the measurement did surface, both ours, neither about caching:**
+
+- `WorkerQueue.processQueue` (bruno-filestore) holds a single `isProcessing`
+  boolean and one Worker per script path, so each size lane runs strictly one
+  parse at a time. 1,067 of that collection's 1,192 files land in the same
+  0.005 MB lane, and their parse cost (1,628 ms of the 2,213 ms total — the cost
+  is per-file, not per-byte: the two files over 1 MB cost 25 ms between them)
+  serializes through one thread with 1,067 postMessage round-trips.
+- `collection-indexer.js` reads the FULL text of every file to extract five
+  fields that are all inside the first 8 KB. Measured over all 12,088 files: 210
+  MB and 390 ms warm / 1,055 ms cooler, against 25 MB and 163/176 ms for an
+  8 KB head read — 6x less I/O, which is the part Windows antivirus taxes. Zero
+  files needed more than 8 KB for meta + method + url. The cost is
+  `countExamples`, which scans the whole body: a tiered read (full below 64 KB,
+  8 KB head above) reads 34 MB and leaves 47 of 5,401 example-bearing files
+  without their sidebar chevron until they hydrate. Worth doing only if the
+  Windows win is confirmed on a Windows machine; on macOS the absolute saving at
+  one collection open is ~17 ms.
 
 **Deferred, not rejected:** mock server (69 files ADDED, zero collisions with our
 divergences — genuinely additive, but 8 of its own fixes shipped in the same
