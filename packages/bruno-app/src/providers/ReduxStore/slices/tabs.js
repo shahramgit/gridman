@@ -200,6 +200,24 @@ export const tabsSlice = createSlice({
         tab.responsePaneTab = action.payload.responsePaneTab;
       }
     },
+    // Renaming a mock server or one of its responses has to rename the open
+    // tab too; nothing else in the tab state is derived from the entity's name.
+    updateTabMeta: (state, action) => {
+      const { uid, tabName, responseName } = action.payload;
+      const tab = find(state.tabs, (t) => t.uid === uid);
+
+      if (!tab) {
+        return;
+      }
+
+      if (tabName !== undefined) {
+        tab.tabName = tabName;
+      }
+
+      if (responseName !== undefined) {
+        tab.responseName = responseName;
+      }
+    },
     updateResponseFormat: (state, action) => {
       const tab = findTabForUpdate(state, action.payload.uid);
 
@@ -494,6 +512,7 @@ export const tabsSlice = createSlice({
 });
 
 export const {
+  updateTabMeta,
   addTab,
   focusTab,
   switchTab,
