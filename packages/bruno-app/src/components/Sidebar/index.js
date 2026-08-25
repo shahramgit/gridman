@@ -11,6 +11,7 @@ import WorkflowsSection from './Sections/WorkflowsSection/index';
 import HistorySection from './Sections/HistorySection/index';
 import MockServersSection from './Sections/MockServersSection/index';
 import useKeybinding from 'hooks/useKeybinding';
+import { useBetaFeature, BETA_FEATURES } from 'utils/beta-features';
 
 const MIN_LEFT_SIDEBAR_WIDTH = 220;
 const MAX_LEFT_SIDEBAR_WIDTH = 600;
@@ -45,7 +46,7 @@ const Sidebar = () => {
   // Mock servers bind a port and answer requests, so the section stays hidden
   // until the user opts in — the same flag the main process checks before it
   // will start one.
-  const showMockServers = useSelector((state) => state.app.preferences?.beta?.['mock-server'] ?? false);
+  const showMockServers = useBetaFeature(BETA_FEATURES.MOCK_SERVER);
   const [asideWidth, setAsideWidth] = useState(leftSidebarWidth);
   const lastWidthRef = useRef(leftSidebarWidth);
 

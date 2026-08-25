@@ -19,6 +19,11 @@ const BETA_FEATURES = [
     id: BETA_FEATURE_IDS.OPENAPI_SYNC,
     label: 'OpenAPI Sync',
     description: 'Synchronize your Gridman collection with an OpenAPI specification. Detect drift, review changes, and sync with a single click.'
+  },
+  {
+    id: BETA_FEATURE_IDS.MOCK_SERVER,
+    label: 'Mock Servers',
+    description: 'Serve stored responses over a local HTTP port, so you can develop against an endpoint that is down, rate-limited, or not built yet. Adds a Mock Servers section to the sidebar.'
   }
 ];
 

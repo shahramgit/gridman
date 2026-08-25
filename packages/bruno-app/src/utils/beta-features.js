@@ -4,9 +4,13 @@ import { useSelector } from 'react-redux';
  * Beta features configuration object
  * Contains all available beta feature keys
  */
+// Nothing reads `preferences.beta.nodevm`. A NODE_VM entry lived here, but the
+// sandbox runtime is chosen by `securityConfig.jsSandboxMode` per collection
+// (ipc/network/index.js getJsSandboxRuntime) and the main process has no such
+// preference, no default and no schema entry for it.
 export const BETA_FEATURES = Object.freeze({
-  NODE_VM: 'nodevm',
-  OPENAPI_SYNC: 'openapi-sync'
+  OPENAPI_SYNC: 'openapi-sync',
+  MOCK_SERVER: 'mock-server'
 });
 
 /**
