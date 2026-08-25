@@ -1,6 +1,6 @@
 import { OpenCollection } from "@opencollection/types";
 import { BrunoCollection, BrunoCollectionRoot, BrunoConfig, PemCertificate, Pkcs12Certificate } from "./types";
-import { fromOpenCollectionAuth, fromOpenCollectionHeaders, fromOpenCollectionScripts, fromOpenCollectionVariables } from "./common";
+import { fromOpenCollectionActions, fromOpenCollectionAuth, fromOpenCollectionHeaders, fromOpenCollectionScripts, fromOpenCollectionVariables } from "./common";
 import { uuid } from "../common";
 import { fromOpenCollectionItems } from "./items";
 import { fromOpenCollectionFolder } from "./folder";
@@ -99,7 +99,13 @@ const fromOpenCollectionRoot = (oc: OpenCollection): BrunoCollectionRoot => {
       headers: fromOpenCollectionHeaders(oc.request.headers),
       auth: fromOpenCollectionAuth(oc.request.auth),
       script: scripts?.script,
-      vars: fromOpenCollectionVariables(oc.request.variables),
+      vars: {
+        ...fromOpenCollectionVariables(oc.request.variables),
+        // Post-response variables live under `actions` in opencollection, not
+        // `variables`. Reading only the latter dropped every one of them on
+        // import — silently, because the request still looked complete.
+        res: fromOpenCollectionActions(oc.request.actions)
+      },
       tests: scripts?.tests
     };
   }

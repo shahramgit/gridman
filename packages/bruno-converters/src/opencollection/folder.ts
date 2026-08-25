@@ -7,7 +7,9 @@ import {
   fromOpenCollectionScripts,
   toOpenCollectionScripts,
   fromOpenCollectionVariables,
-  toOpenCollectionVariables
+  toOpenCollectionVariables,
+  fromOpenCollectionActions,
+  toOpenCollectionActions
 } from './common';
 import { fromOpenCollectionItems, toOpenCollectionItems } from './items';
 import type {
@@ -39,7 +41,10 @@ export const fromOpenCollectionFolder = (folder: Folder): BrunoItem => {
         headers: fromOpenCollectionHeaders(folder.request.headers),
         auth: fromOpenCollectionAuth(folder.request.auth as Auth),
         script: scripts?.script,
-        vars: fromOpenCollectionVariables(folder.request.variables),
+        vars: {
+          ...fromOpenCollectionVariables(folder.request.variables),
+          res: fromOpenCollectionActions(folder.request.actions)
+        },
         tests: scripts?.tests
       };
     }
@@ -96,8 +101,12 @@ export const toOpenCollectionFolder = (folder: BrunoItem): Folder => {
     const auth = toOpenCollectionAuth(folderRequest.auth);
     const scripts = toOpenCollectionScripts(folderRequest as { script?: { req: string | null; res: string | null } | null; tests?: string | null });
     const variables = toOpenCollectionVariables(folderRequest.vars);
+    // Post-response vars are written as `actions`, and were previously not
+    // written at all — so a folder that only had post-response vars exported
+    // with no request block whatsoever.
+    const actions = toOpenCollectionActions(folderRequest.vars?.res);
 
-    if (headers || auth || scripts || variables) {
+    if (headers || auth || scripts || variables || actions) {
       const request: RequestDefaults = {};
 
       if (headers) {
@@ -114,6 +123,10 @@ export const toOpenCollectionFolder = (folder: BrunoItem): Folder => {
 
       if (variables) {
         request.variables = variables;
+      }
+
+      if (actions) {
+        request.actions = actions;
       }
 
       ocFolder.request = request;
