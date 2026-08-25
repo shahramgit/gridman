@@ -77,6 +77,62 @@ const safeReadText = async (pathname) => {
   }
 };
 
+/**
+ * The index needs five fields — name, type, seq, method, url — and on all 12,088
+ * files of the reported workspace every one of them is inside the first 8 KB.
+ * Reading the file whole to get them moved 210 MB per full scan; this moves 34.
+ *
+ * Be honest about what that buys. Measured end to end over all 122 collections
+ * on this Mac, indexing goes 1,755 ms -> 1,601 ms: 9%, not 6x, because the page
+ * cache makes the read the small part and readdir + regex + uid + IPC are the
+ * rest. The 6x is in BYTES, and it is claimed for Windows, where Defender
+ * charges per file AND per byte scanned — which is where the reports of slow
+ * large collections come from and the one place this cannot be verified from
+ * here.
+ *
+ * Files at or below FULL_READ_BYTES are still read whole, because the one field
+ * that is NOT near the top is the example count — `example { }` blocks sit
+ * wherever the user put them. That keeps the count exact for nearly every file:
+ * across the workspace it drops 47 of 5,410, and those 47 lose only the sidebar
+ * chevron, until the request hydrates and its real example list replaces this
+ * count.
+ */
+const FULL_READ_BYTES = 64 * 1024;
+const HEAD_READ_BYTES = 8 * 1024;
+
+const safeReadHead = async (pathname) => {
+  let handle = null;
+  try {
+    handle = await fs.open(pathname, 'r');
+    const { size } = await handle.stat();
+    const wanted = size <= FULL_READ_BYTES ? size : HEAD_READ_BYTES;
+
+    const r0 = perf ? performance.now() : 0;
+    const buffer = Buffer.allocUnsafe(wanted);
+    const { bytesRead } = await handle.read(buffer, 0, wanted, 0);
+    if (perf) {
+      perf.readMs += performance.now() - r0;
+      perf.files += 1;
+      perf.bytes += bytesRead;
+    }
+
+    let text = buffer.subarray(0, bytesRead).toString('utf8');
+    if (bytesRead < size) {
+      // The cut lands mid-character often enough to matter here (Persian names
+      // are multi-byte), and a half-decoded tail could also leave a partial
+      // line that the field regexes would read as a value. Drop back to the
+      // last complete line.
+      const lastNewline = text.lastIndexOf('\n');
+      text = lastNewline === -1 ? '' : text.slice(0, lastNewline + 1);
+    }
+    return { content: text, complete: bytesRead >= size };
+  } catch (_err) {
+    return { content: null, complete: false };
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+};
+
 const cleanMetaValue = (value) => {
   if (!value) {
     return '';
@@ -156,7 +212,7 @@ const readFolderMeta = async (pathname, format) => {
 };
 
 const extractRequestMeta = async (pathname, format) => {
-  const content = await safeReadText(pathname);
+  const { content } = await safeReadHead(pathname);
   const fallbackName = path.basename(pathname, path.extname(pathname));
 
   if (!content) {
