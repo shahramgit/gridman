@@ -34,3 +34,8 @@ export {
   findFoldedMatchRange,
   foldedIncludes
 } from './search-fold';
+
+export {
+  extractMockRoutePath,
+  getMockResponseRouteKey
+} from './mock-routes';

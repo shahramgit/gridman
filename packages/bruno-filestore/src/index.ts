@@ -17,7 +17,9 @@ import {
   stringifyYmlItem,
   stringifyYmlFolder,
   stringifyYmlCollection,
-  stringifyYmlEnvironment
+  stringifyYmlEnvironment,
+  parseYmlMockServer,
+  stringifyYmlMockServer
 } from './formats/yml';
 import { dotenvToJson } from '@usebruno/lang';
 import BruParserWorker from './workers';
@@ -132,6 +134,23 @@ export const stringifyEnvironment = (envObj: BrunoEnvironment, options: Stringif
     return stringifyBruEnvironment(envObj);
   } else if (options.format === 'yml') {
     return stringifyYmlEnvironment(envObj);
+  }
+  throw new Error(`Unsupported format: ${options.format}`);
+};
+
+// mock server — a workspace-level entity, so opencollection yml only. There is
+// no .bru spelling for it and there should not be one: a mock server is not a
+// request and does not belong inside a collection's request tree.
+export const parseMockServer = (content: string, options: ParseOptions = { format: 'yml' }): any => {
+  if (options.format === 'yml') {
+    return parseYmlMockServer(content);
+  }
+  throw new Error(`Unsupported format: ${options.format}`);
+};
+
+export const stringifyMockServer = (mockServerObj: any, options: StringifyOptions = { format: 'yml' }): string => {
+  if (options.format === 'yml') {
+    return stringifyYmlMockServer(mockServerObj);
   }
   throw new Error(`Unsupported format: ${options.format}`);
 };

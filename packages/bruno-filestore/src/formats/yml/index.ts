@@ -7,6 +7,8 @@ import stringifyYmlItem from './stringifyItem';
 import stringifyYmlFolder from './stringifyFolder';
 import stringifyYmlCollection from './stringifyCollection';
 import stringifyYmlEnvironment from './stringifyEnvironment';
+import parseYmlMockServer from './parseMockServer';
+import stringifyYmlMockServer from './stringifyMockServer';
 
 export {
   parseYmlItem,
@@ -16,5 +18,7 @@ export {
   stringifyYmlItem,
   stringifyYmlFolder,
   stringifyYmlCollection,
-  stringifyYmlEnvironment
+  stringifyYmlEnvironment,
+  parseYmlMockServer,
+  stringifyYmlMockServer
 };
