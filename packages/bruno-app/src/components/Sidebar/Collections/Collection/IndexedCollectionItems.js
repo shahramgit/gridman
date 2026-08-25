@@ -55,7 +55,7 @@ import CollectionItemInfo from './CollectionItem/CollectionItemInfo';
 import ExportFolder from './CollectionItem/ExportFolder';
 import ImportIntoFolder from './ImportIntoFolder';
 import { getDefaultRequestPaneTab, getInitialExampleName } from 'utils/collections';
-import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname } from 'utils/collections';
+import { findItemInCollection, findItemInCollectionByPathname, normalizeItemPathname, isAdjacentDrop, determineCollectionItemDrop } from 'utils/collections';
 import { excludeDescendantItems } from 'utils/collections/multiSelect';
 import { buildVisibleRows, sortNodes } from 'utils/collections/visibleRows';
 import { createEmptyStateMenuItems } from 'utils/collections/emptyStateRequest';
@@ -1096,15 +1096,12 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, on
       return null;
     }
 
-    const clientY = clientOffset.y - hoverBoundingRect.top;
-    const folderUpperThreshold = hoverBoundingRect.height * 0.35;
-    const fileUpperThreshold = hoverBoundingRect.height * 0.5;
-
-    if (isFolder) {
-      return clientY < folderUpperThreshold ? 'adjacent' : 'inside';
-    }
-
-    return clientY < fileUpperThreshold ? 'adjacent' : null;
+    // Three zones on a folder, two on a request. Without the lower band there
+    // is no way to say "after this row", so the LAST row of a list could never
+    // be dropped past — a folder dropped on the bottom folder landed second to
+    // last, and the bottom half of a request row was dead space that rejected
+    // the drop outright (upstream #8722).
+    return determineCollectionItemDrop({ isFolder, hoverBoundingRect, clientOffset });
   };
 
   const canItemBeDropped = ({ draggedItem, dropType }) => {
@@ -1127,7 +1124,7 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, on
   // After an adjacent drop, persist sibling order the way the classic
   // renderer does. Computed purely from index nodes (pathname + seq), so no
   // hydration is needed; folder drops are skipped (see below).
-  const resequenceAfterAdjacentDrop = async ({ movedPathname, sourcePathname }) => {
+  const resequenceAfterAdjacentDrop = async ({ movedPathname, sourcePathname, dropType: appliedDropType }) => {
     const freshIndex = store.getState().collections.collectionIndexes?.[collectionUid];
     if (!freshIndex || !movedPathname) {
       return;
@@ -1172,7 +1169,9 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, on
 
     const ordered = sortNodes(siblingNodes).filter((candidate) => candidate.uid !== movedNode.uid);
     const targetPosition = ordered.findIndex((candidate) => candidate.uid === node.uid);
-    const insertAt = targetPosition === -1 ? ordered.length : targetPosition;
+    const insertAt = targetPosition === -1
+      ? ordered.length
+      : targetPosition + (appliedDropType === 'below' ? 1 : 0);
     ordered.splice(insertAt, 0, movedNode);
 
     const itemsToResequence = ordered.map((candidate, position) => ({
@@ -1235,11 +1234,12 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, on
         // Reorder within the same folder returns skipped=true (the file is
         // already in the right directory), but we still need to persist the new
         // sibling order, so resequence whenever we have a resulting pathname.
-        if (nextDropType === 'adjacent' && lastMoveResult?.pathname) {
+        if (isAdjacentDrop(nextDropType) && lastMoveResult?.pathname) {
           const lastDragged = draggedItems[draggedItems.length - 1];
           await resequenceAfterAdjacentDrop({
             movedPathname: lastMoveResult.pathname,
-            sourcePathname: lastDragged?.sourcePathname || lastDragged?.pathname
+            sourcePathname: lastDragged?.sourcePathname || lastDragged?.pathname,
+            dropType: nextDropType
           });
         }
 
@@ -1421,7 +1421,8 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, on
           'reveal-flash': revealFlash,
           'item-hovered': isOver && canDrop && dropType,
           'drop-target': isOver && canDrop && dropType === 'inside',
-          'drop-target-above': isOver && canDrop && dropType === 'adjacent'
+          'drop-target-above': isOver && canDrop && dropType === 'above',
+          'drop-target-below': isOver && canDrop && dropType === 'below'
         })}
         style={showMatchContext ? { minHeight: ROW_HEIGHT } : { height: ROW_HEIGHT }}
         title={node.pathname}

@@ -86,6 +86,7 @@ import {
   findCollectionByPathname,
   findEnvironmentInCollectionByName,
   getReorderedItemsInTargetDirectory,
+  isAdjacentDrop,
   resetSequencesInFolder,
   getReorderedItemsInSourceDirectory,
   calculateDraggedItemNewPathname,
@@ -1715,7 +1716,7 @@ export const handleCollectionItemDrop
 
         // Update sequences in the target directory (if dropping adjacent)
         let reorderedTargetItems = [];
-        if (dropType === 'adjacent') {
+        if (isAdjacentDrop(dropType)) {
           const targetItemSequence = targetItemDirectoryItems.find((i) => i.uid === targetItemUid)?.seq;
 
           const draggedItemWithNewPathAndSequence = {
@@ -1728,7 +1729,8 @@ export const handleCollectionItemDrop
           reorderedTargetItems = getReorderedItemsInTargetDirectory({
             items: [...targetItemDirectoryItems, draggedItemWithNewPathAndSequence],
             targetItemUid,
-            draggedItemUid
+            draggedItemUid,
+            dropType
           }) || [];
         }
 
@@ -1759,7 +1761,8 @@ export const handleCollectionItemDrop
         const reorderedItems = getReorderedItemsInTargetDirectory({
           items: targetItemDirectoryItems,
           targetItemUid,
-          draggedItemUid
+          draggedItemUid,
+          dropType
         });
 
         if (reorderedItems?.length) {

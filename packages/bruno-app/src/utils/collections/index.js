@@ -1634,23 +1634,77 @@ export const calculateNewSequence = (isDraggedItem, targetSequence, draggedSeque
   return targetSequence > draggedSequence ? targetSequence - 1 : targetSequence;
 };
 
-export const getReorderedItemsInTargetDirectory = ({ items, targetItemUid, draggedItemUid }) => {
+/**
+ * A drop next to a row rather than into it.
+ *
+ * `'adjacent'` is the old single-sided spelling and still means "above": the
+ * collection header row uses it for collection-to-collection moves, where there
+ * is no below.
+ */
+export const isAdjacentDrop = (dropType) => dropType === 'above' || dropType === 'below' || dropType === 'adjacent';
+
+/**
+ * Which of a row's zones the pointer is in.
+ *
+ * Pure, and out here rather than inline in the sidebar, so the thresholds can
+ * be tested at all — the bug this fixes was entirely in these numbers.
+ *
+ * A folder gets three zones because it can be dropped INTO; a request gets two.
+ * The lower band is the fix: with only "above", the bottom row of any list was
+ * unreachable, and on a request row the bottom half returned nothing at all, so
+ * half of every row silently rejected drops.
+ */
+export const determineCollectionItemDrop = ({ isFolder, hoverBoundingRect, clientOffset }) => {
+  if (!hoverBoundingRect || !clientOffset) {
+    return null;
+  }
+
+  const clientY = clientOffset.y - hoverBoundingRect.top;
+  const height = hoverBoundingRect.height;
+
+  if (isFolder) {
+    if (clientY < height * 0.3) return 'above';
+    if (clientY > height * 0.7) return 'below';
+    return 'inside';
+  }
+
+  return clientY < height * 0.5 ? 'above' : 'below';
+};
+
+/**
+ * Reorder siblings after an adjacent drop.
+ *
+ * The arithmetic version this replaces could only ever express "above the
+ * target", so the last row in a list was unreachable — dropping on it inserted
+ * BEFORE it and the dragged item came second-to-last, no matter where in the
+ * row the pointer was. Reported upstream as #8722 for folders; requests had the
+ * same ceiling here.
+ *
+ * Splicing a sorted array says what the user did directly, and the -1 when the
+ * dragged item sat above the insertion point is the whole subtlety: removing it
+ * first shifts everything below it up by one.
+ */
+export const getReorderedItemsInTargetDirectory = ({ items, targetItemUid, draggedItemUid, dropType = 'above' }) => {
   const itemsWithFixedSequences = resetSequencesInFolder(cloneDeep(items));
-  const targetItem = findItem(itemsWithFixedSequences, targetItemUid);
-  const draggedItem = findItem(itemsWithFixedSequences, draggedItemUid);
-  const targetSequence = targetItem?.seq;
-  const draggedSequence = draggedItem?.seq;
-  itemsWithFixedSequences?.forEach((item) => {
-    const isDraggedItem = item?.uid === draggedItemUid;
-    const isBetween = isItemBetweenSequences(item?.seq, draggedSequence, targetSequence);
-    if (isBetween) {
-      item.seq += targetSequence > draggedSequence ? -1 : 1;
-    }
-    const newSequence = calculateNewSequence(isDraggedItem, targetSequence, draggedSequence);
-    if (newSequence !== null) {
-      item.seq = newSequence;
-    }
+  const sorted = [...itemsWithFixedSequences].sort((a, b) => (a?.seq || 0) - (b?.seq || 0));
+
+  const targetIndex = sorted.findIndex((item) => item?.uid === targetItemUid);
+  const draggedIndex = sorted.findIndex((item) => item?.uid === draggedItemUid);
+  if (targetIndex === -1 || draggedIndex === -1) {
+    return [];
+  }
+
+  let insertAt = dropType === 'below' ? targetIndex + 1 : targetIndex;
+  if (draggedIndex < insertAt) {
+    insertAt -= 1;
+  }
+
+  const [draggedItem] = sorted.splice(draggedIndex, 1);
+  sorted.splice(insertAt, 0, draggedItem);
+  sorted.forEach((item, position) => {
+    item.seq = position + 1;
   });
+
   // only return items that have been reordered
   return itemsWithFixedSequences.filter((item) =>
     items?.find((originalItem) => originalItem?.uid === item?.uid)?.seq !== item?.seq
@@ -1682,7 +1736,7 @@ export const calculateDraggedItemNewPathname = ({ draggedItem, targetItem, dropT
   let newPathname = null;
   if (dropType === 'inside' && (isTargetItemAFolder || isTargetTheCollection)) {
     newPathname = path.join(targetItemPathname, draggedItemFilename);
-  } else if (dropType === 'adjacent') {
+  } else if (isAdjacentDrop(dropType)) {
     // Adjacent to the collection root would resolve to the workspace
     // collections/ directory, moving the item OUT of the collection and leaving
     // a stray top-level dir. Drop it inside the collection root instead.
