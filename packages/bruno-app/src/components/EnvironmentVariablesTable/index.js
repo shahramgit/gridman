@@ -8,6 +8,7 @@ import { updateTableColumnWidths } from 'providers/ReduxStore/slices/tabs';
 import MultiLineEditor from 'components/MultiLineEditor/index';
 import StyledWrapper from './StyledWrapper';
 import { moveEnvironmentVariable, movableRowCount } from './reorder';
+import { reconcileSavedChange } from './reconcile';
 import { uuid } from 'utils/common';
 import { useFormik } from 'formik';
 import * as Yup from 'yup';
@@ -167,7 +168,13 @@ const EnvironmentVariablesTable = ({
   }, [environment.uid, environment.variables]);
 
   const formik = useFormik({
-    enableReinitialize: true,
+    // Intentionally OFF. It reset the form to `environment.variables` whenever the
+    // saved snapshot changed — including when our OWN autosave echoed back — which
+    // discarded keystrokes typed during the async save window, so users lost
+    // characters mid-word. Reconciliation is explicit below (see the
+    // reconcileSavedChange effect) and in-flight edits win. Switching environments
+    // is handled by the key={environment.uid} remount, not by reinitialisation.
+    enableReinitialize: false,
     initialValues: initialValues,
     validationSchema: Yup.array().of(
       Yup.object({
@@ -245,6 +252,26 @@ const EnvironmentVariablesTable = ({
 
   useEffect(() => {
     setPinnedData({ query: '', uids: new Set() });
+  }, [savedValuesJson]);
+
+  // Controlled replacement for enableReinitialize. When the persisted snapshot
+  // changes — autosave echo, a script writing an env var, an external file
+  // reload, or an edit made outside this table — adopt it only if the form has
+  // no unsaved edits. If the user is typing ahead, keep their edits; the
+  // draft/autosave cycle persists them.
+  const prevSavedValuesJsonRef = useRef(savedValuesJson);
+  useEffect(() => {
+    const prevSaved = prevSavedValuesJsonRef.current;
+    prevSavedValuesJsonRef.current = savedValuesJson;
+
+    const currentNamed = formik.values.filter((variable) => variable.name && variable.name.trim() !== '');
+    const currentJson = JSON.stringify(currentNamed.map(stripEnvVarUid));
+
+    if (reconcileSavedChange({ prevSaved, nextSaved: savedValuesJson, current: currentJson }) === 'adopt') {
+      formik.resetForm({ values: initialValues });
+    }
+    // Deliberately keyed on the saved snapshot only: re-running on every
+    // keystroke is exactly the behaviour being removed.
   }, [savedValuesJson]);
 
   // Sync modified state

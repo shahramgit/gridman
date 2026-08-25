@@ -1,9 +1,17 @@
 import get from 'lodash/get';
+import mime from 'mime-types';
 import { validateSchema, transformItemsInCollection, hydrateSeqInCollection, uuid } from '../common';
 import { transformExampleStatusInCollection } from '@usebruno/common';
 import each from 'lodash/each';
 import postmanTranslation from './postman-translations';
 import { invalidVariableCharacterRegex } from '../constants/index';
+
+/**
+ * Postman's `mode: "file"` body carries no per-file content type, so infer one from the
+ * extension. RFC 2046 4.5.1 makes application/octet-stream the correct fallback for an
+ * unknown or missing extension.
+ */
+const inferBinaryContentType = (filePath) => mime.lookup(filePath || '') || 'application/octet-stream';
 
 const AUTH_TYPES = Object.freeze({
   BASIC: 'basic',
@@ -474,7 +482,8 @@ const importPostmanV2CollectionItem = (brunoParent, item, { useWorkers = false }
             text: null,
             xml: null,
             formUrlEncoded: [],
-            multipartForm: []
+            multipartForm: [],
+            file: []
           },
           docs: transformDescription(i.request.description)
         }
@@ -534,6 +543,19 @@ const importPostmanV2CollectionItem = (brunoParent, item, { useWorkers = false }
 
       const bodyMode = get(i, 'request.body.mode');
       if (bodyMode) {
+        if (bodyMode === 'file') {
+          // Previously unhandled, so the body fell through as mode 'none' and the
+          // binary request silently lost its file on import.
+          brunoRequestItem.request.body.mode = 'file';
+          const filePath = ensureString(get(i, 'request.body.file.src'));
+          brunoRequestItem.request.body.file.push({
+            uid: uuid(),
+            selected: true,
+            filePath,
+            contentType: inferBinaryContentType(filePath)
+          });
+        }
+
         if (bodyMode === 'formdata') {
           brunoRequestItem.request.body.mode = 'multipartForm';
 
@@ -668,7 +690,9 @@ const importPostmanV2CollectionItem = (brunoParent, item, { useWorkers = false }
                 text: null,
                 xml: null,
                 formUrlEncoded: [],
-                multipartForm: []
+                multipartForm: [],
+                file: [],
+                file: []
               }
             },
             response: {
