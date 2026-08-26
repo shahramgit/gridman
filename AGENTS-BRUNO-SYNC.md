@@ -299,15 +299,29 @@ express and cors are new dependencies.
   or localStorage. Every restart re-collapses all 124 GSB collections and every
   folder in them. Build ours — a set of expanded uids per collection, restored
   on mount.
-- **Presets.** Called "cosmetic, restyle only" here; it was not, and the label
-  hid two things worth having. `#8889` was a live bug WE HAD — the Presets form
-  saved `requestType: 'ws'` while `CreateTransientRequest` switched on
+- ~~**Presets.**~~ DONE. Called "cosmetic, restyle only" here; it was not, and
+  the label hid two things worth having. `#8889` was a live bug WE HAD — the
+  form saved `requestType: 'ws'` while `CreateTransientRequest` switched on
   `'websocket'` with no default, so a WebSocket collection preset made the +
   button do nothing at all (`e18f0e997`). `#8612`, a default environment per
-  collection, is DONE in `89e62045c` — storage half theirs, wiring ours,
-  because their app and electron hunks are written against a snapshotManager
-  and a hydrate payload we do not have. Still outstanding: only the restyle
-  itself (segmented control, dropdown).
+  collection, in `89e62045c` — storage half theirs, wiring ours, because their
+  app and electron hunks target a snapshotManager and a hydrate payload we do
+  not have. The restyle itself (`#8816`/`#8827`/`#8828`/`#8841`/`#9027`) in
+  `38771f616`, taken as upstream's final version of the three files rather than
+  four commits rewriting the same component, bringing `ui/SegmentedControl`
+  with it. Their MenuDropdown replaced the plain `<select>` I had written for
+  the default environment; the stored shape is unchanged.
+- ~~**Secrets env table.**~~ DONE in `a12de8e87`: `#8191`'s variables/secrets
+  tab split, with `#8733`'s fix applied to OUR value cell rather than
+  cherry-picked — that patch rewrites the cell into a component depending on
+  VarValueCell, SecretEyeButton, DataTypeSelector and valueToString, all part
+  of upstream's typed-variable annotations, which change the on-disk format and
+  which we have not taken. Both of our divergences in that file survive: the
+  autosave reconcile effect (`3dc7c4d1d`) and the up/down reorder buttons
+  (`0c4b28009`). **NOT taken: `#8603` drag-and-drop + alphabetical sorting, and
+  `#8871` which exists only to fix it on the secrets tab** — we shipped up/down
+  buttons for this table on request and two competing reorder mechanisms in one
+  table is worse than either. Revisit only if the up/down buttons are dropped.
 
 **Fixed while porting, unrelated to any upstream feature:** the
 bruno-converters build. `mime-types` was missing from the rollup externals, so
