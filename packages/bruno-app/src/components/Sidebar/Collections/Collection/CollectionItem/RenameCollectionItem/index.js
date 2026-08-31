@@ -24,7 +24,13 @@ const RenameCollectionItem = ({ collectionUid, item, onClose, onRename }) => {
   const [isEditing, toggleEditing] = useState(false);
   const itemName = item?.name;
   const itemType = item?.type;
-  const itemFilename = item?.filename ? path.parse(item?.filename).name : '';
+  // A folder has no extension. `path.parse('Reports.2024').name` is 'Reports',
+  // so opening Rename on such a folder pre-filled the filesystem name with a
+  // truncated value — and renaming from it would have moved the directory to
+  // the truncated name.
+  const itemFilename = item?.filename
+    ? (isFolder ? item.filename : path.parse(item.filename).name)
+    : '';
   const [showFilesystemName, toggleShowFilesystemName] = useState(false);
 
   const dropdownTippyRef = useRef();
@@ -124,7 +130,7 @@ const RenameCollectionItem = ({ collectionUid, item, onClose, onRename }) => {
         >
           <form className="bruno-form" onSubmit={formik.handleSubmit}>
             <div className="flex flex-col mt-2">
-              <label htmlFor="name" className="block font-medium">
+              <label htmlFor="collection-item-name" className="block font-medium">
                 {isFolder ? 'Folder' : 'Request'} Name
               </label>
               <input
@@ -145,6 +151,18 @@ const RenameCollectionItem = ({ collectionUid, item, onClose, onRename }) => {
               />
               {formik.touched.name && formik.errors.name ? <div className="text-red-500">{formik.errors.name}</div> : null}
             </div>
+
+            {/*
+              The filesystem-name field lives inside a collapsed section, so a
+              validation failure on it used to block submit with nothing on
+              screen: pressing Rename did nothing, with no message, every time.
+              Reported from Windows as "rename is stuck, even after restarting".
+            */}
+            {!showFilesystemName && formik.errors.filename ? (
+              <div className="text-red-500 mt-2" data-testid="rename-filename-error">
+                {`Filesystem name "${formik.values.filename}": ${formik.errors.filename}`}
+              </div>
+            ) : null}
 
             {showFilesystemName && (
               <div className="mt-4">
