@@ -84,6 +84,7 @@ const { REQUEST_TYPES } = require('../utils/constants');
 const { cancelOAuth2AuthorizationRequest, isOauth2AuthorizationRequestInProgress } = require('../utils/oauth2-protocol-handler');
 const { findUniqueFolderName } = require('../utils/collection-import');
 const { migrateCollectionToYml } = require('../utils/collection-migration');
+const { withWatchReleased } = require('../app/watch-release');
 const { readCollectionItemsFromDisk, readFolderForExport, writeItemsIntoFolder } = require('./collection-export-import');
 const { saveSpecAndUpdateMetadata, cleanupSpecFilesForCollection } = require('./openapi-sync');
 const {
@@ -322,7 +323,7 @@ const {
   pasteRequestByPath
 } = require('./collection-paste-move');
 
-const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollectionPathname, targetCollectionPathname }) => {
+const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollectionPathname, targetCollectionPathname, watcher }) => {
   if (!fs.existsSync(winLongPath(sourcePathname))) {
     throw new Error(`path: ${sourcePathname} does not exist`);
   }
@@ -387,7 +388,8 @@ const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollection
     await writeFile(targetPathname, finalContent);
     await removePath(sourcePathname);
   } else {
-    await movePathWithRetry(sourcePathname, targetPathname);
+    await withWatchReleased(watcher, { sourcePathname, targetPathname }, () =>
+      movePathWithRetry(sourcePathname, targetPathname));
   }
 
   const pathnamesAfter = pathnamesBefore?.map((p) => p?.replace(sourcePathname, targetPathname));
@@ -2336,14 +2338,11 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         // uids only once the move succeeded: a failed move used to leave every
         // uid pointing at a path that does not exist.
         const requestFilesAtSource = await searchForRequestFiles(oldPath, collectionPathname);
-        // Move FIRST, meta after: on Windows anything holding a handle in the
-        // subtree (antivirus, Explorer, a terminal) makes a bare fsExtra.move
-        // die with EPERM/EBUSY (or ENOENT past MAX_PATH) — after
-        // updateFolderMeta had already renamed the display name, leaving a
-        // half-renamed folder the user then retried into errors.
-        // movePathWithRetry retries, falls back to copy+remove and uses
-        // extended-length paths.
-        await movePathWithRetry(oldPath, newPath);
+
+        // See app/watch-release.js: on Windows our own watcher holds the
+        // directory open and the OS refuses to move it.
+        await withWatchReleased(watcher, { sourcePathname: oldPath, targetPathname: newPath }, () =>
+          movePathWithRetry(oldPath, newPath));
         requestFilesAtSource.forEach((requestFile) => {
           const newRequestFilePath = requestFile.replace(oldPath, newPath);
           moveRequestUid(requestFile, newRequestFilePath);
@@ -2462,7 +2461,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         sourcePathname: sourcePath,
         targetPathname: finalPathname,
         sourceCollectionPathname,
-        targetCollectionPathname
+        targetCollectionPathname,
+        watcher
       });
 
       let renamedDisplayName = null;
