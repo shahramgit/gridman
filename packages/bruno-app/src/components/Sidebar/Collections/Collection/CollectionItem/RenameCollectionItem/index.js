@@ -32,6 +32,11 @@ const RenameCollectionItem = ({ collectionUid, item, onClose, onRename }) => {
     ? (isFolder ? item.filename : path.parse(item.filename).name)
     : '';
   const [showFilesystemName, toggleShowFilesystemName] = useState(false);
+  // Renaming a folder MOVES a directory in the main process, and on a large
+  // folder behind Windows antivirus that is not instant. With no pending state
+  // the button looked dead and the rename looked like it had done nothing —
+  // which is what was reported, twice.
+  const [renaming, setRenaming] = useState(false);
 
   const dropdownTippyRef = useRef();
   const onDropdownCreate = (ref) => (dropdownTippyRef.current = ref);
@@ -63,6 +68,7 @@ const RenameCollectionItem = ({ collectionUid, item, onClose, onRename }) => {
       if ((item.name === values.name) && (itemFilename === values.filename)) {
         return;
       }
+      setRenaming(true);
       if (!onRename && !isFolder && item.draft) {
         await dispatch(saveRequest(item.uid, collectionUid, true));
       }
@@ -95,6 +101,8 @@ const RenameCollectionItem = ({ collectionUid, item, onClose, onRename }) => {
         onClose();
       } catch (error) {
         toast.error(error.message || 'An error occurred while renaming');
+      } finally {
+        setRenaming(false);
       }
     }
   });
@@ -251,8 +259,8 @@ const RenameCollectionItem = ({ collectionUid, item, onClose, onRename }) => {
                 <Button type="button" color="secondary" variant="ghost" onClick={onClose} className="mr-2">
                   Cancel
                 </Button>
-                <Button type="submit" data-testid="rename-item-button">
-                  Rename
+                <Button type="submit" data-testid="rename-item-button" disabled={renaming}>
+                  {renaming ? 'Renaming…' : 'Rename'}
                 </Button>
               </div>
             </div>

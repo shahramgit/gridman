@@ -105,4 +105,36 @@ describe('renaming a folder from the sidebar', () => {
     expect(error).toHaveTextContent('folder');
     expect(onRename).not.toHaveBeenCalled();
   });
+
+  it('shows that it is working while the rename is in flight', async () => {
+    // Renaming a folder MOVES a directory in the main process; on a large
+    // folder behind Windows antivirus that takes time. With no pending state
+    // the button looked dead and the rename looked like it had done nothing,
+    // which is exactly how this was reported — twice.
+    let release;
+    const onRename = jest.fn(() => new Promise((resolve) => { release = resolve; }));
+    renderModal({ name: 'Auth', filename: 'Auth', onRename });
+
+    typeName('Authentication');
+    submit();
+
+    const button = await screen.findByTestId('rename-item-button');
+    await waitFor(() => expect(button).toBeDisabled());
+    expect(button).toHaveTextContent(/renaming/i);
+
+    release();
+    await waitFor(() => expect(onRename).toHaveBeenCalled());
+  });
+
+  it('gives the button back when the rename fails, so it can be retried', async () => {
+    const onRename = jest.fn(() => Promise.reject(new Error('EPERM: operation not permitted')));
+    renderModal({ name: 'Auth', filename: 'Auth', onRename });
+
+    typeName('Authentication');
+    submit();
+
+    const button = await screen.findByTestId('rename-item-button');
+    await waitFor(() => expect(button).not.toBeDisabled());
+    expect(button).toHaveTextContent(/^rename$/i);
+  });
 });
