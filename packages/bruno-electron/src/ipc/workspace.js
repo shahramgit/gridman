@@ -159,6 +159,38 @@ const ensureInitialWorkspace = async () => {
 const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
   const lastOpenedWorkspaces = new LastOpenedWorkspaces();
 
+  /**
+   * A workspace is only forgotten when its DIRECTORY is gone.
+   *
+   * `workspace.yml` is git-tracked, so checking out a branch that does not
+   * carry it leaves a perfectly good workspace directory with no config in it —
+   * and the startup scan used to treat that as "invalid" and delete the
+   * workspace from the recent list permanently. Reported as: switch branch on
+   * the GSB workspace, restart, and the workspace is gone from the app while
+   * the folder is still right there. Switching back did not bring it back,
+   * because the entry had already been dropped.
+   *
+   * The same applied to a config that merely failed to parse — a half-written
+   * file, or one carrying conflict markers mid-merge.
+   */
+  const workspaceDirectoryIsGone = (workspacePath) => {
+    try {
+      return !fs.existsSync(workspacePath);
+    } catch (_err) {
+      // An unreadable path (permissions, a disconnected network share) is not
+      // proof the workspace is gone either.
+      return false;
+    }
+  };
+
+  const forgetWorkspacesThatAreGone = (candidatePaths) => {
+    for (const candidate of candidatePaths) {
+      if (workspaceDirectoryIsGone(candidate)) {
+        lastOpenedWorkspaces.remove(candidate);
+      }
+    }
+  };
+
   ipcMain.handle('renderer:create-workspace',
     async (event, workspaceName, workspaceFolderName, workspaceLocation) => {
       try {
@@ -353,9 +385,7 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
         }
       }
 
-      for (const invalidPath of invalidPaths) {
-        lastOpenedWorkspaces.remove(invalidPath);
-      }
+      forgetWorkspacesThatAreGone(invalidPaths);
 
       return validWorkspaces;
     } catch (error) {
@@ -913,9 +943,7 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
         }
       }
 
-      for (const invalidPath of invalidPaths) {
-        lastOpenedWorkspaces.remove(invalidPath);
-      }
+      forgetWorkspacesThatAreGone(invalidPaths);
 
       if (openedWorkspaceCount === 0) {
         try {
