@@ -85,6 +85,20 @@ const RenameWorkspace = ({ onClose, workspace }) => {
             {formik.touched.name && formik.errors.name ? (
               <div className="text-red-500">{formik.errors.name}</div>
             ) : null}
+
+            {/*
+              The folder is NOT renamed, and saying so is the difference between
+              "the rename did nothing" and "the rename did what it said". The
+              name lives in workspace.yml, which is git-tracked, so it is the
+              workspace's name for everyone who pulls; the directory stays local
+              to this machine.
+            */}
+            {workspace?.pathname ? (
+              <div className="text-xs text-muted mt-3" data-testid="rename-workspace-folder-note">
+                <div>The folder on disk is not renamed:</div>
+                <div className="mt-1 break-all font-mono">{workspace.pathname}</div>
+              </div>
+            ) : null}
           </div>
         </form>
       </Modal>
