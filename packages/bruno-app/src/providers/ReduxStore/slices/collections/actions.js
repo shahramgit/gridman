@@ -8,7 +8,7 @@ import get from 'lodash/get';
 import set from 'lodash/set';
 import trim from 'lodash/trim';
 import path, { normalizePath } from 'utils/common/path';
-import { insertTaskIntoQueue, removeTaskFromQueue, toggleSidebarCollapse, revealRequestInSidebar } from 'providers/ReduxStore/slices/app';
+import { insertTaskIntoQueue, removeTaskFromQueue, toggleSidebarCollapse, revealRequestInSidebar, clearClipboard } from 'providers/ReduxStore/slices/app';
 import toast from 'react-hot-toast';
 import IpcErrorModal from 'components/Errors/IpcErrorModal/index';
 import {
@@ -1384,6 +1384,59 @@ export const pasteItem = (targetCollectionUid, targetItemUid = null) => (dispatc
       return collectionPathname && normalizedPathname.startsWith(`${collectionPathname}/`);
     }) || null;
   };
+
+  /**
+   * A cut is a move, so it reuses the drag-and-drop path rather than a second
+   * implementation: that one already renames on collision, updates the index,
+   * suppresses the watcher and reconciles open tabs.
+   */
+  if (clipboardResult.operation === 'cut') {
+    const cutItem = clipboardResult.items[0];
+    const sourceCollection = findCollectionContainingPathname(cutItem?.pathname);
+    if (!sourceCollection) {
+      return Promise.reject(new Error('The item that was cut is no longer in an open collection'));
+    }
+
+    let targetPathname = targetCollection.pathname;
+    if (targetItemUid) {
+      const targetItem = findItemInCollection(cloneDeep(targetCollection), targetItemUid);
+      if (!targetItem) {
+        return Promise.reject(new Error('Target folder not found'));
+      }
+      if (!isItemAFolder(targetItem)) {
+        return Promise.reject(new Error('Target must be a folder or collection'));
+      }
+      targetPathname = targetItem.pathname;
+    }
+
+    const normalize = (value) => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const source = normalize(cutItem.pathname);
+    const target = normalize(targetPathname);
+    // Moving a folder into itself or into one of its own children would
+    // relocate the destination out from under the move.
+    if (target === source || target.startsWith(`${source}/`)) {
+      return Promise.reject(new Error('Cannot move a folder into itself'));
+    }
+    if (normalize(target) === normalize(cutItem.pathname.replace(/[\\/][^\\/]+$/, ''))) {
+      // Already where it was asked to go; clear the clipboard so a stale cut
+      // does not linger.
+      dispatch(clearClipboard());
+      return Promise.resolve();
+    }
+
+    return dispatch(moveCollectionItemByPath({
+      sourceCollectionUid: sourceCollection.uid,
+      targetCollectionUid,
+      sourcePathname: cutItem.pathname,
+      targetPathname,
+      dropType: 'inside'
+    })).then((result) => {
+      // A cut is consumed by its paste: leaving it armed means the next paste
+      // tries to move a path that no longer exists.
+      dispatch(clearClipboard());
+      return result;
+    });
+  }
 
   return new Promise(async (resolve, reject) => {
     try {

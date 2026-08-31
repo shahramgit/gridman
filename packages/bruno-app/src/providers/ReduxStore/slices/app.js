@@ -74,7 +74,8 @@ const initialState = {
   gitOperationProgress: {},
   gitVersion: null,
   clipboard: {
-    hasCopiedItems: false // Whether clipboard has Bruno data (for UI)
+    hasCopiedItems: false, // Whether clipboard has Bruno data (for UI)
+    operation: 'copy' // 'copy' duplicates on paste, 'cut' moves
   },
   systemProxyVariables: {},
   envVarSearch: {
@@ -208,6 +209,9 @@ export const appSlice = createSlice({
     setClipboard: (state, action) => {
       // Update clipboard UI state
       state.clipboard.hasCopiedItems = action.payload.hasCopiedItems;
+      if (action.payload.operation) {
+        state.clipboard.operation = action.payload.operation;
+      }
     },
     setEnvVarSearchQuery: (state, { payload: { context, query } }) => {
       if (!state.envVarSearch[context]) return;
@@ -337,8 +341,24 @@ export const completeQuitFlow = () => (dispatch, getState) => {
 };
 
 export const copyRequest = (item) => (dispatch, getState) => {
-  brunoClipboard.write(item);
-  dispatch(setClipboard({ hasCopiedItems: true }));
+  brunoClipboard.write(item, 'copy');
+  dispatch(setClipboard({ hasCopiedItems: true, operation: 'copy' }));
+  return Promise.resolve();
+};
+
+/**
+ * Cut is the same clipboard with a different verb: the item is not touched
+ * until it is pasted, so cutting and never pasting changes nothing on disk.
+ */
+export const cutRequest = (item) => (dispatch, getState) => {
+  brunoClipboard.write(item, 'cut');
+  dispatch(setClipboard({ hasCopiedItems: true, operation: 'cut' }));
+  return Promise.resolve();
+};
+
+export const clearClipboard = () => (dispatch, getState) => {
+  brunoClipboard.clear();
+  dispatch(setClipboard({ hasCopiedItems: false, operation: 'copy' }));
   return Promise.resolve();
 };
 

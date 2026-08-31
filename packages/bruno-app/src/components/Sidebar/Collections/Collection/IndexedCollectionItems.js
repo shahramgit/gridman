@@ -7,6 +7,7 @@ import {
   IconClock,
   IconCode,
   IconCopy,
+  IconCut,
   IconDots,
   IconEdit,
   IconFileExport,
@@ -42,7 +43,7 @@ import {
   showInFolder,
   updateItemsSequences
 } from 'providers/ReduxStore/slices/collections/actions';
-import { clearSidebarReveal, copyRequest, insertTaskIntoQueue, revealRequestInSidebar, setFocusedSidebarPath } from 'providers/ReduxStore/slices/app';
+import { clearSidebarReveal, copyRequest, cutRequest, insertTaskIntoQueue, revealRequestInSidebar, setFocusedSidebarPath } from 'providers/ReduxStore/slices/app';
 import useKeybinding from 'hooks/useKeybinding';
 import SearchHighlight from '../SearchHighlight';
 import CollectionItemIcon from './CollectionItem/CollectionItemIcon';
@@ -406,6 +407,11 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, on
 
   useKeybinding('copyItem', () => {
     handleCopyItem();
+    return false;
+  }, { enabled: isKeyboardFocused, deps: [isKeyboardFocused] });
+
+  useKeybinding('cutItem', () => {
+    handleCutItem();
     return false;
   }, { enabled: isKeyboardFocused, deps: [isKeyboardFocused] });
 
@@ -800,6 +806,14 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, on
     toast.success(`${isFolder ? 'Folder' : 'Request'} copied`);
   };
 
+  // Nothing moves until the paste: cutting and then changing your mind leaves
+  // the item exactly where it was.
+  const handleCutItem = () => {
+    const hydratedItem = ensureNodeHydrated();
+    dispatch(cutRequest(hydratedItem));
+    toast.success(`${isFolder ? 'Folder' : 'Request'} cut — paste into a folder to move it`);
+  };
+
   const handlePasteItem = () => {
     ensureNodeHydrated();
     dispatch(pasteItem(collectionUid, isFolder ? node.uid : node.parentUid || null))
@@ -927,6 +941,12 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, on
         leftSection: IconCopy,
         label: 'Copy',
         onClick: handleCopyItem
+      },
+      {
+        id: 'cut',
+        leftSection: IconCut,
+        label: 'Cut',
+        onClick: handleCutItem
       }
     );
 
