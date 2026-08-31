@@ -856,7 +856,8 @@ const prepareWorkspaceConfigForClient = (workspaceConfig, workspacePath) => {
 
   return {
     ...workspaceConfig,
-    name: path.basename(workspacePath),
+    // See ipc/workspace.js: the carried name wins, the directory is a fallback.
+    name: workspaceConfig.name || path.basename(workspacePath),
     remoteWorkspaceName,
     collections: resolveAndFilterWorkspaceCollections(workspacePath, workspaceConfig.collections)
   };

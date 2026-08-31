@@ -63,7 +63,9 @@ const handleWorkspaceFileChange = (win, workspacePath) => {
 
     win.webContents.send('main:workspace-config-updated', workspacePath, workspaceUid, {
       ...workspaceConfig,
-      name: isDefault ? DEFAULT_WORKSPACE_NAME : path.basename(workspacePath),
+      // See ipc/workspace.js: the carried name wins, the directory is a
+      // fallback. This send is the one that used to undo a rename.
+      name: isDefault ? DEFAULT_WORKSPACE_NAME : (workspaceConfig.name || path.basename(workspacePath)),
       remoteWorkspaceName: workspaceConfig.name,
       type: isDefault ? 'default' : workspaceConfig.type
     });

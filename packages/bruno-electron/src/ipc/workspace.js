@@ -62,6 +62,15 @@ const assertWorkspaceCollectionFolder = (workspacePath, collectionPath) => {
   return absolutePath;
 };
 
+// The name the app shows is the one the workspace carries, falling back to its
+// directory. It used to be the DIRECTORY, always — which made Rename Workspace
+// do nothing: the rename writes `info.name` into workspace.yml, the watcher
+// then re-sent the folder name, and it overwrote the renderer's optimistic
+// update a beat later. The two agree for every workspace created through the
+// app (createWorkspaceConfig names it after its folder), so this only differs
+// once someone has actually renamed one. The basename fallback is defensive
+// only — a config carrying no name fails validateWorkspaceConfig and the
+// workspace is never opened.
 const prepareWorkspaceConfigForClient = (workspaceConfig, workspacePath) => {
   const config = {
     ...workspaceConfig,
@@ -71,7 +80,7 @@ const prepareWorkspaceConfigForClient = (workspaceConfig, workspacePath) => {
 
   return {
     ...config,
-    name: path.basename(workspacePath),
+    name: workspaceConfig.name || path.basename(workspacePath),
     remoteWorkspaceName
   };
 };
