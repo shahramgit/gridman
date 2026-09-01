@@ -950,7 +950,11 @@ const IndexedRow = React.memo(({ node, collectionUid, searchText, isExpanded, on
       }
     );
 
-    if (isFolder && hasCopiedItems) {
+    // On a request too, not just a folder: the Ctrl+V binding already pastes
+    // into a request's PARENT folder, so offering it only on folders left the
+    // menu doing less than the keyboard and made a paste onto a request look
+    // like it had silently failed.
+    if (hasCopiedItems) {
       items.push({
         id: 'paste',
         leftSection: IconClipboard,

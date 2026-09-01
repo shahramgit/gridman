@@ -1,3 +1,4 @@
+/* global __dirname */
 import brunoClipboard, { COPY, CUT } from './bruno-clipboard';
 
 /**
@@ -45,5 +46,30 @@ describe('the sidebar clipboard', () => {
     brunoClipboard.write({ pathname: '/w/c/a.bru' }, CUT);
     brunoClipboard.clear();
     expect(brunoClipboard.read()).toEqual({ items: [], operation: COPY, hasData: false });
+  });
+});
+
+/**
+ * WHERE PASTE IS OFFERED MUST MATCH WHERE IT WORKS.
+ *
+ * `Ctrl+V` on a request pastes into that request's PARENT folder — the
+ * keybinding has always done this. The ... menu offered Paste only on folders,
+ * so on a request the menu did less than the keyboard and a user who reached
+ * for the menu concluded paste was broken.
+ */
+describe('the paste menu entry', () => {
+  const SOURCE = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'components', 'Sidebar', 'Collections', 'Collection', 'IndexedCollectionItems.js'),
+    'utf8'
+  );
+
+  it('is gated on having something to paste, not on the row being a folder', () => {
+    expect(SOURCE).toContain('if (hasCopiedItems) {');
+    expect(SOURCE).not.toContain('if (isFolder && hasCopiedItems) {');
+  });
+
+  it('still pastes into the parent when the row is a request', () => {
+    // handlePasteItem targets the folder itself, or the request's parent.
+    expect(SOURCE).toContain('isFolder ? node.uid : node.parentUid');
   });
 });

@@ -1,3 +1,10 @@
+// Requiring src/ipc/network pulls in the whole network stack, quickjs's wasm
+// module included. On a slower machine — an ARM64 Windows VM under emulation is
+// the case that surfaced this — that load alone can exceed jest's 5s default,
+// and the tests time out having done nothing wrong. The work here is module
+// loading, not the assertions, so the budget is the thing that was wrong.
+jest.setTimeout(30000);
+
 const prepareGqlIntrospectionRequest = require('../../src/ipc/network/prepare-gql-introspection-request');
 const { fetchGqlSchemaHandler } = require('../../src/ipc/network');
 
