@@ -941,6 +941,13 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
             win.webContents.send('main:workspace-opened', workspacePath, workspaceUid, configForClient);
             openedWorkspaceCount++;
 
+            // Opened, but read through conflict markers: say so, or the user
+            // has no idea the collection list they are looking at came from
+            // both sides of an unresolved merge.
+            if (workspaceConfig.hasGitConflicts) {
+              win.webContents.send('main:workspace-config-conflicted', workspacePath, workspaceUid);
+            }
+
             if (workspaceWatcher) {
               workspaceWatcher.addWatcher(win, workspacePath);
             }

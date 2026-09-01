@@ -4,7 +4,7 @@ const path = require('path');
 const chokidar = require('chokidar');
 const yaml = require('js-yaml');
 const { generateUidBasedOnHash, uuid } = require('../utils/common');
-const { getWorkspaceUid, hasGitConflictMarkers } = require('../utils/workspace-config');
+const { getWorkspaceUid, hasGitConflictMarkers, resolveGitConflictMarkers } = require('../utils/workspace-config');
 const {
   getMocksDirPath,
   getMockServerFromFile,
@@ -45,12 +45,22 @@ const handleWorkspaceFileChange = (win, workspacePath) => {
     }
 
     const yamlContent = fs.readFileSync(workspaceFilePath, 'utf8');
+    let contentToParse = yamlContent;
+
+    // Report the conflict, then keep going on the resolved content. Returning
+    // early froze the sidebar on whatever it last read, so a collection added
+    // after the conflict never appeared.
     if (hasGitConflictMarkers(yamlContent)) {
       win.webContents.send('main:workspace-config-conflicted', workspacePath, getWorkspaceUid(workspacePath));
-      return;
+      contentToParse = resolveGitConflictMarkers(yamlContent, 'union');
+      try {
+        yaml.load(contentToParse);
+      } catch (error) {
+        contentToParse = resolveGitConflictMarkers(yamlContent, 'ours');
+      }
     }
 
-    const rawConfig = yaml.load(yamlContent);
+    const rawConfig = yaml.load(contentToParse);
     const workspaceConfig = normalizeWorkspaceConfig(rawConfig);
 
     const type = workspaceConfig.info?.type || workspaceConfig.type;

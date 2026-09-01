@@ -598,9 +598,18 @@ const useIpcEvents = () => {
     // Emitted by the workspace watcher and by git.js since long before this,
     // with no listener anywhere — so a conflicted workspace.yml discovered
     // while the app was running was announced to nobody.
+    // The watcher re-emits this on every workspace.yml change while the file
+    // stays conflicted, so tell the user once per workspace instead of stacking
+    // a toast per keystroke of whatever is touching the file.
+    const conflictReported = new Set();
     const removeWorkspaceConflictedListener = ipcRenderer.on('main:workspace-config-conflicted', (workspacePath) => {
+      if (conflictReported.has(workspacePath)) {
+        return;
+      }
+      conflictReported.add(workspacePath);
       toast.error(
-        `The workspace at ${workspacePath} has unresolved Git conflicts in workspace.yml. Resolve them and reopen it.`,
+        `workspace.yml in ${workspacePath} still has unresolved Git conflicts. `
+        + 'The workspace is open and shows the collections from both sides — resolve the file in Git to settle it.',
         { duration: 8000 }
       );
     });

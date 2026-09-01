@@ -96,7 +96,8 @@ const restart = async () => {
   return {
     channels: sent.map(([channel]) => channel),
     openedPaths: sent.filter(([c]) => c === 'main:workspace-opened').map(([, p]) => p),
-    remembered: mockStore.get(KEY) || []
+    remembered: mockStore.get(KEY) || [],
+    sent
   };
 };
 
@@ -146,7 +147,7 @@ describe('switching branches under a workspace', () => {
     expect(config.collections.map((c) => c.name).sort()).toEqual(['Alpha', 'Beta']);
   });
 
-  it('reports, rather than hides, a workspace.yml left with conflict markers', async () => {
+  it('opens, and reports, a workspace.yml left with conflict markers', async () => {
     // Add a collection on a branch, add a different one on main, merge.
     git('checkout', '-b', 'adds-beta');
     makeCollection('Beta');
@@ -168,10 +169,17 @@ describe('switching branches under a workspace', () => {
 
     const r = await restart();
     // This is the sequence the user described. It used to skip the workspace
-    // with a console line and then open a brand new empty one instead.
-    expect(r.channels).toContain('main:workspace-open-failed');
+    // with a console line and then open a brand new empty one instead. The
+    // workspace now opens, reads through the markers, and reports the conflict
+    // — all three collections are on disk and the user needs to reach them.
+    expect(r.channels).toContain('main:workspace-opened');
+    expect(r.channels).toContain('main:workspace-config-conflicted');
     expect(r.remembered).toContain(root);
-    expect(r.openedPaths).not.toContain(root);
+    expect(r.openedPaths).toContain(root);
+
+    const opened = r.sent.find(([channel]) => channel === 'main:workspace-opened');
+    expect((opened[3]?.collections || []).map((collection) => collection.name).sort())
+      .toEqual(['Alpha', 'Beta', 'Gamma']);
   });
 
   it('recovers once the conflict is resolved', async () => {

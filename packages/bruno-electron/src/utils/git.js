@@ -2517,6 +2517,39 @@ const hasStagedChanges = async (gitRootPath) => {
     });
 };
 
+// `git add` on a conflicted path marks it RESOLVED, staging the conflict
+// markers verbatim. The safety commit did exactly that, so a workspace.yml
+// left conflicted by an earlier merge got committed — and pushed — with
+// `<<<<<<<` inside it. Every teammate who then checked that branch out had a
+// workspace that would not load. It happened four times in one repo before
+// anyone traced it, each time cleaned up by hand on the Git host.
+const getUnmergedPaths = async (gitRootPath) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  const output = await git.raw([
+    '--no-optional-locks', '-c', 'core.quotePath=false',
+    'diff', '--name-only', '--diff-filter=U', '-z'
+  ]);
+  return new Set(output.split('\0').filter(Boolean));
+};
+
+// Only for files we parse as structured config. A blanket marker scan would
+// reject legitimate content: `=======` is a valid setext heading underline in
+// the Markdown docs that live inside collections.
+const CONFLICT_SCANNED_FILES = new Set(['workspace.yml']);
+
+const fileCarriesConflictMarkers = (gitRootPath, relativePath) => {
+  if (!CONFLICT_SCANNED_FILES.has(path.basename(relativePath))) {
+    return false;
+  }
+
+  try {
+    const content = fs.readFileSync(path.resolve(gitRootPath, relativePath), 'utf8');
+    return /^<<<<<<< /m.test(content) && /^>>>>>>> /m.test(content);
+  } catch (error) {
+    return false;
+  }
+};
+
 const createSafetyCommitForFiles = async (gitRootPath, files, message = 'Save local workspace files before pull') => {
   // Verbatim, for the same reason as parsePorcelainStatusPaths: these paths are
   // git's own output and get turned into literal pathspecs downstream.
@@ -2552,6 +2585,31 @@ const createSafetyCommitForFiles = async (gitRootPath, files, message = 'Save lo
       files: [],
       skippedFiles
     };
+  }
+
+  const unmergedPaths = await getUnmergedPaths(gitRootPath).catch(() => new Set());
+  const unmerged = committableFiles.filter((filePath) => unmergedPaths.has(filePath));
+  const markerBearing = committableFiles.filter(
+    (filePath) => !unmergedPaths.has(filePath) && fileCarriesConflictMarkers(gitRootPath, filePath)
+  );
+
+  if (unmerged.length) {
+    throw new Error([
+      `Resolve the Git conflicts in ${unmerged.join(', ')} before continuing.`,
+      'Gridman will not commit a file that still contains conflict markers.',
+      'Use the conflict resolver in the Git tab, or resolve the file by hand.'
+    ].join('\n'));
+  }
+
+  // Markers with a clean index means they were committed earlier — Git sees
+  // nothing wrong and the resolver has no conflict to offer, so say plainly
+  // that the file itself has to be edited.
+  if (markerBearing.length) {
+    throw new Error([
+      `${markerBearing.join(', ')} contains Git conflict markers that were committed to this branch.`,
+      'Git no longer treats it as conflicted, so edit the file to remove the',
+      '<<<<<<<, ======= and >>>>>>> lines, then commit it before syncing again.'
+    ].join('\n'));
   }
 
   await stageRelativeFiles(gitRootPath, committableFiles);
@@ -4387,6 +4445,8 @@ module.exports = {
   getWorkspaceMembershipChange,
   listStashes,
   applyStash,
+  createSafetyCommitForFiles,
+  saveLocalWorkspaceFilesBeforePull,
   dropStash,
   discardWorkspaceChanges,
   restoreWorkspaceDiscard,

@@ -17,6 +17,72 @@ const hasGitConflictMarkers = (content = '') => {
   return /^<<<<<<< |^=======\s*$|^>>>>>>> /m.test(content);
 };
 
+// Rebuild a usable document out of one that still carries conflict markers.
+// `side` picks which half of each block survives: 'union' keeps both (correct
+// for `collections:`, where each side simply added a different collection and
+// both directories really are on disk), 'ours' keeps only the HEAD half (the
+// fallback for a scalar conflict, where a union would emit a duplicate key).
+const resolveGitConflictMarkers = (content = '', side = 'union') => {
+  const lines = String(content).split(/\r?\n/);
+  const output = [];
+  // null = outside a block, otherwise which half of the block we are reading.
+  let region = null;
+  let ours = [];
+  let theirs = [];
+
+  const flush = () => {
+    const kept = side === 'ours' ? ours : [...ours, ...theirs];
+    for (const line of kept) {
+      output.push(line);
+    }
+    region = null;
+    ours = [];
+    theirs = [];
+  };
+
+  for (const line of lines) {
+    if (region === null) {
+      if (/^<<<<<<< /.test(line)) {
+        region = 'ours';
+      } else {
+        output.push(line);
+      }
+      continue;
+    }
+
+    if (/^>>>>>>> /.test(line)) {
+      flush();
+      continue;
+    }
+
+    // diff3 style puts the merge base between the two sides; it belongs to
+    // neither, so it is dropped whichever side we keep.
+    if (region === 'ours' && /^\|{7} /.test(line)) {
+      region = 'base';
+      continue;
+    }
+
+    if (region !== 'theirs' && /^=======\s*$/.test(line)) {
+      region = 'theirs';
+      continue;
+    }
+
+    if (region === 'ours') {
+      ours.push(line);
+    } else if (region === 'theirs') {
+      theirs.push(line);
+    }
+  }
+
+  // An unterminated block (a truncated file): keep what we read rather than
+  // silently drop the tail of the document.
+  if (region !== null) {
+    flush();
+  }
+
+  return output.join('\n');
+};
+
 const quoteYamlValue = (value) => {
   if (typeof value !== 'string') {
     return `"${String(value)}"`;
@@ -311,17 +377,43 @@ const readWorkspaceConfig = (workspacePath) => {
   }
 
   const yamlContent = fs.readFileSync(workspaceFilePath, 'utf8');
+
+  // A conflicted workspace.yml used to throw here, and the workspace then
+  // vanished from the sidebar with the collections still sitting on disk.
+  // workspace.yml is git-tracked, so this is an ordinary consequence of two
+  // people adding a collection on either side of a merge — read through the
+  // markers, open the workspace, and report the conflict instead of hiding it.
+  let hasConflicts = false;
+  let parsedConfig = null;
+
   if (hasGitConflictMarkers(yamlContent)) {
-    throw new Error('Workspace has unresolved Git conflicts in workspace.yml');
+    hasConflicts = true;
+    for (const side of ['union', 'ours']) {
+      try {
+        const candidate = yaml.load(resolveGitConflictMarkers(yamlContent, side));
+        if (candidate && typeof candidate === 'object') {
+          parsedConfig = candidate;
+          break;
+        }
+      } catch (error) {
+        // 'union' can produce a duplicate key for a conflict on a scalar; fall
+        // through to 'ours', which cannot.
+      }
+    }
+
+    if (!parsedConfig) {
+      throw new Error('Workspace has unresolved Git conflicts in workspace.yml');
+    }
+  } else {
+    parsedConfig = yaml.load(yamlContent);
   }
 
-  const workspaceConfig = yaml.load(yamlContent);
-
-  if (!workspaceConfig || typeof workspaceConfig !== 'object') {
+  if (!parsedConfig || typeof parsedConfig !== 'object') {
     throw new Error('Invalid workspace: workspace.yml is malformed');
   }
 
-  return normalizeWorkspaceConfig(workspaceConfig, workspacePath);
+  const normalized = normalizeWorkspaceConfig(parsedConfig, workspacePath);
+  return hasConflicts ? { ...normalized, hasGitConflicts: true } : normalized;
 };
 
 const generateYamlContent = (config, workspacePath) => {
@@ -799,6 +891,7 @@ module.exports = {
   getWorkspaceCollectionRelativePath,
   generateYamlContent,
   hasGitConflictMarkers,
+  resolveGitConflictMarkers,
   getWorkspaceUid,
   writeWorkspaceFileAtomic,
   isValidCollectionEntry,

@@ -95,23 +95,43 @@ describe('a workspace whose config cannot be read', () => {
     expect(mockStore.get(KEY)).toEqual([root]);
   });
 
-  it('tells the renderer it could not be opened, rather than saying nothing', async () => {
+  it('opens the workspace anyway, and says the config is conflicted', async () => {
     fs.writeFileSync(path.join(root, 'workspace.yml'), CONFLICTED);
     const channels = await startup();
 
-    // The bug: the workspace was skipped with a console.error and the renderer
-    // heard nothing at all, so it looked exactly like the workspace was gone.
-    expect(channels).toContain('main:workspace-open-failed');
-    expect(channels).not.toContain('main:workspace-opened');
+    // The original bug skipped the workspace with a console.error and the
+    // renderer heard nothing, so it looked exactly like the workspace was
+    // gone. Reporting it was only half the fix: workspace.yml is git-tracked,
+    // so a conflict here is ordinary, the collections are all still on disk,
+    // and the workspace has to stay usable while the user resolves it.
+    expect(channels).toContain('main:workspace-opened');
+    expect(channels).toContain('main:workspace-config-conflicted');
   });
 
-  it('names the workspace and the reason', async () => {
+  it('names the conflicted workspace', async () => {
     fs.writeFileSync(path.join(root, 'workspace.yml'), CONFLICTED);
     await startup();
 
-    const failure = sent.find(([channel]) => channel === 'main:workspace-open-failed');
-    expect(failure[1]).toBe(root);
-    expect(String(failure[3]?.reason || '')).toMatch(/conflict/i);
+    const conflicted = sent.find(([channel]) => channel === 'main:workspace-config-conflicted');
+    expect(conflicted[1]).toBe(root);
+  });
+
+  it('keeps the collections from both sides of the conflict', async () => {
+    fs.writeFileSync(path.join(root, 'workspace.yml'), CONFLICTED);
+    // Both sides of a `collections:` conflict are real directories on disk —
+    // each side simply added one — so the union is the correct resolution.
+    for (const dir of ['a', 'b']) {
+      fs.mkdirSync(path.join(root, 'collections', dir), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, 'collections', dir, 'bruno.json'),
+        JSON.stringify({ version: '1', name: dir.toUpperCase(), type: 'collection' })
+      );
+    }
+    await startup();
+
+    const opened = sent.find(([channel]) => channel === 'main:workspace-opened');
+    const names = (opened[3]?.collections || []).map((collection) => collection.name);
+    expect(names).toEqual(expect.arrayContaining(['A', 'B']));
   });
 
   it('reports a malformed config too, not just a conflicted one', async () => {
