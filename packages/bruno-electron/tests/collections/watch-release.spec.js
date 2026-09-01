@@ -1,91 +1,105 @@
+const path = require('path');
 const { withWatchReleased } = require('../../src/app/watch-release');
 
 /**
- * THE WATCH HAS TO BE OFF WHILE A DIRECTORY MOVES, AND BACK ON AFTERWARDS.
+ * MOVING A WATCHED DIRECTORY NEEDS THE WATCHER CLOSED, NOT UNWATCHED.
  *
- * chokidar without polling uses ReadDirectoryChangesW on Windows, which keeps
- * an open handle on every directory it watches (`depth: 20`, so the folder and
- * everything under it). Windows refuses to rename a directory that has an open
- * handle — so our own watcher was holding the folder the user was renaming.
+ * Measured on Windows 11 with chokidar 3.6 and the collection watcher's own
+ * options (usePolling false, depth 20):
  *
- * Windows-only because macOS FSEvents holds nothing. Survived restarting the
- * app because the watcher re-attaches on load. And renaming from a folder's TAB
- * worked because that path sends no newFilename, so no directory ever moves.
+ *     no-watcher                ALLOWED     close()               ALLOWED
+ *     no-watcher + open file    BLOCKED     unwatch(folder)       BLOCKED
+ *     watching                  BLOCKED     unwatch(folder) + 2s  BLOCKED
+ *     watching depth:0          ALLOWED     unwatch(root)         BLOCKED
+ *     watching usePolling       ALLOWED
  *
- * What matters is the ORDER, and that a failure does not leave the folder
- * unwatched — that would silently stop sidebar updates for the rest of the
- * session, which is worse than the bug being fixed.
+ * The first version of this shipped with unwatch/rewatch and did nothing at
+ * all. What is pinned here is the property that made the difference: the
+ * watcher is CLOSED for the move and always brought back, including when the
+ * move throws — a collection left unwatched stops updating the sidebar for the
+ * rest of the session, which is worse than the bug being fixed.
  */
 
-const makeWatcher = (calls) => ({
-  unlinkItemPathInWatcher: (p) => calls.push(['unwatch', p]),
-  addItemPathInWatcher: (p) => calls.push(['watch', p])
-});
+const COLLECTION = path.resolve('/w/c');
+const FOLDER = path.join(COLLECTION, 'Auth');
+const TARGET = path.join(COLLECTION, 'Authentication');
 
-const SOURCE = '/w/c/Auth';
-const TARGET = '/w/c/Authentication';
+const makeWatcher = (calls, { watching = [COLLECTION] } = {}) => {
+  const watchers = {};
+  for (const p of watching) watchers[p] = { close: () => {} };
+  return {
+    watchers,
+    watcherMeta: { [COLLECTION]: { collectionUid: 'col-1', win: {}, brunoConfig: {} } },
+    getWatcherByItemPath: (itemPath) =>
+      Object.keys(watchers).find((w) => path.resolve(itemPath).startsWith(path.resolve(w))) ? {} : null,
+    suspendForMove: (p) => {
+      calls.push(['suspend', p]);
+      return { watchPath: p, collectionUid: 'col-1', win: {}, brunoConfig: {} };
+    },
+    resumeAfterMove: (s) => calls.push(['resume', s.watchPath])
+  };
+};
 
-describe('moving a watched directory', () => {
-  it('unwatches before the move and watches the target after', async () => {
+describe('moving a directory inside a watched collection', () => {
+  it('closes the collection watcher for the move and brings it back', async () => {
     const calls = [];
-    await withWatchReleased(makeWatcher(calls), { sourcePathname: SOURCE, targetPathname: TARGET }, async () => {
+    await withWatchReleased(makeWatcher(calls), { sourcePathname: FOLDER, targetPathname: TARGET }, async () => {
       calls.push(['move']);
     });
 
-    expect(calls).toEqual([['unwatch', SOURCE], ['move'], ['watch', TARGET]]);
+    expect(calls).toEqual([['suspend', COLLECTION], ['move'], ['resume', COLLECTION]]);
+  });
+
+  it('suspends the COLLECTION, not the folder being moved', async () => {
+    // Closing only the folder's own watch is what unwatch did, and Windows
+    // ignores it — the handle lives on the instance watching the tree.
+    const calls = [];
+    await withWatchReleased(makeWatcher(calls), { sourcePathname: FOLDER, targetPathname: TARGET }, async () => {});
+    expect(calls[0]).toEqual(['suspend', COLLECTION]);
+  });
+
+  it('brings the watcher back when the move throws', async () => {
+    const calls = [];
+    const boom = Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+
+    await expect(
+      withWatchReleased(makeWatcher(calls), { sourcePathname: FOLDER, targetPathname: TARGET }, async () => {
+        throw boom;
+      })
+    ).rejects.toMatchObject({ code: 'EPERM' });
+
+    expect(calls).toEqual([['suspend', COLLECTION], ['resume', COLLECTION]]);
   });
 
   it('returns whatever the move returned', async () => {
-    const result = await withWatchReleased(makeWatcher([]), { sourcePathname: SOURCE, targetPathname: TARGET },
+    const result = await withWatchReleased(makeWatcher([]), { sourcePathname: FOLDER, targetPathname: TARGET },
       async () => 'moved');
     expect(result).toBe('moved');
   });
 
-  it('restores the watch on the SOURCE when the move fails', async () => {
+  it('picks the deepest watched root when collections are nested', async () => {
+    const inner = path.join(COLLECTION, 'inner');
     const calls = [];
-    const boom = new Error('EPERM: operation not permitted');
+    const watcher = makeWatcher(calls, { watching: [COLLECTION, inner] });
+    watcher.watcherMeta[inner] = { collectionUid: 'col-2', win: {}, brunoConfig: {} };
 
-    await expect(
-      withWatchReleased(makeWatcher(calls), { sourcePathname: SOURCE, targetPathname: TARGET }, async () => {
-        throw boom;
-      })
-    ).rejects.toThrow(boom);
-
-    // Not the target: the directory is still at the source, and watching a
-    // path that does not exist leaves the real folder unwatched.
-    expect(calls).toEqual([['unwatch', SOURCE], ['watch', SOURCE]]);
+    await withWatchReleased(watcher, { sourcePathname: path.join(inner, 'Auth'), targetPathname: TARGET }, async () => {});
+    expect(calls[0]).toEqual(['suspend', inner]);
   });
 
-  it('rethrows the original error, so the user sees the real reason', async () => {
-    const boom = Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
-    await expect(
-      withWatchReleased(makeWatcher([]), { sourcePathname: SOURCE, targetPathname: TARGET }, async () => {
-        throw boom;
-      })
-    ).rejects.toMatchObject({ code: 'EBUSY' });
-  });
-
-  it('falls back to the source when no target is given', async () => {
+  it('just runs the move when nothing is watching that path', async () => {
     const calls = [];
-    await withWatchReleased(makeWatcher(calls), { sourcePathname: SOURCE }, async () => {});
-    expect(calls).toEqual([['unwatch', SOURCE], ['watch', SOURCE]]);
-  });
-
-  it('still runs the move when there is no watcher at all', async () => {
     let ran = false;
-    await withWatchReleased(null, { sourcePathname: SOURCE, targetPathname: TARGET }, async () => {
-      ran = true;
-    });
+    await withWatchReleased(makeWatcher(calls, { watching: [] }), { sourcePathname: '/elsewhere/x', targetPathname: '/elsewhere/y' },
+      async () => { ran = true; });
+
     expect(ran).toBe(true);
+    expect(calls).toEqual([]);
   });
 
-  it('still runs the move when the watcher cannot unwatch', async () => {
-    // The temp-directory watcher has no such method; a move must not become
-    // impossible because of that.
+  it('just runs the move when there is no watcher at all', async () => {
     let ran = false;
-    await withWatchReleased({}, { sourcePathname: SOURCE, targetPathname: TARGET }, async () => {
-      ran = true;
-    });
+    await withWatchReleased(null, { sourcePathname: FOLDER, targetPathname: TARGET }, async () => { ran = true; });
     expect(ran).toBe(true);
   });
 });

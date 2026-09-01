@@ -83,27 +83,39 @@ describe(`renaming a watched directory on ${process.platform}`, () => {
     }
   }, 30000);
 
-  it('succeeds on every platform once the watch is released first', async () => {
+  it('succeeds on every platform once the watcher is CLOSED first', async () => {
     const folder = buildTree();
     const target = path.join(root, 'Authentication');
     const watcher = await startWatcher(root);
 
-    // Exactly what the fix does in the rename and move handlers.
-    const fakeWatcher = {
-      unlinkItemPathInWatcher: (p) => watcher.unwatch(p),
-      addItemPathInWatcher: (p) => watcher.add(p)
-    };
-
-    let result;
-    await withWatchReleased(fakeWatcher, { sourcePathname: folder, targetPathname: target }, async () => {
-      // Give the OS a moment to actually drop the handle before moving.
-      await new Promise((r) => setTimeout(r, 100));
-      result = attemptRename(folder, target);
-    });
+    // What suspendForMove does. Measured on Windows 11: unwatch() does NOT
+    // release the handle — not immediately and not after two seconds — while
+    // close() does. That is the whole reason the first attempt at this fix
+    // shipped and changed nothing.
     await watcher.close();
+    const result = attemptRename(folder, target);
 
-    console.log(`[probe] platform=${process.platform} released-rename=${result.ok ? 'ALLOWED' : `BLOCKED ${result.code}`}`);
+    console.log(`[probe] platform=${process.platform} closed-rename=${result.ok ? 'ALLOWED' : `BLOCKED ${result.code}`}`);
     expect(result.ok).toBe(true);
     expect(fs.existsSync(target)).toBe(true);
+  }, 30000);
+
+  it('records that unwatch alone is NOT enough', async () => {
+    const folder = buildTree();
+    const watcher = await startWatcher(root);
+
+    watcher.unwatch(folder);
+    await new Promise((r) => setTimeout(r, 300));
+    const result = attemptRename(folder, path.join(root, 'Authentication'));
+    await watcher.close();
+
+    console.log(`[probe] platform=${process.platform} unwatch-rename=${result.ok ? 'ALLOWED' : `BLOCKED ${result.code}`}`);
+    if (process.platform === 'win32') {
+      // Pinned deliberately: if a future chokidar makes unwatch release the
+      // handle, this fails and the cheaper release becomes available again.
+      expect(result.ok).toBe(false);
+    } else {
+      expect(result.ok).toBe(true);
+    }
   }, 30000);
 });

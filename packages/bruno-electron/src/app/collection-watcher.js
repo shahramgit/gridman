@@ -1166,6 +1166,49 @@ class CollectionWatcher {
     }
   }
 
+  /**
+   * Close a collection's chokidar instance so a directory inside it can be
+   * moved, and hand back what is needed to bring it straight back.
+   *
+   * MEASURED ON WINDOWS 11, not reasoned about. With chokidar 3.6 watching a
+   * tree at depth 20, renaming a watched subdirectory fails with EPERM, and
+   * `unwatch()` does NOT help — the handle survives it, even after seconds:
+   *
+   *     no-watcher            ALLOWED      close()             ALLOWED
+   *     watching              BLOCKED      unwatch(folder)     BLOCKED
+   *     watching depth:0      ALLOWED      unwatch(folder)+2s  BLOCKED
+   *     watching usePolling   ALLOWED      unwatch(root)       BLOCKED
+   *
+   * Closing is the only release that works, which is why this exists rather
+   * than the unwatch/rewatch pair next to it.
+   */
+  suspendForMove(watchPath) {
+    const watcher = this.watchers[watchPath];
+    const meta = this.watcherMeta[watchPath];
+    if (!watcher || !meta) {
+      return null;
+    }
+
+    watcher.close();
+    this.watchers[watchPath] = null;
+    return { watchPath, ...meta };
+  }
+
+  /**
+   * Re-attach after a move, with the initial scan skipped: the tree is already
+   * loaded and replaying every file would re-parse the whole collection.
+   */
+  resumeAfterMove(suspended) {
+    if (!suspended?.watchPath || this.watchers[suspended.watchPath]) {
+      return;
+    }
+    const { watchPath, collectionUid, win, brunoConfig } = suspended;
+    if (win?.isDestroyed?.()) {
+      return;
+    }
+    this.addWatcher(win, watchPath, collectionUid, brunoConfig, false, true, { skipInitialLoad: true });
+  }
+
   getWatcherByItemPath(itemPath) {
     const paths = Object.keys(this.watchers);
 

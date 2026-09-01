@@ -1,40 +1,65 @@
+const path = require('path');
+
 /**
- * MOVING A WATCHED DIRECTORY NEEDS THE WATCH DROPPED FIRST.
+ * MOVING A WATCHED DIRECTORY ON WINDOWS NEEDS THE WATCHER CLOSED, NOT UNWATCHED.
  *
- * chokidar without polling uses ReadDirectoryChangesW on Windows, which keeps
- * an open handle on every directory it watches — and the collection watcher
- * runs at `depth: 20`, so that is a folder AND everything under it. Windows
- * refuses to rename a directory that has an open handle, so our own watcher was
- * holding the folder the user was trying to rename.
+ * Measured on Windows 11 with chokidar 3.6 and the collection watcher's own
+ * options (usePolling false, depth 20). Renaming a watched subdirectory fails
+ * with EPERM, and `unwatch()` does not release the handle — not immediately and
+ * not after seconds:
  *
- * That is why it was Windows-only (macOS FSEvents holds nothing), why it
- * survived restarting the app (the watcher re-attaches on load), and why
- * renaming from a folder's TAB worked — the tab sends no newFilename, so no
- * directory ever moves.
+ *     no-watcher                ALLOWED     close()               ALLOWED
+ *     no-watcher + open file    BLOCKED     unwatch(folder)       BLOCKED
+ *     watching                  BLOCKED     unwatch(folder) + 2s  BLOCKED
+ *     watching depth:0          ALLOWED     unwatch(root)         BLOCKED
+ *     watching usePolling       ALLOWED
  *
- * `unlinkItemPathInWatcher` / `addItemPathInWatcher` already existed on the
- * watcher for exactly this and had no callers anywhere.
+ * An earlier version of this file used unwatch/rewatch and did nothing at all;
+ * closing is the only release that works. macOS allows the rename either way,
+ * which is why none of this was visible from a developer machine.
+ *
+ * Note the second row: a file held open INSIDE the folder blocks the rename
+ * too, with no watcher involved. Closing ours removes the cause we control; an
+ * editor, a terminal or antivirus holding a file can still block it, and that
+ * failure is the user's to resolve.
  */
 const withWatchReleased = async (watcher, { sourcePathname, targetPathname }, run) => {
-  if (!watcher?.unlinkItemPathInWatcher || !sourcePathname) {
+  // Only a directory move needs this, and only the collection that contains it.
+  const watchPath = watcher?.getWatcherByItemPath?.(sourcePathname)
+    ? findWatchPath(watcher, sourcePathname)
+    : null;
+
+  if (!watchPath || !watcher?.suspendForMove) {
     return run();
   }
 
-  watcher.unlinkItemPathInWatcher(sourcePathname);
-
-  let result;
-  try {
-    result = await run();
-  } catch (error) {
-    // Put the watch back where the directory still is. Restoring it on the
-    // target instead would leave the folder unwatched for the rest of the
-    // session, so edits inside it would stop reaching the sidebar.
-    watcher.addItemPathInWatcher?.(sourcePathname);
-    throw error;
+  const suspended = watcher.suspendForMove(watchPath);
+  if (!suspended) {
+    return run();
   }
 
-  watcher.addItemPathInWatcher?.(targetPathname || sourcePathname);
-  return result;
+  try {
+    return await run();
+  } finally {
+    // Always: the collection must not be left unwatched, whether the move
+    // succeeded, failed, or threw something unexpected. Without this a failed
+    // rename would silently stop the sidebar updating for the rest of the
+    // session — worse than the bug being fixed.
+    watcher.resumeAfterMove(suspended);
+  }
+};
+
+// The watched root that contains this path — the collection directory, not the
+// item. `getWatcherByItemPath` finds the instance; this finds its key.
+const findWatchPath = (watcher, itemPath) => {
+  const normalized = path.resolve(String(itemPath || ''));
+  const candidates = Object.keys(watcher.watchers || {}).filter((watchPath) => {
+    if (!watcher.watchers[watchPath]) return false;
+    const root = path.resolve(watchPath);
+    return normalized === root || normalized.startsWith(root + path.sep);
+  });
+  // Deepest match wins, so a collection nested inside another is handled.
+  return candidates.sort((a, b) => b.length - a.length)[0] || null;
 };
 
 module.exports = { withWatchReleased };
