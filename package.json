@@ -63,6 +63,7 @@
     "build:web": "npm run build --workspace=packages/bruno-app",
     "dev:electron": "npm run dev --workspace=packages/bruno-electron",
     "dev:electron:debug": "npm run debug --workspace=packages/bruno-electron",
+    "probe:platform": "npm test --workspace=packages/bruno-electron -- tests/collections/windows-folder-rename-probe.spec.js --verbose",
     "storybook": "npm run storybook --workspace=packages/bruno-app",
     "build:bruno-common": "node scripts/build-package.js bruno-common",
     "build:bruno-requests": "node scripts/build-package.js bruno-requests",
