@@ -29,3 +29,38 @@ jobs:
 
       - name: Build web app
         run: npm run build:web
+
+  windows-behaviour:
+    name: Windows behaviour probes
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    # Our users are Windows-only and every developer machine here is a Mac, so
+    # the platform-specific bugs — a folder rename that will not move, paths
+    # with backslashes, filesystem case-insensitivity — are invisible until a
+    # user hits them. Three have shipped that way. This job is the cheapest
+    # place to see them: no VM, no packaged app, just the suites on the real OS.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node dependencies
+        uses: ./.github/actions/common/setup-node-deps
+
+      - name: Probe what Windows does to a watched directory
+        shell: bash
+        working-directory: packages/bruno-electron
+        # Prints ALLOWED or BLOCKED <code> for a rename of a directory the
+        # collection watcher is holding. That single line settles whether our
+        # own watcher is what blocks a folder rename there.
+        run: npm test -- tests/collections/windows-folder-rename-probe.spec.js --verbose
+
+      - name: Main process suite
+        shell: bash
+        working-directory: packages/bruno-electron
+        run: npm test
+
+      - name: Renderer suite
+        shell: bash
+        working-directory: packages/bruno-app
+        run: npx jest
