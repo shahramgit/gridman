@@ -30,7 +30,16 @@ let electronProcess = null;
 let detectedPort = null;
 
 // Regex to match rsbuild's local URL output (e.g., "➜ Local:    http://localhost:3000/")
+//
+// Matched against ANSI-STRIPPED output. rsbuild colours that line and the escape
+// sequences land between "Local:" and the URL, so `\s+` never matched and
+// Electron was never started — `npm run dev` brought up the web server and then
+// sat there forever. Visible on Windows and in any piped context; masked on
+// macOS, where the terminal negotiated a TTY that rsbuild left uncoloured.
 const portRegex = /Local:\s+http:\/\/localhost:(\d+)/;
+
+// CSI sequences: ESC [ ... final byte. Only the URL needs to survive.
+const stripAnsi = (value) => value.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
 
 console.log(`\n${colors.bright}${colors.yellow}🚀 Starting Gridman development environment...${colors.reset}\n`);
 
@@ -56,7 +65,7 @@ webProcess.stdout.on('data', (data) => {
 
   // Try to detect the port from rsbuild output
   if (!detectedPort) {
-    const match = output.match(portRegex);
+    const match = stripAnsi(output).match(portRegex);
     if (match) {
       detectedPort = match[1];
       log.success(`Detected dev server on port ${colors.bright}${detectedPort}${colors.reset}`);
