@@ -168,15 +168,20 @@ describe('Path Utilities - Unix Platform', () => {
       expect(getRelativePathWithinBasePath('/users/john/collections/api', '')).toBe('');
     });
 
+    // `path.resolve` is Node's, so it yields `C:\...` on a Windows host while the
+    // shim under test is posix — `isWindowsOS()` reads the browser user agent and
+    // jsdom's never says Windows. These two therefore failed only when the suite
+    // ran on Windows. posix.resolve keeps the fixture and the shim in agreement
+    // wherever it runs, and the assertion is unchanged.
     it('should treat relative collection path as cwd-relative when file path is absolute', () => {
       const collectionPath = 'collections/api';
-      const filePath = path.resolve(collectionPath, 'files/payload.txt');
+      const filePath = path.posix.resolve(collectionPath, 'files/payload.txt');
       const result = getRelativePathWithinBasePath(collectionPath, filePath);
       expect(result).toBe('files/payload.txt');
     });
 
     it('should treat relative file path as cwd-relative when collection path is absolute', () => {
-      const collectionPath = path.resolve('collections/api');
+      const collectionPath = path.posix.resolve('collections/api');
       const filePath = 'collections/api/files/payload.txt';
       const result = getRelativePathWithinBasePath(collectionPath, filePath);
       expect(result).toBe('files/payload.txt');

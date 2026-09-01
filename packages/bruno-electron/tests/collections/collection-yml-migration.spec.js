@@ -33,6 +33,24 @@ jest.mock('electron', () => ({
 // not a correctness one — so both worker entry points are routed to the
 // identical synchronous parser/serializer. The worker path itself is covered by
 // request-parse-ordering.spec.js.
+// collection-migration.js does `const { moveToAppTrash } = require('./app-trash')`
+// at module load, so the reference is captured before any spy can replace it —
+// jest.spyOn on the module object does nothing. Mock the module itself and let
+// one test opt a single path into failing.
+let mockTrashFailureFor = null;
+jest.mock('../../src/utils/app-trash', () => {
+  const actual = jest.requireActual('../../src/utils/app-trash');
+  return {
+    ...actual,
+    moveToAppTrash: async (pathname, options) => {
+      if (mockTrashFailureFor && require('path').resolve(pathname) === require('path').resolve(mockTrashFailureFor)) {
+        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      }
+      return actual.moveToAppTrash(pathname, options);
+    }
+  };
+});
+
 jest.mock('@usebruno/filestore', () => {
   const actual = jest.requireActual('@usebruno/filestore');
   return {
@@ -814,18 +832,18 @@ describe('collection .bru -> .yml migration', () => {
       // to become read-only only once the commit starts, or phase 1 would fail
       // writing the .yml into it and abort long before the interesting path —
       // so the real progress callback is used as the timing hook.
+      // chmod does not restrict a DIRECTORY on Windows — Node only toggles the
+      // read-only attribute, and on files at that — so the original simulation
+      // did nothing there and notTrashed came back empty. Refusing the one path
+      // at the trash module is the same failure on every platform, and it is
+      // the dependency whose failure this test is about.
+      mockTrashFailureFor = environmentBru;
+
       let result;
       try {
-        result = await migrateCollectionToYml({
-          collectionPathname: root,
-          onProgress: (progress) => {
-            if (progress.phase === 'committing') {
-              fs.chmodSync(environmentsDir, 0o555);
-            }
-          }
-        });
+        result = await migrateCollectionToYml({ collectionPathname: root });
       } finally {
-        fs.chmodSync(environmentsDir, 0o755);
+        mockTrashFailureFor = null;
       }
 
       expect(result.status).toBe('migrated');

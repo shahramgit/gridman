@@ -24,7 +24,7 @@
     "dist:rpm": "npm run fetch-pty:linux && electron-builder --linux rpm --x64 --arm64 --config electron-builder-config.js",
     "dist:snap": "npm run fetch-pty:linux && electron-builder --linux snap --x64 --arm64 --config electron-builder-config.js",
     "pack": "electron-builder --dir",
-    "test": "node --experimental-vm-modules $(npx which jest)"
+    "test": "cross-env NODE_OPTIONS=--experimental-vm-modules jest"
   },
   "jest": {
     "modulePaths": [

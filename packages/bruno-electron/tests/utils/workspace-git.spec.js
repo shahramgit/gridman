@@ -58,6 +58,12 @@ describe('workspace git workflows', () => {
     git(['config', 'user.name', 'Test']);
     git(['config', 'user.email', 'test@example.com']);
     git(['config', 'commit.gpgsign', 'false']);
+    // Git for Windows enables core.autocrlf by default, so a fixture written
+    // with \n comes back from a checkout with \r\n and every content
+    // assertion here fails on a Windows host. These tests are about git
+    // OPERATIONS, not about line-ending translation, so the repository they
+    // create opts out and the fixtures round-trip byte for byte.
+    git(['config', 'core.autocrlf', 'false']);
   };
 
   // What is in the INDEX. `git reset`/`git add` never touch the working tree,

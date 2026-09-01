@@ -23,7 +23,11 @@ describe('workspace-only collection constraints', () => {
       '  name: Constraints',
       '  type: workspace',
       'collections:',
-      ...collections.flatMap((c) => [`  - name: "${c.name}"`, `    path: "${c.path}"`]),
+      // Single-quoted, because a Windows absolute path inside DOUBLE quotes is
+      // a YAML escape sequence: `path: "C:\WINDOWS\..."` fails to parse with
+      // "unknown escape sequence", and the test died building its own fixture
+      // rather than exercising the code.
+      ...collections.flatMap((c) => [`  - name: '${c.name}'`, `    path: '${String(c.path).replace(/'/g, '\'\'')}'`]),
       'specs: []',
       'docs: \'\''
     ].join('\n');

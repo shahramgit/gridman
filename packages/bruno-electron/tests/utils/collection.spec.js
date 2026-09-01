@@ -436,9 +436,10 @@ describe('mergeScripts metadata', () => {
 
     expect(request.script.reqMetadata.segments).toHaveLength(2);
     expect(request.script.reqMetadata.segments[0].displayPath).toBe('collection.bru');
-    expect(request.script.reqMetadata.segments[1].displayPath).toBe(
-      path.join('subfolder', 'folder.bru')
-    );
+    // Posix by design: the product builds this with posixifyPath so the label
+    // reads the same on every platform. `path.join` here asserted backslashes
+    // on Windows and failed there only.
+    expect(request.script.reqMetadata.segments[1].displayPath).toBe('subfolder/folder.bru');
   });
 
   test('non-sequential flow reverses post-res segment order', () => {
@@ -452,7 +453,7 @@ describe('mergeScripts metadata', () => {
     const segments = request.script.resMetadata.segments;
     expect(segments).toHaveLength(2);
     // Folder should come before collection in reversed order
-    expect(segments[0].displayPath).toBe(path.join('subfolder', 'folder.bru'));
+    expect(segments[0].displayPath).toBe('subfolder/folder.bru');
     expect(segments[1].displayPath).toBe('collection.bru');
   });
 

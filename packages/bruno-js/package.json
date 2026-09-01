@@ -8,7 +8,7 @@
     "package.json"
   ],
   "scripts": {
-    "test": "node --experimental-vm-modules $(npx which jest) --testPathIgnorePatterns test.js",
+    "test": "cross-env NODE_OPTIONS=--experimental-vm-modules jest --testPathIgnorePatterns test.js",
     "sandbox:bundle-libraries": "node ./src/sandbox/bundle-libraries.js"
   },
   "dependencies": {

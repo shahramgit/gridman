@@ -152,10 +152,19 @@ describe('workflow export / import', () => {
       expect(path.basename(pathname)).toBe(`exported${WORKFLOW_EXTENSION}`);
     });
 
+    // sanitizeWorkflowFilename replaces <>:"/\|?* and control characters —
+    // which is exactly the set Windows forbids in a filename. A fixture that
+    // exercises that branch therefore cannot be created on Windows at all, so
+    // each platform tests the branch it can actually reach: the illegal
+    // character on unix, whitespace collapsing on Windows.
+    const HOSTILE = process.platform === 'win32'
+      ? { source: 'we  ird name.yml', expected: 'we ird name' }
+      : { source: 'we ird?name.yml', expected: 'we ird-name' };
+
     it('sanitizes hostile filenames', async () => {
-      const sourcePath = writeSource('we ird?name.yml', { name: 'Weird', nodes: [] });
+      const sourcePath = writeSource(HOSTILE.source, { name: 'Weird', nodes: [] });
       const { pathname } = await importWorkflowFromPath(workspacePath, sourcePath);
-      expect(path.basename(pathname)).toBe(`we ird-name${WORKFLOW_EXTENSION}`);
+      expect(path.basename(pathname)).toBe(`${HOSTILE.expected}${WORKFLOW_EXTENSION}`);
       expect(pathname.startsWith(workflowsDirOf(workspacePath) + path.sep)).toBe(true);
     });
 

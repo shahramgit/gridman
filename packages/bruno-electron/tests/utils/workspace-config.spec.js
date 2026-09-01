@@ -91,10 +91,14 @@ describe('Git remote on workspace collections', () => {
       '  type: workspace',
       'collections:'
     ];
+    // Single-quoted: a Windows absolute path inside DOUBLE quotes is a YAML
+    // escape sequence, so `path: "C:\WINDOWS\..."` fails to parse and the test
+    // died building its own fixture instead of exercising the code.
+    const q = (value) => `'${String(value).replace(/'/g, '\'\'')}'`;
     for (const c of collections) {
-      lines.push(`  - name: "${c.name}"`);
-      lines.push(`    path: "${c.path}"`);
-      if (c.remote) lines.push(`    remote: "${c.remote}"`);
+      lines.push(`  - name: ${q(c.name)}`);
+      lines.push(`    path: ${q(c.path)}`);
+      if (c.remote) lines.push(`    remote: ${q(c.remote)}`);
     }
     lines.push('specs: []');
     lines.push('docs: \'\'');

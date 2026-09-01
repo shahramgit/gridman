@@ -12,6 +12,16 @@ const { movePathWithRetry, getCollectionStats } = require('../../src/utils/files
 
 const lockError = (code) => Object.assign(new Error(`${code}: operation not permitted, rename`), { code });
 
+// movePathWithRetry hands fs the EXTENDED-LENGTH form of a path on Windows
+// (`\\?\C:\...`), so a mock comparing against the plain path never fires
+// there: the simulated failure never happened, the move succeeded, and three
+// tests that assert a rejection passed a resolution instead. Compare the way
+// the filesystem does.
+const isSamePath = (a, b) => {
+  const strip = (v) => String(v || '').replace(/^\\\\\?\\/, '').replace(/\\/g, '/').toLowerCase();
+  return strip(a) === strip(b);
+};
+
 describe('movePathWithRetry', () => {
   let tmpDir;
 
@@ -86,7 +96,7 @@ describe('movePathWithRetry', () => {
     const target = path.join(tmpDir, 'renamed');
     jest.spyOn(fsExtra, 'move').mockRejectedValue(lockError('EPERM'));
     jest.spyOn(fsPromises, 'rm').mockImplementation(async (pathname, options) => {
-      if (pathname === source) {
+      if (isSamePath(pathname, source)) {
         throw lockError('EPERM');
       }
       return fs.rmSync(pathname, options);
@@ -115,7 +125,7 @@ describe('movePathWithRetry', () => {
     const target = path.join(tmpDir, 'trash payload');
     mockCrossDeviceMoveWithLockedSource();
     jest.spyOn(fsPromises, 'rm').mockImplementation(async (pathname, options) => {
-      if (pathname === source) {
+      if (isSamePath(pathname, source)) {
         throw lockError('EPERM');
       }
       return fs.rmSync(pathname, options);
@@ -157,7 +167,7 @@ describe('movePathWithRetry', () => {
     const target = path.join(tmpDir, 'trash payload');
     jest.spyOn(fsExtra, 'move').mockRejectedValue(lockError('EPERM'));
     jest.spyOn(fsPromises, 'rm').mockImplementation(async (pathname, options) => {
-      if (pathname === source) {
+      if (isSamePath(pathname, source)) {
         // fsPromises.rm unlinks depth-first: it can reject with descendants
         // already gone.
         fs.rmSync(path.join(source, 'a.bru'));
