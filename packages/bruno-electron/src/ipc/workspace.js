@@ -925,6 +925,7 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
     try {
       const workspacePaths = lastOpenedWorkspaces.getAll();
       const invalidPaths = [];
+      const failedToOpen = [];
       let openedWorkspaceCount = 0;
 
       for (const workspacePath of workspacePaths) {
@@ -946,6 +947,12 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
           } catch (error) {
             console.error(`Error loading workspace ${workspacePath}:`, error);
             invalidPaths.push(workspacePath);
+            // Say so. This used to be a console line and nothing else, so a
+            // workspace.yml carrying conflict markers — a git-TRACKED file, so
+            // an ordinary consequence of a merge or a branch switch across a
+            // collection being added — made the workspace vanish from the app
+            // with no explanation anywhere.
+            failedToOpen.push({ workspacePath, reason: error?.message || 'workspace.yml could not be read' });
           }
         } else {
           invalidPaths.push(workspacePath);
@@ -954,7 +961,20 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
 
       forgetWorkspacesThatAreGone(invalidPaths);
 
-      if (openedWorkspaceCount === 0) {
+      for (const failure of failedToOpen) {
+        win.webContents.send(
+          'main:workspace-open-failed',
+          failure.workspacePath,
+          getWorkspaceUid(failure.workspacePath),
+          { reason: failure.reason }
+        );
+      }
+
+      // Only when the user has NO workspaces, never when the ones they have
+      // failed to open: creating a fresh "My Workspace" on top of a broken one
+      // is what turned "my workspace will not open" into "my workspace is
+      // gone" — the app came up showing an empty workspace that was not theirs.
+      if (openedWorkspaceCount === 0 && failedToOpen.length === 0) {
         try {
           const { workspacePath, workspaceConfig } = await ensureInitialWorkspace();
           const workspaceUid = getWorkspaceUid(workspacePath);

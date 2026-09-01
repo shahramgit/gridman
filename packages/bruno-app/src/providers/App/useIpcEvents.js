@@ -584,7 +584,30 @@ const useIpcEvents = () => {
     // A window opened after a server was started has to learn it is running.
     dispatch(syncRunningMockServers());
 
+    // A workspace the main process could not open. It stays in the recent list
+    // and its folder is untouched — what was missing was any way for the user
+    // to learn why it did not appear. workspace.yml is git-tracked, so conflict
+    // markers after a merge or a branch switch are an ordinary way to get here.
+    const removeWorkspaceOpenFailedListener = ipcRenderer.on('main:workspace-open-failed', (workspacePath, _uid, details) => {
+      toast.error(
+        `Could not open the workspace at ${workspacePath}: ${details?.reason || 'workspace.yml could not be read'}`,
+        { duration: 8000 }
+      );
+    });
+
+    // Emitted by the workspace watcher and by git.js since long before this,
+    // with no listener anywhere — so a conflicted workspace.yml discovered
+    // while the app was running was announced to nobody.
+    const removeWorkspaceConflictedListener = ipcRenderer.on('main:workspace-config-conflicted', (workspacePath) => {
+      toast.error(
+        `The workspace at ${workspacePath} has unresolved Git conflicts in workspace.yml. Resolve them and reopen it.`,
+        { duration: 8000 }
+      );
+    });
+
     return () => {
+      removeWorkspaceOpenFailedListener();
+      removeWorkspaceConflictedListener();
       removeMockServerStatusListener();
       removeMockServerRequestLogListener();
       removeMockServerAddedListener();
