@@ -5,6 +5,7 @@ import { openCollection } from 'providers/ReduxStore/slices/collections/actions'
 import toast from 'react-hot-toast';
 import styled from 'styled-components';
 import StyledWrapper from './StyledWrapper';
+import { formatIpcError } from 'utils/common/error';
 
 const LinkStyle = styled.span`
   color: ${(props) => props.theme['text-link']};
@@ -18,7 +19,7 @@ const CreateOrOpenCollection = ({ onCreateClick }) => {
     dispatch(openCollection()).catch(
       (err) => {
         console.log(err);
-        toast.error('An error occurred while opening the collection');
+        toast.error(formatIpcError(err) || 'An error occurred while opening the collection');
       }
     );
   };

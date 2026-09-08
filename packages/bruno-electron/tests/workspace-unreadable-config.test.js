@@ -42,6 +42,7 @@ const registerWorkspaceIpc = require('../src/ipc/workspace');
 const KEY = 'workspaces.lastOpenedWorkspaces';
 let root;
 let sent;
+let defaultLocation;
 
 const VALID = 'opencollection: 1.0.0\ninfo:\n  name: GSB\n  type: workspace\ncollections: []\n';
 const CONFLICTED = [
@@ -66,13 +67,24 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  // ensureInitialWorkspace() creates "My Workspace" under the default location,
+  // which is the shared os.tmpdir()/gridman here. A run that died midway left a
+  // collections/ and environments/ pair with no workspace.yml behind, and every
+  // later run then threw "already exists and is not a Gridman workspace". Point
+  // it at a directory this test owns.
+  defaultLocation = fs.mkdtempSync(path.join(os.tmpdir(), 'gridman-default-'));
+  process.env.GRIDMAN_DEFAULT_LOCATION = defaultLocation;
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'gridman-broken-ws-'));
   mockStore.clear();
   mockStore.set(KEY, [root]);
   sent = [];
 });
 
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+afterEach(() => {
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(defaultLocation, { recursive: true, force: true });
+  delete process.env.GRIDMAN_DEFAULT_LOCATION;
+});
 
 const startup = async () => {
   sent = [];

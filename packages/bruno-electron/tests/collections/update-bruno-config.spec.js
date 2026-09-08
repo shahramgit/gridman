@@ -45,11 +45,6 @@ jest.mock('electron-store', () => {
   };
 });
 
-// src/utils/constants.js is ESM and jest here runs without a transform.
-jest.mock('../../src/utils/constants', () => ({
-  REQUEST_TYPES: ['http-request', 'graphql-request', 'grpc-request', 'ws-request']
-}));
-
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

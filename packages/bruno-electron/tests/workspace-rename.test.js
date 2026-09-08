@@ -38,6 +38,7 @@ const registerWorkspaceIpc = require('../src/ipc/workspace');
 const { readWorkspaceConfig } = require('../src/utils/workspace-config');
 
 let root;
+let defaultLocation;
 const sent = [];
 
 const writeConfig = (name) =>
@@ -54,12 +55,21 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  // Own the default location: ensureInitialWorkspace() otherwise creates
+  // "My Workspace" in the shared os.tmpdir()/gridman, where a run that dies
+  // midway leaves a directory with no workspace.yml that fails every later run.
+  defaultLocation = fs.mkdtempSync(path.join(os.tmpdir(), 'gridman-default-'));
+  process.env.GRIDMAN_DEFAULT_LOCATION = defaultLocation;
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'gridman-rename-'));
   writeConfig(path.basename(root));
   sent.length = 0;
 });
 
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+afterEach(() => {
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(defaultLocation, { recursive: true, force: true });
+  delete process.env.GRIDMAN_DEFAULT_LOCATION;
+});
 
 const rename = (newName) => mockHandlers.get('renderer:rename-workspace')(null, root, newName);
 

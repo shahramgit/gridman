@@ -626,12 +626,85 @@ const getWorkspaceCollectionLocation = (workspacePath) => {
   return collectionsDir;
 };
 
-const getUniqueCollectionCopyTarget = async (workspacePath, sourcePath) => {
+// Both import paths used to silently invent a free name ("My API - 1") when the
+// workspace already held a collection with that name, so an import that was
+// meant to update a collection quietly produced a second copy instead. Ask.
+const COLLECTION_COLLISION_CANCELLED = Symbol('collection-collision-cancelled');
+
+const askCollectionCollisionChoice = async (mainWindow, collectionName) => {
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    buttons: ['Import as copy', 'Replace', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    title: 'Collection already exists',
+    message: `This workspace already has a collection named "${collectionName}".`,
+    detail:
+      'Import as copy keeps both, adding the new one under a different name.\n'
+      + 'Replace moves the existing collection to the trash and imports this one in its place.'
+  });
+
+  return ['copy', 'replace', 'cancel'][response] || 'cancel';
+};
+
+// Retire the collection currently sitting at this path so an import can take
+// its place: stop watching it, drop it from workspace.yml, and move the files
+// to the app trash rather than deleting them. The replacement lands on the same
+// path, and a collection's uid is derived from its path, so the renderer sees
+// the entry refreshed rather than orphaned.
+const retireCollectionForReplacement = async (mainWindow, watcher, workspacePath, collectionPath) => {
+  const collectionUid = generateUidBasedOnHash(collectionPath);
+
+  if (watcher && mainWindow) {
+    watcher.removeWatcher(collectionPath, mainWindow, collectionUid);
+    cancelCollectionIndex(collectionUid);
+  }
+
+  const { clearCollectionWorkspace } = require('../store/process-env');
+  clearCollectionWorkspace(collectionUid);
+  evictWorkspaceSearchForPath(collectionPath);
+
+  try {
+    const { removeCollectionFromWorkspace } = require('../utils/workspace-config');
+    await removeCollectionFromWorkspace(workspacePath, collectionPath);
+  } catch (error) {
+    console.error('Error removing the replaced collection from workspace.yml:', error);
+  }
+
+  if (fs.existsSync(collectionPath)) {
+    await moveToAppTrash(collectionPath, { type: 'collection' });
+  }
+
+  try {
+    cleanupSpecFilesForCollection(collectionPath);
+  } catch (error) {
+    console.error('Error cleaning up spec files for the replaced collection:', error);
+  }
+};
+
+// Where an incoming collection should land, asking the user first when the name
+// is taken. Returns COLLECTION_COLLISION_CANCELLED when they back out.
+const resolveCollectionImportTarget = async (mainWindow, watcher, workspacePath, desiredName) => {
   const collectionsDir = getWorkspaceCollectionLocation(workspacePath);
-  const baseName = sanitizeName(path.basename(sourcePath)) || 'collection';
-  const uniqueName = fs.existsSync(path.join(collectionsDir, baseName))
-    ? await findUniqueFolderName(baseName, collectionsDir)
-    : baseName;
+  const baseName = sanitizeName(desiredName) || 'collection';
+  const baseTarget = path.join(collectionsDir, baseName);
+
+  if (!fs.existsSync(baseTarget)) {
+    return baseTarget;
+  }
+
+  const choice = await askCollectionCollisionChoice(mainWindow, baseName);
+
+  if (choice === 'cancel') {
+    return COLLECTION_COLLISION_CANCELLED;
+  }
+
+  if (choice === 'replace') {
+    await retireCollectionForReplacement(mainWindow, watcher, workspacePath, baseTarget);
+    return baseTarget;
+  }
+
+  const uniqueName = await findUniqueFolderName(baseName, collectionsDir);
   return path.join(collectionsDir, sanitizeName(uniqueName));
 };
 
@@ -1849,9 +1922,15 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           throw new Error(`Invalid collection: ${sourcePath}`);
         }
 
-        const targetPath = isWorkspaceCollectionPathAllowed(workspacePath, sourcePath)
-          ? sourcePath
-          : await getUniqueCollectionCopyTarget(workspacePath, sourcePath);
+        let targetPath = sourcePath;
+        if (!isWorkspaceCollectionPathAllowed(workspacePath, sourcePath)) {
+          targetPath = await resolveCollectionImportTarget(
+            mainWindow, watcher, workspacePath, path.basename(sourcePath)
+          );
+          if (targetPath === COLLECTION_COLLISION_CANCELLED) {
+            continue;
+          }
+        }
 
         if (targetPath !== sourcePath) {
           await fsExtra.copy(sourcePath, targetPath, {
@@ -1964,7 +2043,9 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
   ipcMain.handle('renderer:import-collection', async (_, collection, collectionLocation, options = {}) => {
     const format = options.format || DEFAULT_COLLECTION_FORMAT;
     const rawOpenAPISpec = options.rawOpenAPISpec;
-    const targetCollectionLocation = getWorkspaceCollectionLocation(options.workspaceId);
+    // Creates the workspace's collections folder and rejects a missing
+    // workspace before any import work starts.
+    getWorkspaceCollectionLocation(options.workspaceId);
     let collections = Array.isArray(collection) ? collection : [collection];
     let completedImports = 0;
     let failedImports = 0;
@@ -1975,15 +2056,18 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         // Sending a "started" and "ended" event to renderer to start and stop the spinner.
         mainWindow.webContents.send('main:collection-import-started', coll.uid);
 
-        let collectionName = sanitizeName(coll.name);
-        let collectionPath = path.join(targetCollectionLocation, collectionName);
-
-        // Auto-rename if collection already exists
-        if (fs.existsSync(collectionPath)) {
-          const uniqueName = await findUniqueFolderName(coll.name, targetCollectionLocation);
-          collectionName = sanitizeName(uniqueName);
-          collectionPath = path.join(targetCollectionLocation, collectionName);
-          coll.name = uniqueName;
+        let collectionPath = await resolveCollectionImportTarget(
+          mainWindow, watcher, options.workspaceId, coll.name
+        );
+        if (collectionPath === COLLECTION_COLLISION_CANCELLED) {
+          mainWindow.webContents.send('main:collection-import-ended', coll.uid);
+          continue;
+        }
+        const collectionName = path.basename(collectionPath);
+        // "Import as copy" lands on a different folder; the collection's own
+        // name has to follow it, or the sidebar shows two identical names.
+        if (collectionName !== sanitizeName(coll.name)) {
+          coll.name = collectionName;
         }
 
         const getFilenameWithFormat = (item, format) => {
@@ -3859,7 +3943,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         throw new Error('ZIP file does not exist');
       }
 
-      const targetCollectionLocation = getWorkspaceCollectionLocation(options.workspaceId);
+      // Same early check as the other import routes, before the zip is unpacked.
+      getWorkspaceCollectionLocation(options.workspaceId);
 
       const tempDir = path.join(os.tmpdir(), `bruno_zip_import_${Date.now()}`);
       await fsExtra.ensureDir(tempDir);
@@ -3936,16 +4021,15 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           }
         }
 
-        let sanitizedName = sanitizeName(collectionName);
-        if (!sanitizedName) {
-          sanitizedName = `untitled-${Date.now()}`;
+        const sanitizedName = sanitizeName(collectionName) || `untitled-${Date.now()}`;
+        const finalCollectionPath = await resolveCollectionImportTarget(
+          mainWindow, watcher, options.workspaceId, sanitizedName
+        );
+        if (finalCollectionPath === COLLECTION_COLLISION_CANCELLED) {
+          await fsExtra.remove(tempDir).catch(() => {});
+          return null;
         }
-        let finalCollectionPath = path.join(targetCollectionLocation, sanitizedName);
-        let counter = 1;
-        while (fs.existsSync(finalCollectionPath)) {
-          finalCollectionPath = path.join(targetCollectionLocation, `${sanitizedName} (${counter})`);
-          counter++;
-        }
+        collectionName = path.basename(finalCollectionPath);
 
         await fsExtra.move(collectionDir, finalCollectionPath);
         await fsExtra.remove(path.join(finalCollectionPath, '.git')).catch(() => {});

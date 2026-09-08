@@ -23,6 +23,7 @@ import { savePreferences, setIsCreatingCollection, toggleSidebarSearch } from 'p
 import { normalizePath } from 'utils/common/path';
 import { isScratchCollection, flattenItems, isItemTransientRequest } from 'utils/collections';
 import { sanitizeName } from 'utils/common/regex';
+import { formatIpcError } from 'utils/common/error';
 import { createCollectionFileProcessor, isFilesDragEvent } from 'utils/importers/fileImport';
 import filter from 'lodash/filter';
 
@@ -246,7 +247,7 @@ const CollectionsSection = () => {
     }
 
     dispatch(openCollection(options)).catch((err) => {
-      toast.error('An error occurred while opening the collection');
+      toast.error(formatIpcError(err) || 'An error occurred while opening the collection');
     });
   };
 
@@ -312,7 +313,10 @@ const CollectionsSection = () => {
     {
       id: 'open',
       leftSection: IconFolder,
-      label: 'Import collection',
+      // Both entries used to read "Import collection". Users picking the wrong
+      // one got a directory chooser when they wanted a file, and the failure
+      // came back as a generic toast that named no cause.
+      label: 'Import collection folder',
       onClick: () => {
         handleOpenCollection();
       }
@@ -320,7 +324,7 @@ const CollectionsSection = () => {
     {
       id: 'import',
       leftSection: IconDownload,
-      label: 'Import collection',
+      label: 'Import from file or URL',
       onClick: () => {
         setImportCollectionModalOpen(true);
       }

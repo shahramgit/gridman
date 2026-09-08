@@ -12,6 +12,7 @@ import Button from 'ui/Button';
 import CollectionsList from './CollectionsList';
 import WorkspaceDocs from '../WorkspaceDocs';
 import StyledWrapper from './StyledWrapper';
+import { formatIpcError } from 'utils/common/error';
 
 const WorkspaceOverview = ({ workspace }) => {
   const dispatch = useDispatch();
@@ -54,7 +55,9 @@ const WorkspaceOverview = ({ workspace }) => {
   const handleOpenCollection = () => {
     dispatch(openCollection()).catch((err) => {
       console.error(err);
-      toast.error('An error occurred while opening the collection');
+      // The main process says exactly what went wrong ("Invalid collection: X",
+      // and so on); the generic sentence used to throw all of that away.
+      toast.error(formatIpcError(err) || 'An error occurred while opening the collection');
     });
   };
 
@@ -158,7 +161,7 @@ const WorkspaceOverview = ({ workspace }) => {
                 icon={<IconFolder size={14} strokeWidth={1.5} />}
                 onClick={handleOpenCollection}
               >
-                Import Collection
+                Import Collection Folder
               </Button>
               <Button
                 color="light"
@@ -166,7 +169,7 @@ const WorkspaceOverview = ({ workspace }) => {
                 icon={<IconDownload size={14} strokeWidth={1.5} />}
                 onClick={handleImportCollection}
               >
-                Import Collection
+                Import From File or URL
               </Button>
             </div>
           </div>

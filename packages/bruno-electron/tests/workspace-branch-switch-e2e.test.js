@@ -39,6 +39,7 @@ const registerWorkspaceIpc = require('../src/ipc/workspace');
 
 const KEY = 'workspaces.lastOpenedWorkspaces';
 let root;
+let defaultLocation;
 let sent;
 
 const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -67,6 +68,11 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  // Own the default location: ensureInitialWorkspace() otherwise creates
+  // "My Workspace" in the shared os.tmpdir()/gridman, where a run that dies
+  // midway leaves a directory with no workspace.yml that fails every later run.
+  defaultLocation = fs.mkdtempSync(path.join(os.tmpdir(), 'gridman-default-'));
+  process.env.GRIDMAN_DEFAULT_LOCATION = defaultLocation;
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'gridman-branch-'));
   git('init', '-b', 'main');
   git('config', 'user.email', 'test@example.com');
@@ -84,7 +90,11 @@ beforeEach(() => {
   sent = [];
 });
 
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+afterEach(() => {
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(defaultLocation, { recursive: true, force: true });
+  delete process.env.GRIDMAN_DEFAULT_LOCATION;
+});
 
 // The real startup path, which is what "restart the app" means.
 const restart = async () => {

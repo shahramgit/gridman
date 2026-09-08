@@ -4,6 +4,8 @@ import MenuDropdown from 'ui/MenuDropdown';
 import ActionIcon from 'ui/ActionIcon';
 import StyledWrapper from './StyledWrapper';
 import { useSelector } from 'react-redux';
+import toast from 'react-hot-toast';
+import { formatIpcError } from 'utils/common/error';
 
 const AppMenu = () => {
   const [isOpen, setIsOpen] = useState(false);
@@ -18,8 +20,13 @@ const AppMenu = () => {
       submenu: [
         {
           id: 'open-collection',
-          label: 'Import Collection',
-          onClick: () => ipcRenderer?.invoke('renderer:open-collection', { workspaceId: activeWorkspace?.pathname })
+          label: 'Import Collection Folder',
+          onClick: () =>
+            ipcRenderer
+              ?.invoke('renderer:open-collection', { workspaceId: activeWorkspace?.pathname })
+              // This one reported nothing at all: a rejected invoke was an
+              // unhandled promise and the menu simply appeared to do nothing.
+              .catch((err) => toast.error(formatIpcError(err) || 'An error occurred while opening the collection'))
         },
         { type: 'divider', id: 'file-div-1' },
         {

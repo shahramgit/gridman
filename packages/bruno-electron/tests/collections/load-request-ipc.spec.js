@@ -34,12 +34,6 @@ jest.mock('electron-store', () => {
   };
 });
 
-// src/utils/constants.js is authored as ESM and there is no babel transform for
-// this package's jest run, so it cannot be required from a CJS spec.
-jest.mock('../../src/utils/constants', () => ({
-  REQUEST_TYPES: ['http-request', 'graphql-request', 'grpc-request', 'ws-request']
-}));
-
 // Same reason as the watcher ordering spec: the test needs to control WHEN each
 // parse settles, and mocking the pooled worker keeps this suite off worker threads
 // (the shared filestore pool has no exported shutdown).
