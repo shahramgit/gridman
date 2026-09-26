@@ -14,11 +14,19 @@ import DraggableTab from './DraggableTab';
 import CreateTransientRequest from 'components/CreateTransientRequest';
 import ActionIcon from 'ui/ActionIcon/index';
 
+// The workspace's own pages. They sat in the scrolling strip with the request
+// tabs, so with many requests open they scrolled out of reach and users paged
+// back through every tab to get to them (reported against 4.1.0-vasl.5). They
+// now stay put at the start of the strip.
+const PINNED_WORKSPACE_TAB_TYPES = new Set(['workspaceOverview', 'workspaceEnvironments', 'workspaceGit']);
+
 const RequestTabs = () => {
   const dispatch = useDispatch();
   const tabsRef = useRef();
   const scrollContainerRef = useRef();
   const collectionTabsRef = useRef();
+  const pinnedTabsRef = useRef();
+  const [pinnedTabsWidth, setPinnedTabsWidth] = useState(0);
   const [newRequestModalOpen, setNewRequestModalOpen] = useState(false);
   const [tabOverflowStates, setTabOverflowStates] = useState({});
   const [showChevrons, setShowChevrons] = useState(false);
@@ -55,6 +63,29 @@ const RequestTabs = () => {
     () => getWorkspaceTabs(tabs, collections, activeWorkspace),
     [tabs, collections, activeWorkspace]
   );
+  const pinnedTabs = useMemo(
+    () => collectionRequestTabs.filter((tab) => PINNED_WORKSPACE_TAB_TYPES.has(tab.type)),
+    [collectionRequestTabs]
+  );
+  const scrollingTabs = useMemo(
+    () => collectionRequestTabs.filter((tab) => !PINNED_WORKSPACE_TAB_TYPES.has(tab.type)),
+    [collectionRequestTabs]
+  );
+
+  // The scroller's width budget has to leave room for the pinned group.
+  useEffect(() => {
+    const node = pinnedTabsRef.current;
+    if (!node) {
+      setPinnedTabsWidth(0);
+      return undefined;
+    }
+    const measure = () => setPinnedTabsWidth(node.offsetWidth || 0);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [pinnedTabs.length]);
+
   // Show a collection hint on tabs only when tabs from several collections
   // are open at once.
   const showCollectionHint = useMemo(() => {
@@ -83,7 +114,7 @@ const RequestTabs = () => {
     }
 
     return () => resizeObserver.disconnect();
-  }, [activeTabUid, activeTab, collectionRequestTabs.length, screenWidth, leftSidebarWidth, sidebarCollapsed]);
+  }, [activeTabUid, activeTab, scrollingTabs.length, pinnedTabsWidth, screenWidth, leftSidebarWidth, sidebarCollapsed]);
 
   const getTabClassname = (tab, index) => {
     return classnames('request-tab select-none', {
@@ -106,7 +137,13 @@ const RequestTabs = () => {
   }
 
   const effectiveSidebarWidth = sidebarCollapsed ? 0 : leftSidebarWidth;
-  const maxTablistWidth = screenWidth - effectiveSidebarWidth - 150;
+  const maxTablistWidth = screenWidth - effectiveSidebarWidth - 150 - pinnedTabsWidth;
+
+  // Each tab renders against ITS collection — the strip holds tabs from
+  // several collections at once.
+  const collectionForTab = (tab) => (tab.collectionUid === activeCollection?.uid
+    ? activeCollection
+    : find(collections, (c) => c?.uid === tab.collectionUid));
 
   const leftSlide = () => {
     scrollContainerRef.current?.scrollBy({
@@ -137,6 +174,33 @@ const RequestTabs = () => {
             />
           )}
           <div className="flex items-center gap-2 pl-2" ref={collectionTabsRef}>
+            {pinnedTabs.length > 0 && (
+              <ul role="tablist" aria-label="Workspace" className="pinned-tabs" ref={pinnedTabsRef} data-testid="pinned-workspace-tabs">
+                {pinnedTabs.map((tab, index) => (
+                  <li
+                    key={tab.uid}
+                    role="tab"
+                    className={getTabClassname(tab, index)}
+                    onClick={() => handleClick(tab)}
+                  >
+                    {/* Their own list: close-others/left/right on a pinned tab
+                        stays among the pinned ones, and the same actions on a
+                        request tab no longer sweep the workspace pages away. */}
+                    <RequestTab
+                      collectionRequestTabs={pinnedTabs}
+                      tabIndex={index}
+                      tab={tab}
+                      collection={collectionForTab(tab)}
+                      showCollectionHint={showCollectionHint}
+                      folderUid={tab.folderUid}
+                      hasOverflow={tabOverflowStates[tab.uid]}
+                      setHasOverflow={createSetHasOverflow(tab.uid)}
+                      dropdownContainerRef={collectionTabsRef}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
             <div className={classnames('scroll-chevrons', { hidden: !showChevrons })}>
               <ActionIcon size="lg" onClick={leftSlide} aria-label="Left Chevron" style={{ marginBottom: '3px' }}>
                 <IconChevronLeft size={18} strokeWidth={1.5} />
@@ -150,13 +214,9 @@ const RequestTabs = () => {
             </li> */}
             <div className="tabs-scroll-container" style={{ maxWidth: maxTablistWidth }} ref={scrollContainerRef}>
               <ul role="tablist" ref={tabsRef}>
-                {collectionRequestTabs && collectionRequestTabs.length
-                  ? collectionRequestTabs.map((tab, index) => {
-                      // Each tab renders against ITS collection — the strip
-                      // holds tabs from several collections at once.
-                      const tabCollection = tab.collectionUid === activeCollection?.uid
-                        ? activeCollection
-                        : find(collections, (c) => c?.uid === tab.collectionUid);
+                {scrollingTabs.length
+                  ? scrollingTabs.map((tab, index) => {
+                      const tabCollection = collectionForTab(tab);
                       return (
                         <DraggableTab
                           key={tab.uid}
@@ -172,7 +232,7 @@ const RequestTabs = () => {
                           onClick={() => handleClick(tab)}
                         >
                           <RequestTab
-                            collectionRequestTabs={collectionRequestTabs}
+                            collectionRequestTabs={scrollingTabs}
                             tabIndex={index}
                             key={tab.uid}
                             tab={tab}

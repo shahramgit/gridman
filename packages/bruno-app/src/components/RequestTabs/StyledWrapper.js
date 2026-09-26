@@ -18,6 +18,12 @@ const Wrapper = styled.div`
     display: none;
   }
 
+  .pinned-tabs {
+    flex-shrink: 0;
+    padding-right: 6px;
+    border-right: 1px solid ${(props) => props.theme.requestTabs.bottomBorder};
+  }
+
   .tabs-scroll-container {
     overflow-x: auto;
     overflow-y: clip;
