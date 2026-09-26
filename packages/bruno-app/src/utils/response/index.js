@@ -72,24 +72,60 @@ export const escapeHtml = (text) => {
 /**
  * Helper to detect if buffer contains text data
  */
-const isLikelyText = (buffer) => {
-  if (!buffer || buffer.length === 0) return false;
-  let textChars = 0;
-  const sampleSize = Math.min(buffer.length, 512);
-
-  for (let i = 0; i < sampleSize; i++) {
+// Counts bytes that belong to text: printable ASCII, tab/LF/CR, and complete
+// UTF-8 multi-byte sequences. Counting ASCII alone called any body with enough
+// non-Latin script "binary": Persian is two bytes per letter, so a 171-byte
+// JSON response carrying a one-line Persian message was only ~75% ASCII, fell
+// under the threshold, and opened as Raw instead of JSON (reported against
+// 4.1.0-vasl.5 on a national-gateway API). Random binary rarely forms valid
+// UTF-8 runs, so the threshold still separates the two.
+const countTextBytes = (buffer, length) => {
+  let textBytes = 0;
+  let i = 0;
+  while (i < length) {
     const byte = buffer[i];
-    // Check for common text characters (printable ASCII + common control chars)
-    if ((byte >= 0x20 && byte <= 0x7E) // Printable ASCII
-      || byte === 0x09 // Tab
-      || byte === 0x0A // Line feed
-      || byte === 0x0D) { // Carriage return
-      textChars++;
+    if ((byte >= 0x20 && byte <= 0x7E) || byte === 0x09 || byte === 0x0A || byte === 0x0D) {
+      textBytes++;
+      i++;
+      continue;
+    }
+
+    let continuationBytes = 0;
+    if (byte >= 0xC2 && byte <= 0xDF) continuationBytes = 1;
+    else if (byte >= 0xE0 && byte <= 0xEF) continuationBytes = 2;
+    else if (byte >= 0xF0 && byte <= 0xF4) continuationBytes = 3;
+    else {
+      i++;
+      continue;
+    }
+
+    // The sample can end mid-character; what is there of it is still text.
+    const available = Math.min(continuationBytes, length - i - 1);
+    let valid = true;
+    for (let k = 1; k <= available; k++) {
+      const next = buffer[i + k];
+      if (next < 0x80 || next > 0xBF) {
+        valid = false;
+        break;
+      }
+    }
+
+    if (valid) {
+      textBytes += available + 1;
+      i += available + 1;
+    } else {
+      i++;
     }
   }
+  return textBytes;
+};
 
-  // If more than 85% are text characters, likely text
-  return (textChars / sampleSize) > 0.85;
+const isLikelyText = (buffer) => {
+  if (!buffer || buffer.length === 0) return false;
+  const sampleSize = Math.min(buffer.length, 512);
+
+  // If more than 85% of the sample is text, it is text.
+  return (countTextBytes(buffer, sampleSize) / sampleSize) > 0.85;
 };
 
 /**
@@ -337,4 +373,38 @@ export const detectStructuredTextType = (buffer) => {
     return 'application/xml';
   }
   return null;
+};
+
+// Content types that don't CLEARLY describe the body: missing, generic binary,
+// or text/plain (which gateways routinely slap on JSON/XML/HTML responses).
+// For these the magic-byte / structured-text sniffer decides the initial
+// format instead. Safe for real prose: the sniffer falls back to text/plain.
+const GENERIC_CONTENT_TYPE_REGEX = /octet-stream|application\/binary|application\/unknown|text\/plain/i;
+const STRUCTURED_SNIFF_REGEX = /json|xml|html/i;
+
+// The initial format and tab for a response, from its headers and body.
+// `getContentType` is passed in to keep this module free of utils/common.
+export const decideInitialResponseFormat = (dataBuffer, headers, getContentType) => {
+  const detectedContentType = detectContentTypeFromBase64(dataBuffer);
+  const contentType = getContentType(headers);
+
+  // Wait until both content types are available
+  if (detectedContentType === null || contentType === undefined) {
+    return { initialFormat: null, initialTab: null, contentType: contentType };
+  }
+
+  const headerTypeIsGeneric = !contentType || GENERIC_CONTENT_TYPE_REGEX.test(contentType);
+  const effectiveContentType = headerTypeIsGeneric && detectedContentType ? detectedContentType : contentType;
+
+  let initial = getDefaultResponseFormat(effectiveContentType);
+
+  // A header naming a type we have no view for (application/x-json, a vendor
+  // type without +json, */*) lands on Raw and says nothing useful about the
+  // body either. When the body plainly starts as JSON/XML/HTML, open it that
+  // way — the user can still switch to Raw.
+  if (initial.format === 'raw' && detectedContentType && STRUCTURED_SNIFF_REGEX.test(detectedContentType)) {
+    initial = getDefaultResponseFormat(detectedContentType);
+  }
+
+  return { initialFormat: initial.format, initialTab: initial.tab, contentType: contentType };
 };

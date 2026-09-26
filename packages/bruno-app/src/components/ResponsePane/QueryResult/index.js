@@ -2,7 +2,7 @@ import { debounce } from 'lodash';
 import { useTheme } from 'providers/Theme/index';
 import React, { useMemo, useState } from 'react';
 import { formatResponse, getContentType } from 'utils/common';
-import { getDefaultResponseFormat, detectContentTypeFromBase64 } from 'utils/response';
+import { detectContentTypeFromBase64, decideInitialResponseFormat } from 'utils/response';
 import LargeResponseWarning from '../LargeResponseWarning';
 import QueryResultFilter from './QueryResultFilter';
 import QueryResultPreview from './QueryResultPreview';
@@ -41,32 +41,9 @@ const formatErrorMessage = (error) => {
   return error;
 };
 
-// Content types that say nothing about the actual payload (chunked
-// downloads, generic binary). For these, trust the magic-byte sniffed type
-// so previewable content (images, pdf, audio, video) still opens in preview.
-// Content types that don't CLEARLY describe the body: missing, generic binary,
-// or text/plain (which gateways routinely slap on JSON/XML/HTML responses).
-// For these the magic-byte / structured-text sniffer decides the initial
-// format instead. Safe for real prose: the sniffer falls back to text/plain.
-const GENERIC_CONTENT_TYPE_REGEX = /octet-stream|application\/binary|application\/unknown|text\/plain/i;
-
 // Custom hook to determine the initial format and tab based on the data buffer and headers
 export const useInitialResponseFormat = (dataBuffer, headers) => {
-  return useMemo(() => {
-    const detectedContentType = detectContentTypeFromBase64(dataBuffer);
-    const contentType = getContentType(headers);
-
-    // Wait until both content types are available
-    if (detectedContentType === null || contentType === undefined) {
-      return { initialFormat: null, initialTab: null, contentType: contentType };
-    }
-
-    const headerTypeIsGeneric = !contentType || GENERIC_CONTENT_TYPE_REGEX.test(contentType);
-    const effectiveContentType = headerTypeIsGeneric && detectedContentType ? detectedContentType : contentType;
-
-    const initial = getDefaultResponseFormat(effectiveContentType);
-    return { initialFormat: initial.format, initialTab: initial.tab, contentType: contentType };
-  }, [dataBuffer, headers]);
+  return useMemo(() => decideInitialResponseFormat(dataBuffer, headers, getContentType), [dataBuffer, headers]);
 };
 
 // Custom hook to determine preview format options based on content type
