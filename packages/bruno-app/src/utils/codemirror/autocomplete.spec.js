@@ -849,3 +849,42 @@ describe('Bruno Autocomplete', () => {
     });
   });
 });
+
+// Users with look-alike variable names (baseurl-nix / baseurl-nixt) asked for
+// autocomplete — it existed, but typing "{{" alone showed nothing, so it never
+// looked like it was there.
+describe('Variable autocomplete right after {{', () => {
+  const variables = { 'baseurl-nix': 'gservices.nix.gov.ir', 'baseurl-nixt': 'gservices.nix.gov.ir/test', 'USER_KEY': 'k' };
+  const at = (textBeforeCursor, fullLine = textBeforeCursor) => {
+    _mockedCodemirror.getCursor.mockReturnValue({ line: 0, ch: textBeforeCursor.length });
+    _mockedCodemirror.getLine.mockReturnValue(fullLine);
+    _mockedCodemirror.getRange.mockReturnValue(textBeforeCursor);
+  };
+
+  it('lists the user\'s own variables as soon as {{ is typed', () => {
+    at('https://{{');
+    const result = getAutoCompleteHints(_mockedCodemirror, variables, [], { showHintsFor: ['variables'] });
+
+    expect(result.list.map((hint) => hint.text)).toEqual(['USER_KEY', 'baseurl-nix', 'baseurl-nixt']);
+  });
+
+  it('keeps the $random mock-data functions out of that first list', () => {
+    at('https://{{');
+    const result = getAutoCompleteHints(_mockedCodemirror, variables, [], { showHintsFor: ['variables'] });
+
+    expect(result.list.some((hint) => hint.text.startsWith('$'))).toBe(false);
+  });
+
+  it('narrows to both look-alikes, hyphen included, and while editing one in place', () => {
+    for (const [before, line] of [['https://{{baseurl-'], ['https://{{nix'], ['https://{{baseurl-n', 'https://{{baseurl-nix}}/ctx/gw']]) {
+      at(before, line);
+      const result = getAutoCompleteHints(_mockedCodemirror, variables, [], { showHintsFor: ['variables'] });
+      expect(result.list.map((hint) => hint.text)).toEqual(['baseurl-nix', 'baseurl-nixt']);
+    }
+  });
+
+  it('shows nothing after {{ where variables are not offered', () => {
+    at('https://{{');
+    expect(getAutoCompleteHints(_mockedCodemirror, variables, [], { showHintsFor: ['req'] })).toBeNull();
+  });
+});

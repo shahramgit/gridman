@@ -563,6 +563,14 @@ const getAllowedHintsByContext = (categorizedHints, context, showHintsFor) => {
  */
 const filterHintsByContext = (categorizedHints, currentWord, context, showHintsFor = []) => {
   if (!currentWord) {
+    // Right after "{{" there is no word yet, and this returned nothing — so a
+    // user who typed "{{" and waited saw no list and concluded there was no
+    // autocomplete (asked for by users with look-alike names such as
+    // baseurl-nix / baseurl-nixt). Offer their own variables straight away;
+    // the $random… mock-data functions stay out until "$" is typed.
+    if (context === 'variables' && showHintsFor.includes('variables')) {
+      return categorizedHints.variables.filter((hint) => !hint.startsWith('$')).slice(0, 50);
+    }
     return [];
   }
 
