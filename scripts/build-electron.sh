@@ -12,6 +12,12 @@ mkdir packages/bruno-electron/web
 # Workspace packages resolve to their gitignored dist/, and nothing here builds
 # them — a fix edited in bruno-common/converters/filestore/requests would ship as
 # whatever dist happened to be on the build machine. Refuse to build blind.
+# The safe-mode (QuickJS) sandbox loads its libraries from a generated,
+# gitignored bundle. It is derived purely from node_modules, so regenerate it
+# rather than trust whatever copy is on this machine: 4.1.0-vasl.3 to .5 shipped
+# an April bundle without ajv and every safe-mode script failed.
+npm run sandbox:bundle-libraries --workspace=packages/bruno-js || exit 1
+
 node scripts/check-package-builds.js --strict || exit 1
 
 # Build the renderer that Electron loads in production.

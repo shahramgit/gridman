@@ -1,3 +1,27 @@
+// @rollup/plugin-terser pulls in serialize-javascript, which calls the GLOBAL
+// crypto.getRandomValues. WebCrypto is not a global before Node 19, so on
+// Node 18 this script failed before writing anything — and its output is
+// gitignored, so the previous bundle silently stayed in place. That is how
+// releases 4.1.0-vasl.3 to .5 all shipped an April bundle with no ajv in it,
+// and every safe-mode script failed with "Cannot find module ajv" (the QuickJS
+// test shim requires it on every run).
+//
+// Assigning globalThis.crypto here is NOT enough: terser minifies in worker
+// threads, which get their globals from the process flags, not from this
+// module. So re-run under the flag, as scripts/build-package.js does for the
+// build:bruno-* packages.
+const WEBCRYPTO_FLAG = '--experimental-global-webcrypto';
+const nodeMajor = Number(process.versions.node.split('.')[0]);
+if (nodeMajor < 19 && !process.execArgv.includes(WEBCRYPTO_FLAG)) {
+  const { spawnSync } = require('child_process');
+  const rerun = spawnSync(
+    process.execPath,
+    [WEBCRYPTO_FLAG, ...process.execArgv, __filename, ...process.argv.slice(2)],
+    { stdio: 'inherit' }
+  );
+  process.exit(rerun.status === null ? 1 : rerun.status);
+}
+
 const rollup = require('rollup');
 const { nodeResolve } = require('@rollup/plugin-node-resolve');
 const commonjs = require('@rollup/plugin-commonjs');

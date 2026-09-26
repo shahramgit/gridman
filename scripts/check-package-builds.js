@@ -55,6 +55,47 @@ const newestMtime = (dir) => {
   return newest;
 };
 
+// The QuickJS (safe mode) sandbox resolves require() from a generated,
+// gitignored bundle, and only scripts/setup.js regenerates it — as its LAST
+// step, after everything else has already built. When that step failed (it did
+// on Node 18 until bundle-libraries.js learned to re-run itself with WebCrypto),
+// the old bundle silently stayed and got packaged. 4.1.0-vasl.3 through .5 all
+// shipped an April bundle with no ajv, so every safe-mode script failed with
+// "Cannot find module ajv".
+//
+// mtime says nothing useful here (a checkout touches the bundler, not the
+// bundle), so compare content: every module bundle-libraries.js registers in
+// requireObject must be registered in the bundle's requireObject literal.
+const SANDBOX_BUNDLER = path.join(rootDir, 'packages', 'bruno-js', 'src', 'sandbox', 'bundle-libraries.js');
+const SANDBOX_BUNDLE = path.join(rootDir, 'packages', 'bruno-js', 'src', 'sandbox', 'bundle-browser-rollup.js');
+const SANDBOX_SCRIPT = 'npm run sandbox:bundle-libraries --workspace=packages/bruno-js';
+
+const declaredSandboxModules = () => {
+  const source = fs.readFileSync(SANDBOX_BUNDLER, 'utf8');
+  const block = source.match(/globalThis\.requireObject\s*=\s*\{([\s\S]*?)\};/);
+  if (!block) return [];
+  return [...block[1].matchAll(/['"]([^'"]+)['"]\s*:/g)].map((match) => match[1]);
+};
+
+const bundledSandboxModules = () => {
+  const bundle = fs.readFileSync(SANDBOX_BUNDLE, 'utf8');
+  const literal = bundle.match(/requireObject=\{\.\.\.globalThis\.requireObject\|\|\{\},([^;]*)/);
+  if (!literal) return null;
+  return new Set([...literal[1].matchAll(/(?:^|[{,])\s*(?:"([^"]+)"|([A-Za-z_$][\w$]*))\s*:/g)].map((m) => m[1] || m[2]));
+};
+
+const findSandboxBundleProblem = () => {
+  if (!fs.existsSync(SANDBOX_BUNDLER)) return null;
+  if (!fs.existsSync(SANDBOX_BUNDLE)) return 'the bundle is missing entirely';
+
+  const declared = declaredSandboxModules();
+  const bundled = bundledSandboxModules();
+  if (!bundled) return 'the bundle has no requireObject registration (unrecognised format)';
+
+  const missing = declared.filter((name) => !bundled.has(name));
+  return missing.length ? `it does not provide ${missing.join(', ')}` : null;
+};
+
 // Returns the stale packages and reports them. NEVER exits the process: this is
 // also called in-process by scripts/dev.js, where a process.exit() would kill
 // the dev server before it started.
@@ -81,20 +122,28 @@ const reportStalePackageBuilds = ({ strict = false } = {}) => {
     }
   }
 
+  const sandboxProblem = findSandboxBundleProblem();
+  if (sandboxProblem) {
+    problems.push({
+      pkg: { name: 'bruno-js sandbox bundle', script: null, command: SANDBOX_SCRIPT },
+      reason: `${sandboxProblem} — every safe-mode script will fail`
+    });
+  }
+
   if (!problems.length) {
-    if (strict) console.log('\u2713 workspace package builds are current');
+    if (strict) console.log('\u2713 workspace package builds and the sandbox bundle are current');
     return problems;
   }
 
   const label = strict ? 'ERROR' : 'WARNING';
   console.log('');
-  console.log(`${label}: workspace package builds are STALE. Consumers resolve to dist/, so these changes are NOT in the app:`);
+  console.log(`${label}: generated build output is STALE, so these are NOT what the app runs:`);
   for (const { pkg, reason } of problems) {
     console.log(`  - ${pkg.name}: ${reason}`);
   }
   console.log('');
   console.log('Rebuild them with:');
-  console.log(`  ${problems.map(({ pkg }) => `npm run ${pkg.script}`).join(' && ')}`);
+  console.log(`  ${problems.map(({ pkg }) => pkg.command || `npm run ${pkg.script}`).join(' && ')}`);
   console.log('');
 
   return problems;
