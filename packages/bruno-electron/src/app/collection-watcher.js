@@ -320,6 +320,54 @@ const unlinkEnvironmentFile = async (win, pathname, collectionUid) => {
 // user-initiated parse always jumps ahead of an initial-scan backlog.
 const BACKGROUND_PARSE_PRIORITY_BOOST = 1e9;
 
+// An add is read, then parsed ASYNCHRONOUSLY, then emitted. During a large
+// workspace's initial scan that parse waits at background priority — measured at
+// ~160s of parse CPU on GSB — so a user can delete a request after it was read
+// and before its add is sent. chokidar's unlink (no parse) then reaches the
+// renderer FIRST and removes the row, and the late add puts it straight back;
+// nothing removes it again, so it sits in the sidebar until a restart. Reported
+// against 4.1.0-vasl.5 as "delete in a folder does nothing until I restart".
+//
+// So remember removals, and drop an add whose file (or any folder above it) was
+// removed after that add started. Only such an add pays for a stat: a stat per
+// add is what the `ignored` callback below warns costs 17-85s behind Windows
+// antivirus on this workspace.
+const REMOVAL_MEMORY_MS = 10 * 60 * 1000;
+const removedAt = new Map();
+
+const markPathRemoved = (pathname) => {
+  const now = Date.now();
+  removedAt.set(path.normalize(pathname), now);
+  if (removedAt.size > 1000) {
+    for (const [key, at] of removedAt) {
+      if (now - at > REMOVAL_MEMORY_MS) removedAt.delete(key);
+    }
+  }
+};
+
+const wasRemovedSince = (pathname, since) => {
+  if (!removedAt.size) return false;
+  let current = path.normalize(pathname);
+  for (;;) {
+    const at = removedAt.get(current);
+    if (at !== undefined && at >= since) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+};
+
+// True when the add describes a file that is no longer there. A path removed
+// and then re-created (Trash restore, git checkout) still exists, so it passes.
+const isAddOutlivedByRemoval = (pathname, startedAt) => wasRemovedSince(pathname, startedAt) && !fs.existsSync(pathname);
+
+const sendAddUnlessRemoved = (win, type, payload, startedAt) => {
+  if (isAddOutlivedByRemoval(payload.meta.pathname, startedAt)) {
+    return;
+  }
+  win.webContents.send('main:collection-tree-updated', type, payload);
+};
+
 const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread, watcher, parsePriorityBoost = 0) => {
   // A git checkout/pull/merge rewrites many files at once; skip the per-file
   // storm and let the single post-operation reindex resync the collection.
@@ -438,6 +486,7 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
   const format = getCollectionFormat(collectionPath);
   if (hasRequestExtension(pathname, format)) {
     watcher.addFileToProcessing(collectionUid, pathname);
+    const addStartedAt = Date.now();
 
     const file = {
       meta: {
@@ -458,7 +507,7 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
         file.loading = false;
         file.size = sizeInMB(fileStats?.size);
         hydrateRequestWithUuid(file.data, pathname);
-        win.webContents.send('main:collection-tree-updated', 'addFile', file);
+        sendAddUnlessRemoved(win, 'addFile', file, addStartedAt);
       } catch (error) {
         // same partial-item emit as the worker branch below, so an unparseable file
         // is still listed. upstream bruno #8545 (81f9a4092)
@@ -470,7 +519,7 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
         file.loading = false;
         file.size = sizeInMB(fileStats?.size);
         hydrateRequestWithUuid(file.data, pathname);
-        win.webContents.send('main:collection-tree-updated', 'addFile', file);
+        sendAddUnlessRemoved(win, 'addFile', file, addStartedAt);
       } finally {
         watcher.markFileAsProcessed(win, collectionUid, pathname);
       }
@@ -489,7 +538,7 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
         file.partial = false;
         file.loading = false;
         hydrateRequestWithUuid(file.data, pathname);
-        win.webContents.send('main:collection-tree-updated', 'addFile', file);
+        sendAddUnlessRemoved(win, 'addFile', file, addStartedAt);
       } else {
         // Computed here rather than above the branch: the full parse below needs
         // nothing from it, so on a yml collection the old placement ran a whole-file
@@ -503,7 +552,7 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
         file.partial = true;
         file.loading = false;
         hydrateRequestWithUuid(file.data, pathname);
-        win.webContents.send('main:collection-tree-updated', 'addFile', file);
+        sendAddUnlessRemoved(win, 'addFile', file, addStartedAt);
       }
     } catch (error) {
       file.data = buildUnparseableRequestData(pathname);
@@ -514,7 +563,7 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
       file.loading = false;
       file.size = sizeInMB(fileStats?.size);
       hydrateRequestWithUuid(file.data, pathname);
-      win.webContents.send('main:collection-tree-updated', 'addFile', file);
+      sendAddUnlessRemoved(win, 'addFile', file, addStartedAt);
     } finally {
       watcher.markFileAsProcessed(win, collectionUid, pathname);
     }
@@ -522,6 +571,7 @@ const add = async (win, pathname, collectionUid, collectionPath, useWorkerThread
 };
 
 const addDirectory = async (win, pathname, collectionUid, collectionPath) => {
+  const addStartedAt = Date.now();
   if (isPathUnderActiveGitOperation(pathname)) {
     return;
   }
@@ -559,7 +609,7 @@ const addDirectory = async (win, pathname, collectionUid, collectionPath) => {
     }
   };
 
-  win.webContents.send('main:collection-tree-updated', 'addDir', directory);
+  sendAddUnlessRemoved(win, 'addDir', directory, addStartedAt);
 };
 
 // `watcher` is the CollectionWatcher instance; the request branch below needs it
@@ -782,6 +832,7 @@ const change = async (win, pathname, collectionUid, collectionPath, watcher) => 
 };
 
 const unlink = (win, pathname, collectionUid, collectionPath) => {
+  markPathRemoved(pathname);
   if (isPathUnderActiveGitOperation(pathname)) {
     return;
   }
@@ -825,6 +876,7 @@ const unlink = (win, pathname, collectionUid, collectionPath) => {
 };
 
 const unlinkDir = async (win, pathname, collectionUid, collectionPath) => {
+  markPathRemoved(pathname);
   if (isPathUnderActiveGitOperation(pathname)) {
     return;
   }
