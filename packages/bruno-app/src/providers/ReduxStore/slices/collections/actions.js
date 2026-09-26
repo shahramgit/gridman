@@ -830,7 +830,13 @@ const nextSiblingSeq = ({ state, collectionUid, parentPathname, fallbackItems })
     const childUids = index.childrenByParentUid?.[parentNode ? parentNode.uid : 'root'] || [];
     if (childUids.length) {
       const max = childUids.reduce((acc, uid) => Math.max(acc, Number(index.nodesByUid[uid]?.seq) || 0), 0);
-      return max + 1;
+      // Folders sort by sortByNameThenSequence, where seq is an ABSOLUTE
+      // position among the folders that have none. A collection whose folders
+      // mostly lack folder.bru (imported, or made outside Gridman) has a max seq
+      // of 1 or 2, so max + 1 dropped a new folder second from the top instead
+      // of last — and it was committed that way, so every teammate saw it too.
+      // Reported against 4.1.0-vasl.5. The fallback below always had this guard.
+      return Math.max(max + 1, childUids.length + 1);
     }
   }
   const items = (fallbackItems || []).filter((i) => isItemAFolder(i) || isItemARequest(i));
