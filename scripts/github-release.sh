@@ -256,6 +256,21 @@ build_release_assets() {
   list_release_assets
 
   rm -rf "$out_dir"
+
+  # The same guards scripts/build-electron.sh applies — this path calls
+  # electron-builder directly, so it skipped both, and 4.1.0-vasl.3 to .5 went
+  # out with a stale safe-mode sandbox bundle (every safe-mode script failed
+  # with "Cannot find module ajv"). The bundle is derived purely from
+  # node_modules: regenerate it, then refuse stale generated output.
+  (cd "$root_dir" && run_cmd npm run sandbox:bundle-libraries --workspace=packages/bruno-js)
+  (cd "$root_dir" && run_cmd node scripts/check-package-builds.js --strict)
+
+  # npm installs only the HOST's node-pty binary, and the dist:* scripts fetch
+  # the target's before packaging — this path skipped that too, so the Windows
+  # and Linux installers built on a Mac carried only node-pty-darwin-* and the
+  # in-app terminal could not start there. Fetch every target's prebuilt binary.
+  (cd "$electron_dir" && run_cmd node scripts/fetch-pty-binaries.js)
+
   prepare_electron_web
 
   # electron-builder names artifacts from package.json's version. Override it
