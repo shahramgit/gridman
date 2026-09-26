@@ -2277,13 +2277,19 @@ const fetchRemotes = (gitRootPath) => {
 };
 
 const fetchChanges = (gitRootPath, remote = 'origin', { win, processUid } = {}) => {
+  // --prune: without it a branch deleted on the server keeps its local
+  // remote-tracking ref forever, and the branch picker lists it — a team that
+  // cuts a dated branch per day (develop(1405-06-15), ...) saw every one ever
+  // made, reported against 4.1.0-vasl.5. Upstream pointing at a pruned ref is
+  // already handled where ahead/behind is measured.
+  //
   // With a processUid the fetch is spawned directly so it reports progress and
   // can be cancelled; without one (background status refreshes) it keeps the
   // original simple-git path.
   if (processUid) {
     return runCancellableGitCommand({
       binary: ensureGitAvailable(),
-      args: ['fetch', '--progress', remote],
+      args: ['fetch', '--progress', '--prune', remote],
       cwd: gitRootPath,
       processUid,
       win
@@ -2292,7 +2298,7 @@ const fetchChanges = (gitRootPath, remote = 'origin', { win, processUid } = {}) 
 
   return new Promise((resolve, reject) => {
     const git = getSimpleGitInstanceForPath(gitRootPath);
-    git.fetch(remote, (err, res) => {
+    git.fetch(['--prune', remote], (err, res) => {
       if (err) {
         reject(err);
         return;
