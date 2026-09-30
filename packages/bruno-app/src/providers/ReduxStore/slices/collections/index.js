@@ -217,6 +217,30 @@ const applyFileDataToItem = (item, file, isTransientFile) => {
   item.unknownBlocks = file.data.unknownBlocks;
 };
 
+// A folder's own file (folder.bru / folder.yml) carries its display name and
+// seq. The sidebar sorts from the INDEX node, and these events used to update
+// only the loaded tree, so a folder whose seq changed on disk — a new folder,
+// one pasted or moved in, a teammate's reorder arriving by pull — kept its old
+// position (or none, sorting alphabetically near the top) until the next
+// re-index. One O(1) node update, never a tree walk.
+const syncFolderIndexNodeMeta = (state, collectionUid, folderPath, meta) => {
+  const index = state.collectionIndexes?.[collectionUid];
+  if (!index || !meta) {
+    return;
+  }
+  const node = findIndexNodeByPathname(index, folderPath);
+  if (!node || node.type !== 'folder') {
+    return;
+  }
+  const seq = Number(meta.seq);
+  if (Number.isFinite(seq) && seq > 0 && node.seq !== seq) {
+    node.seq = seq;
+  }
+  if (meta.name && node.name !== meta.name) {
+    node.name = meta.name;
+  }
+};
+
 const applyCollectionAddFile = (state, file, options = {}) => {
   const isCollectionRoot = file.meta.collectionRoot ? true : false;
   const isFolderRoot = file.meta.folderRoot ? true : false;
@@ -240,6 +264,7 @@ const applyCollectionAddFile = (state, file, options = {}) => {
         folderItem.seq = file.data?.meta?.seq;
       }
     }
+    syncFolderIndexNodeMeta(state, file.meta.collectionUid, folderPath, file?.data?.meta);
     return collection;
   }
 
@@ -3801,6 +3826,7 @@ export const collectionsSlice = createSlice({
           }
           folderItem.root = mergeRootWithPreservedUids(folderItem.root, file.data);
         }
+        syncFolderIndexNodeMeta(state, file.meta.collectionUid, folderPath, file?.data?.meta);
         return;
       }
 

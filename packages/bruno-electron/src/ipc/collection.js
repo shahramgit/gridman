@@ -87,6 +87,7 @@ const { migrateCollectionToYml } = require('../utils/collection-migration');
 const { withWatchReleased } = require('../app/watch-release');
 const { markPathRemoved } = require('../app/collection-watcher');
 const { invalidateSearchForPath } = require('../app/search-invalidation');
+const { nextAppendSeq, setFolderSeq } = require('../utils/folder-seq');
 const { readCollectionItemsFromDisk, readFolderForExport, writeItemsIntoFolder } = require('./collection-export-import');
 const { saveSpecAndUpdateMetadata, cleanupSpecFilesForCollection } = require('./openapi-sync');
 const {
@@ -294,17 +295,16 @@ const createFolderByPath = async ({ parentPathname, collectionPathname, folderNa
     throw new Error('The directory already exists');
   }
 
-  const siblingCount = fs.readdirSync(parentPath).filter((name) => {
-    const siblingPath = path.join(parentPath, name);
-    return isDirectory(siblingPath) || hasRequestExtension(siblingPath, format);
-  }).length;
+  // After every sibling on disk — sibling-count + 1 ignored numbers above the
+  // count, so a folder with gaps above it landed mid-list (utils/folder-seq.js).
+  const seq = nextAppendSeq(parentPath, format);
 
   fs.mkdirSync(targetPathname);
   const folderFilePath = path.join(targetPathname, `folder.${format}`);
   const content = await stringifyFolder({
     meta: {
       name: folderName,
-      seq: siblingCount + 1
+      seq
     },
     request: {
       auth: {
@@ -313,7 +313,7 @@ const createFolderByPath = async ({ parentPathname, collectionPathname, folderNa
     }
   }, { format });
   await writeFile(folderFilePath, content);
-  return targetPathname;
+  return { pathname: targetPathname, seq };
 };
 
 // Disk-level paste/move helpers (extracted for unit testing).
@@ -1852,6 +1852,13 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     pathname = path.join(path.dirname(pathname), resolvedFolderName);
     try {
       if (!fs.existsSync(pathname)) {
+        // The renderer computes a seq from its index, which is empty while the
+        // collection re-indexes (after every pull) — that is how a new folder got
+        // seq 1 and sat at the top. The disk decides (utils/folder-seq.js); the
+        // renderer's number only wins when it is already larger.
+        const appendSeq = nextAppendSeq(path.dirname(pathname), format);
+        const requestedSeq = Number(folderData?.meta?.seq) || 0;
+        folderData = { ...folderData, meta: { ...(folderData?.meta || {}), seq: Math.max(requestedSeq, appendSeq) } };
         fs.mkdirSync(pathname);
         const folderFilePath = path.join(pathname, `folder.${format}`);
         const content = await stringifyFolder(folderData, { format });
@@ -2396,6 +2403,18 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         : await pasteRequestByPath({ sourcePathname: sourcePath, targetDirname: targetDir, sourceFormat, targetFormat });
 
       assertPathInside(targetCollectionPathname, result.pathname);
+      if (kind === 'folder') {
+        // The copy kept the source's seq; land it after everything in its new
+        // parent. Best effort: the paste has already succeeded.
+        try {
+          const seq = nextAppendSeq(targetDir, targetFormat, { exclude: [path.basename(result.pathname)] });
+          if (await setFolderSeq(result.pathname, targetFormat, seq)) {
+            result.seq = seq;
+          }
+        } catch (error) {
+          console.error('Could not renumber the pasted folder:', error);
+        }
+      }
       return result;
     } catch (error) {
       return Promise.reject(error);
@@ -2404,7 +2423,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
   ipcMain.handle('renderer:new-collection-folder-by-path', async (event, { parentPathname, collectionPathname, folderName, directoryName }) => {
     try {
-      const targetPathname = await createFolderByPath({
+      const { pathname: targetPathname, seq } = await createFolderByPath({
         parentPathname,
         collectionPathname,
         folderName,
@@ -2412,6 +2431,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       });
       return {
         pathname: targetPathname,
+        seq,
         type: 'folder'
       };
     } catch (error) {
@@ -2586,6 +2606,26 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         watcher
       });
 
+      // A folder that lands in a different parent keeps its old parent's seq
+      // otherwise, and seq 1 there is the top here. Whatever the drop gesture:
+      // a drop between two rows of the new parent is not persisted as a
+      // position either (siblings are not resequenced across parents, so no
+      // folder files are added to every sibling), so the end is the only
+      // position that is right for everyone. Best effort: the move itself has
+      // already succeeded and must still be reported as a success.
+      let movedSeq;
+      if (sourceKind === 'folder'
+        && path.normalize(path.dirname(finalPathname)) !== path.normalize(path.dirname(sourcePath))) {
+        try {
+          const seq = nextAppendSeq(targetDirname, targetFormat, { exclude: [path.basename(finalPathname)] });
+          if (await setFolderSeq(finalPathname, targetFormat, seq)) {
+            movedSeq = seq;
+          }
+        } catch (error) {
+          console.error('Could not renumber the moved folder:', error);
+        }
+      }
+
       let renamedDisplayName = null;
       if (renameSuffix) {
         renamedDisplayName = await applyDisplayNameSuffix({
@@ -2599,7 +2639,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       return {
         pathname: finalPathname,
         type: sourceKind === 'folder' ? 'folder' : getRequestTypeFromPath(finalPathname, targetCollectionPathname),
-        ...(renamedDisplayName ? { name: renamedDisplayName } : {})
+        ...(renamedDisplayName ? { name: renamedDisplayName } : {}),
+        ...(movedSeq ? { seq: movedSeq } : {})
       };
     } catch (error) {
       return Promise.reject(error);
@@ -3951,7 +3992,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
     await writeItemsIntoFolder({
       items: Array.isArray(items) ? items : [],
       targetDirectory: targetPath,
-      format
+      format,
+      appendAfterExisting: true
     });
 
     return { success: true };

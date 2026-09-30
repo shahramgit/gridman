@@ -15,6 +15,7 @@ const {
 } = require('../utils/filesystem');
 const { generateUidBasedOnHash } = require('../utils/common');
 const { hydrateRequestWithUuid } = require('../utils/collection');
+const { nextAppendSeq } = require('../utils/folder-seq');
 
 const EXPORT_IGNORED_DIRS = new Set(['node_modules', '.git', 'environments']);
 const EXPORT_ROOT_FILE_NAMES = new Set([
@@ -127,15 +128,38 @@ const getRequestBaseName = (item) => {
 // Writes converted (bruno-shaped) collection items into an existing directory
 // on disk. Name collisions are resolved by auto-renaming with the standard
 // " copy"/" copy n" suffix (generateUniqueName).
-const writeItemsIntoFolder = async ({ items = [], targetDirectory, format }) => {
-  for (const item of items) {
+// `appendAfterExisting` is for importing INTO a folder that already has
+// content. The top-level items used to keep the SOURCE file's numbering
+// (1, 2, ...), and a folder with no root in the source got no folder file and
+// so no seq at all; either way it sorted to the top of the target, and was
+// committed there for every teammate (reported against 4.1.0-vasl.5 and
+// 4.1.0-vasl.6). Now they are numbered after everything already in the target,
+// in source order. Deeper levels are new folders and keep their own order.
+// The order the SOURCE authored: its own seq (a folder's may sit on its root),
+// then array position. Exports build `items` from readdir order — alphabetical —
+// so numbering straight down the array scrambled the authored order.
+const sourceOrderKey = (item) => {
+  const seq = Number(item?.seq ?? item?.root?.meta?.seq);
+  return Number.isFinite(seq) && seq > 0 ? seq : Number.POSITIVE_INFINITY;
+};
+const inSourceOrder = (items) => items
+  .map((item, position) => ({ item, position }))
+  .sort((a, b) => (sourceOrderKey(a.item) - sourceOrderKey(b.item)) || (a.position - b.position))
+  .map(({ item }) => item);
+
+const writeItemsIntoFolder = async ({ items = [], targetDirectory, format, appendAfterExisting = false }) => {
+  let nextSeq = appendAfterExisting ? nextAppendSeq(targetDirectory, format) : null;
+  const takeSeq = () => (nextSeq === null ? null : nextSeq++);
+
+  for (const item of appendAfterExisting ? inSourceOrder(items) : items) {
     if (IMPORTABLE_REQUEST_TYPES.includes(item.type)) {
       const baseName = sanitizeName(getRequestBaseName(item));
       const uniqueBaseName = generateUniqueName(
         baseName,
         (name) => fs.existsSync(path.join(targetDirectory, `${name}.${format}`))
       );
-      const content = await stringifyRequest(item, { format });
+      const appendSeq = takeSeq();
+      const content = await stringifyRequest(appendSeq === null ? item : { ...item, seq: appendSeq }, { format });
       safeWriteFileSync(path.join(targetDirectory, `${uniqueBaseName}.${format}`), content);
       continue;
     }
@@ -149,7 +173,15 @@ const writeItemsIntoFolder = async ({ items = [], targetDirectory, format }) => 
       const folderPath = path.join(targetDirectory, uniqueFolderName);
       fs.mkdirSync(folderPath, { recursive: true });
 
-      if (item?.root?.meta?.name) {
+      const appendSeq = takeSeq();
+      if (appendSeq !== null) {
+        // Always write the folder file here: without one the folder has no seq.
+        const root = item?.root?.meta?.name
+          ? item.root
+          : { ...(item?.root || {}), meta: { ...(item?.root?.meta || {}), name: item?.name || uniqueFolderName }, request: item?.root?.request || { auth: { mode: 'inherit' } } };
+        const folderContent = await stringifyFolder({ ...root, meta: { ...root.meta, seq: appendSeq } }, { format });
+        safeWriteFileSync(path.join(folderPath, `folder.${format}`), folderContent);
+      } else if (item?.root?.meta?.name) {
         if (item.seq != null) {
           item.root.meta.seq = item.seq;
         }

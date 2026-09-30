@@ -35,6 +35,7 @@ import {
   collectionAddEnvFileEvent as _collectionAddEnvFileEvent,
   collectionUnlinkFileEvent,
   collectionUnlinkDirectoryEvent,
+  collectionIndexNodesResequenced,
   createCollection as _createCollection,
   removeCollection as _removeCollection,
   selectEnvironment as _selectEnvironment,
@@ -949,6 +950,9 @@ export const newFolderByPath = ({ collectionUid, parentPathname, folderName, dir
       pathname: result.pathname,
       name: folderName,
       type: 'folder',
+      // Without it the new row sorted as unnumbered — alphabetically, so near
+      // the top — in the creator's own sidebar until the next re-index.
+      seq: result.seq,
       uid: uuid()
     }));
   } else {
@@ -1505,6 +1509,14 @@ export const pasteItem = (targetCollectionUid, targetItemUid = null) => (dispatc
                 targetPathname: result.pathname,
                 rootName: result.name
               }));
+              // The clone carries the SOURCE's seq; the main process gave the
+              // pasted folder the next one in its new parent (result.seq).
+              if (result.seq) {
+                dispatch(collectionIndexNodesResequenced({
+                  collectionUid: targetCollectionUid,
+                  itemsToResequence: [{ pathname: result.pathname, seq: result.seq }]
+                }));
+              }
             } else {
               await dispatch(refreshCollectionIndex({ collectionUid: targetCollectionUid }));
             }
@@ -1708,6 +1720,17 @@ export const moveCollectionItemByPath = ({
   }
   if (sourceCollectionUid !== targetCollectionUid && shouldRefreshSourceIndex && (!result?.pathname || result?.skipped)) {
     await dispatch(refreshCollectionIndex({ collectionUid: sourceCollectionUid }));
+  }
+
+  // A folder moved into a different parent gets the next seq there, on disk.
+  // The index update above keeps the node's OLD seq, and no watcher event will
+  // correct it (the watcher is paused for the move and resumes without a scan),
+  // so the mover's sidebar kept showing it at its old position — often the top.
+  if (result?.seq && result?.pathname && !result?.skipped && getState().collections.collectionIndexes?.[targetCollectionUid]) {
+    dispatch(collectionIndexNodesResequenced({
+      collectionUid: targetCollectionUid,
+      itemsToResequence: [{ pathname: result.pathname, seq: result.seq }]
+    }));
   }
 
   return result;
