@@ -110,9 +110,13 @@ it('does not bring back a request deleted while its add was being parsed', async
 });
 
 it('does not bring back a request whose FOLDER was deleted while it was being parsed', async () => {
+  // A folder delete releases the watcher (Windows cannot move a watched
+  // folder), so no unlinkDir is reported: the delete handler records the
+  // removal itself. Before it did, the held parse below announced the request
+  // again after the delete.
   const folder = path.dirname(target);
   await deleteByPath(folder, 'folder');
-  expect(await until(() => sent.some(([, type, p]) => type === 'unlinkDir' && p === folder))).toBe(true);
+  expect(fs.existsSync(folder)).toBe(false);
 
   mockHeld.release();
   await sleep(1000);

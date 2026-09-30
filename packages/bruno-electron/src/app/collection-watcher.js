@@ -333,6 +333,7 @@ const BACKGROUND_PARSE_PRIORITY_BOOST = 1e9;
 // add is what the `ignored` callback below warns costs 17-85s behind Windows
 // antivirus on this workspace.
 const REMOVAL_MEMORY_MS = 10 * 60 * 1000;
+const RESUME_READY_CAP_MS = 4000;
 const removedAt = new Map();
 
 const markPathRemoved = (pathname) => {
@@ -1158,6 +1159,7 @@ class CollectionWatcher {
           if (!options.skipInitialLoad) {
             onWatcherSetupComplete(win, watchPath, collectionUid, this);
           }
+          options.onReady?.();
         })
         .on('add', (pathname) => add(win, pathname, collectionUid, watchPath, useWorkerThread, this, initialScanActive ? BACKGROUND_PARSE_PRIORITY_BOOST : 0))
         .on('addDir', (pathname) => addDirectory(win, pathname, collectionUid, watchPath))
@@ -1247,29 +1249,63 @@ class CollectionWatcher {
   }
 
   /**
+   * Stop watching a directory that is about to be removed — a collection folder
+   * being deleted — along with any collection watched inside it. On Windows the
+   * move into the Trash waits on our own handles otherwise (see
+   * moveFolderToAppTrash in ipc/collection.js). Returns the roots released.
+   */
+  releaseDirectory(dirPath, win) {
+    const target = path.resolve(String(dirPath || ''));
+    const released = [];
+    for (const watchPath of Object.keys(this.watchers)) {
+      if (!this.watchers[watchPath]) continue;
+      const root = path.resolve(watchPath);
+      if (root === target || root.startsWith(target + path.sep)) {
+        const collectionUid = this.watcherMeta[watchPath]?.collectionUid;
+        this.removeWatcher(watchPath, win, collectionUid);
+        released.push(watchPath);
+      }
+    }
+    return released;
+  }
+
+  /**
    * Re-attach after a move, with the initial scan skipped: the tree is already
    * loaded and replaying every file would re-parse the whole collection.
    */
+  // Resolves once the new watcher has walked the collection, or after
+  // RESUME_READY_CAP_MS — a huge collection must not hold a rename or delete open.
   resumeAfterMove(suspended) {
     if (!suspended?.watchPath || this.watchers[suspended.watchPath]) {
-      return;
+      return Promise.resolve();
     }
     const { watchPath, collectionUid, win, brunoConfig } = suspended;
     if (win?.isDestroyed?.()) {
-      return;
+      return Promise.resolve();
     }
-    this.addWatcher(win, watchPath, collectionUid, brunoConfig, false, true, { skipInitialLoad: true });
+    return new Promise((resolve) => {
+      const cap = setTimeout(resolve, RESUME_READY_CAP_MS);
+      this.addWatcher(win, watchPath, collectionUid, brunoConfig, false, true, {
+        skipInitialLoad: true,
+        onReady: () => {
+          clearTimeout(cap);
+          resolve();
+        }
+      });
+    });
   }
 
   getWatcherByItemPath(itemPath) {
-    const paths = Object.keys(this.watchers);
-
-    const watcherPath = paths?.find((collectionPath) => {
-      const absCollectionPath = path.resolve(collectionPath);
-      const absItemPath = path.resolve(itemPath);
-
-      return absItemPath.startsWith(absCollectionPath);
-    });
+    const absItemPath = path.resolve(itemPath);
+    // Anchored on the separator, live watchers only, deepest root first: a bare
+    // prefix match paired "X - 1" with a removed "X" (whose entry is null).
+    const watcherPath = Object.keys(this.watchers)
+      .filter((collectionPath) => {
+        if (!this.watchers[collectionPath]) return false;
+        const absCollectionPath = path.resolve(collectionPath);
+        return absItemPath === absCollectionPath || absItemPath.startsWith(absCollectionPath + path.sep);
+      })
+      .sort((a, b) => b.length - a.length)[0];
 
     return watcherPath ? this.watchers[watcherPath] : null;
   }
@@ -1417,6 +1453,9 @@ module.exports = collectionWatcher;
 // item the way this scan (and the indexer) names it, or it repaints the row with
 // the filename.
 module.exports.buildUnparseableRequestData = buildUnparseableRequestData;
+// Deletes release the watcher (Windows cannot move a watched folder), so no
+// unlink event records the removal; the delete handlers record it themselves.
+module.exports.markPathRemoved = markPathRemoved;
 // The load-request handlers await the same worker for the same files, so they share
 // this module's ordering stamp, its transient-failure rule and its bounded meta
 // fallback. Two registries would let a sidebar click and a watcher change() each

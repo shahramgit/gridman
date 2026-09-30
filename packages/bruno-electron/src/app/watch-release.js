@@ -25,9 +25,13 @@ const path = require('path');
  */
 const withWatchReleased = async (watcher, { sourcePathname, targetPathname }, run) => {
   // Only a directory move needs this, and only the collection that contains it.
-  const watchPath = watcher?.getWatcherByItemPath?.(sourcePathname)
-    ? findWatchPath(watcher, sourcePathname)
-    : null;
+  // findWatchPath alone: it anchors on the separator, skips removed (null)
+  // entries and picks the deepest root. The getWatcherByItemPath gate it used to
+  // sit behind matched an unanchored prefix and returned the FIRST key — so once
+  // collection "X" had been removed (key kept, value null), a folder delete in
+  // "X - 1" found that null entry and skipped the release, and the Windows hang
+  // came back.
+  const watchPath = findWatchPath(watcher, sourcePathname);
 
   if (!watchPath || !watcher?.suspendForMove) {
     return run();
@@ -45,13 +49,21 @@ const withWatchReleased = async (watcher, { sourcePathname, targetPathname }, ru
     // succeeded, failed, or threw something unexpected. Without this a failed
     // rename would silently stop the sidebar updating for the rest of the
     // session — worse than the bug being fixed.
-    watcher.resumeAfterMove(suspended);
+    //
+    // And wait for the new watcher to finish its walk (bounded): it starts with
+    // the initial scan skipped, so anything created before the walk reaches it
+    // counts as "already there" and is never announced — a request created
+    // right after the move would never appear or open its tab.
+    await watcher.resumeAfterMove(suspended);
   }
 };
 
 // The watched root that contains this path — the collection directory, not the
 // item. `getWatcherByItemPath` finds the instance; this finds its key.
 const findWatchPath = (watcher, itemPath) => {
+  if (!watcher?.watchers) {
+    return null;
+  }
   const normalized = path.resolve(String(itemPath || ''));
   const candidates = Object.keys(watcher.watchers || {}).filter((watchPath) => {
     if (!watcher.watchers[watchPath]) return false;

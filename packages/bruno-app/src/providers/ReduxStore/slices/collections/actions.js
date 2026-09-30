@@ -33,6 +33,8 @@ import brunoClipboard from 'utils/bruno-clipboard';
 
 import {
   collectionAddEnvFileEvent as _collectionAddEnvFileEvent,
+  collectionUnlinkFileEvent,
+  collectionUnlinkDirectoryEvent,
   createCollection as _createCollection,
   removeCollection as _removeCollection,
   selectEnvironment as _selectEnvironment,
@@ -1350,6 +1352,17 @@ export const deleteCollectionItemByPath = ({ collectionUid, sourcePathname, type
     collectionPathname: collection.pathname,
     type
   });
+  // A folder delete runs with the collection's watcher released (Windows cannot
+  // move a watched folder), so no unlink event follows it. Remove the item from
+  // the loaded tree ourselves, as the watcher would have — the index removal
+  // below does not touch collection.items, and the runner and tab lookups read
+  // that tree. Same actions the watcher dispatches, so a late event is a no-op.
+  const meta = { collectionUid, pathname: sourcePathname, name: path.basename(sourcePathname) };
+  if (type === 'folder') {
+    dispatch(collectionUnlinkDirectoryEvent({ directory: { meta } }));
+  } else {
+    dispatch(collectionUnlinkFileEvent({ file: { meta } }));
+  }
   if (state.collections.collectionIndexes?.[collectionUid]) {
     dispatch(collectionIndexNodeRemoved({
       collectionUid,

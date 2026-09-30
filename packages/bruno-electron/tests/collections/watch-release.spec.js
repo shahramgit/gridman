@@ -103,3 +103,65 @@ describe('moving a directory inside a watched collection', () => {
     expect(ran).toBe(true);
   });
 });
+
+describe('the watcher lookup the release depends on (real CollectionWatcher)', () => {
+  // A removed collection keeps its key with a null value. The release used to
+  // sit behind getWatcherByItemPath, an unanchored prefix match that returned
+  // the FIRST key — so after removing collection "X", a folder delete in "X - 1"
+  // found X's null entry, skipped the release, and the Windows hang was back.
+  const CollectionWatcher = require('../../src/app/collection-watcher');
+  const make = () => {
+    const w = Object.create(Object.getPrototypeOf(CollectionWatcher));
+    w.watchers = {};
+    w.watcherMeta = {};
+    return w;
+  };
+  const X = path.resolve('/w/collections/سامانه');
+  const X1 = path.resolve('/w/collections/سامانه - 1');
+
+  it('does not pair "X - 1" with a removed "X"', () => {
+    const w = make();
+    w.watchers[X] = null; // removed earlier in the session
+    w.watchers[X1] = { close: () => {} };
+    expect(w.getWatcherByItemPath(path.join(X1, 'Api'))).toBe(w.watchers[X1]);
+  });
+
+  it('does not match a sibling that merely shares a prefix', () => {
+    const w = make();
+    w.watchers[X] = { close: () => {} };
+    expect(w.getWatcherByItemPath(path.join(X1, 'Api'))).toBeNull();
+  });
+
+  it('still suspends "X - 1" for a folder move after "X" was removed', async () => {
+    const calls = [];
+    const w = make();
+    w.watchers[X] = null;
+    w.watchers[X1] = { close: () => calls.push('close') };
+    w.watcherMeta[X1] = { collectionUid: 'c', win: {}, brunoConfig: {} };
+    w.addWatcher = (win, watchPath, uid, cfg, poll, worker, options) => {
+      calls.push('resume ' + path.basename(watchPath));
+      w.watchers[watchPath] = { close: () => {} };
+      options.onReady();
+    };
+    await withWatchReleased(w, { sourcePathname: path.join(X1, 'Api'), targetPathname: path.join(X1, 'Api') }, async () => calls.push('move'));
+    expect(calls).toEqual(['close', 'move', 'resume سامانه - 1']);
+  });
+
+  it('waits for the re-attached watcher to be ready before returning', async () => {
+    const w = make();
+    w.watchers[X1] = { close: () => {} };
+    w.watcherMeta[X1] = { collectionUid: 'c', win: {}, brunoConfig: {} };
+    let fireReady;
+    w.addWatcher = (win, watchPath, uid, cfg, poll, worker, options) => {
+      w.watchers[watchPath] = { close: () => {} };
+      fireReady = options.onReady;
+    };
+    let returned = false;
+    const op = withWatchReleased(w, { sourcePathname: path.join(X1, 'Api') }, async () => {}).then(() => { returned = true; });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(returned).toBe(false); // a request created now would be missed by a walk still in progress
+    fireReady();
+    await op;
+    expect(returned).toBe(true);
+  });
+});

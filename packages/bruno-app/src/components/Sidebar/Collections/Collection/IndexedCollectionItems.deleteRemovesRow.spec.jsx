@@ -154,3 +154,25 @@ it('a request deleted inside a folder leaves the sidebar without a restart', asy
   await waitFor(() => expect(screen.queryByText('serviceID-matching')).not.toBeInTheDocument());
   expect(screen.getByText('sibling')).toBeInTheDocument();
 });
+
+// What users do: open the request, look at it, delete it. Its tab is keyed
+// `indexed-request:<collection>:<path>`, not by the item's uid, so it stayed
+// open — still showing the deleted request, which reads as "delete did
+// nothing". And the loaded tree kept the item (only the index node went).
+it('closes the deleted request\'s tab and drops it from the loaded tree', async () => {
+  const store = renderWithRealStore();
+
+  fireEvent.click(screen.getByText('Api'), { detail: 1 });
+  fireEvent.click(await screen.findByText('serviceID-matching'), { detail: 1 });
+  await waitFor(() => expect(store.getState().tabs.tabs.some((t) => t.itemPathname === REQUEST_PATH)).toBe(true));
+
+  fireEvent.contextMenu(screen.getByText('serviceID-matching'));
+  fireEvent.click(screen.getAllByText('Delete').pop());
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole('button', { name: /^delete$/i }).pop());
+  });
+
+  await waitFor(() => expect(store.getState().tabs.tabs.some((t) => t.itemPathname === REQUEST_PATH)).toBe(false));
+  const flat = JSON.stringify(store.getState().collections.collections[0].items || []);
+  expect(flat).not.toContain('serviceID-matching.bru');
+});

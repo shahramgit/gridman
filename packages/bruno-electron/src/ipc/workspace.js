@@ -738,6 +738,11 @@ const registerWorkspaceIpc = (mainWindow, workspaceWatcher) => {
       const result = await removeCollectionFromWorkspace(workspacePath, collectionPath);
 
       if (fs.existsSync(absoluteCollectionPath)) {
+        // The collection is still watched here — the renderer only drops it from
+        // its store afterwards — and on Windows a watched folder cannot be moved
+        // into the Trash: the move just waits until the app exits. Release it
+        // first. Same cause as deleting a folder (moveFolderToAppTrash).
+        require('../app/collection-watcher').releaseDirectory(absoluteCollectionPath, mainWindow);
         await moveToAppTrash(absoluteCollectionPath, { type: 'collection' });
       }
 

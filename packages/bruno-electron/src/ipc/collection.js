@@ -85,6 +85,8 @@ const { cancelOAuth2AuthorizationRequest, isOauth2AuthorizationRequestInProgress
 const { findUniqueFolderName } = require('../utils/collection-import');
 const { migrateCollectionToYml } = require('../utils/collection-migration');
 const { withWatchReleased } = require('../app/watch-release');
+const { markPathRemoved } = require('../app/collection-watcher');
+const { invalidateSearchForPath } = require('../app/search-invalidation');
 const { readCollectionItemsFromDisk, readFolderForExport, writeItemsIntoFolder } = require('./collection-export-import');
 const { saveSpecAndUpdateMetadata, cleanupSpecFilesForCollection } = require('./openapi-sync');
 const {
@@ -398,6 +400,41 @@ const moveItemByPath = async ({ sourcePathname, targetPathname, sourceCollection
   });
 
   return targetPathname;
+};
+
+// Deleting a folder moves it into the app Trash, and on Windows that is a
+// directory rename the collection watcher blocks. It does not fail: graceful-fs
+// silently retries a blocked rename for up to 60s, movePathWithRetry makes six
+// attempts, and the whole time the IPC call just sits there. Reported against
+// 4.1.0-vasl.6 as "deleting a service does nothing, and after restarting the
+// app it is gone" — reproduced on the installed build: the delete handler never
+// returned, and the folder vanished the moment the app closed its watcher on
+// exit. Measured with the shipped code: moving a folder takes 4ms with no
+// watcher, is still pending after 15s under the watcher, and takes 2ms once the
+// watcher is closed. Renames and moves already release it (watch-release.js);
+// deletes now do the same.
+//
+// With the watcher released no unlinkDir is reported, so the removal is recorded
+// here: a request inside the folder that was read before the delete and is
+// still being parsed must not be announced afterwards (collection-watcher.js,
+// sendAddUnlessRemoved).
+const moveFolderToAppTrash = async (watcher, folderPath, meta) => {
+  const result = await withWatchReleased(watcher, { sourcePathname: folderPath, targetPathname: folderPath }, () =>
+    moveToAppTrash(folderPath, meta)
+  );
+  markPathRemoved(folderPath);
+  // The watcher's unlink used to invalidate the workspace search index; with it
+  // released, deleted requests stayed in search results until the next rebuild.
+  invalidateSearchForPath(folderPath);
+  return result;
+};
+
+// A request file: the watcher still reports its unlink, but on Windows chokidar
+// holds unlinks back ~100ms; record it at once so a late add cannot slip in.
+const moveRequestToAppTrash = async (requestPath, meta) => {
+  const result = await moveToAppTrash(requestPath, meta);
+  markPathRemoved(requestPath);
+  return result;
 };
 
 const addIndexedCollectionWatcherAfterIdle = (watcher, mainWindow, collectionPath, collectionUid, brunoConfig, useWorkerThread) => {
@@ -1841,7 +1878,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
           deleteRequestUid(requestFile);
         }
 
-        await moveToAppTrash(pathname, { type: 'folder', collectionPathname });
+        await moveFolderToAppTrash(watcher, pathname, { type: 'folder', collectionPathname });
       } else if (['http-request', 'graphql-request', 'grpc-request', 'ws-request'].includes(type)) {
         if (!fs.existsSync(pathname)) {
           return Promise.reject(new Error('The file does not exist'));
@@ -1849,7 +1886,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
 
         deleteRequestUid(pathname);
 
-        await moveToAppTrash(pathname, { type: 'request', collectionPathname });
+        await moveRequestToAppTrash(pathname, { type: 'request', collectionPathname });
       } else {
         return Promise.reject();
       }
@@ -2464,7 +2501,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         // fails (Windows lock) must leave the item exactly as it was, still
         // addressable by its uid.
         const requestFilesAtSource = await searchForRequestFiles(sourcePath, collectionPathname);
-        await moveToAppTrash(sourcePath, { type: 'folder', collectionPathname });
+        await moveFolderToAppTrash(watcher, sourcePath, { type: 'folder', collectionPathname });
         requestFilesAtSource.forEach((requestFile) => deleteRequestUid(requestFile));
         return {
           pathname: sourcePath,
@@ -2476,7 +2513,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         throw new Error('The file does not exist');
       }
       const requestType = getRequestTypeFromPath(sourcePath, collectionPathname);
-      await moveToAppTrash(sourcePath, { type: 'request', collectionPathname });
+      await moveRequestToAppTrash(sourcePath, { type: 'request', collectionPathname });
       deleteRequestUid(sourcePath);
       return {
         pathname: sourcePath,
