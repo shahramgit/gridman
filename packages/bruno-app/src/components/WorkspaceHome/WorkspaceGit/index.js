@@ -286,11 +286,25 @@ const WorkspaceGit = ({ workspace }) => {
   const gitRootPath = gitData?.gitRootPath;
   const currentBranch = gitData?.currentBranch || gitData?.currentGitBranch || gitData?.status?.current || '';
   const trackingBranch = gitData?.trackingBranch || gitData?.status?.tracking || '';
-  const hasUpstream = Boolean(gitData?.hasUpstream || trackingBranch);
+  // A deleted upstream keeps its tracking name, so the name alone must not count
+  // as "published" — that kept offering Push, which is refused for it.
+  const hasUpstream = !gitData?.currentUpstreamDeleted && Boolean(gitData?.hasUpstream || trackingBranch);
   const remote = gitData?.remotes?.find((item) => item.name === DEFAULT_REMOTE)?.name || gitData?.remotes?.[0]?.name || DEFAULT_REMOTE;
   const remoteUrl = gitData?.remotes?.find((item) => item.name === remote)?.refs?.fetch || '';
   const remoteDefaultBranch = gitData?.remoteDefaultBranch || gitData?.defaultGitBranch || 'main';
-  const localBranches = gitData?.localBranches || gitData?.branches || [];
+  // A local copy of a branch the server deleted is hidden once every commit on
+  // it is on the server too (so nothing can look lost), unless it is checked
+  // out. One that still holds unpushed work stays, labelled — users saw every
+  // dated branch they had ever checked out listed forever (reported against
+  // 4.1.0-vasl.5 and 4.1.0-vasl.6). The data comes from getLocalBranchDetails.
+  const localBranchDetails = gitData?.localBranchDetails || [];
+  const hiddenDeletedBranches = new Set(localBranchDetails
+    .filter((detail) => detail.deletedOnServer && detail.unpushedCount === 0 && !detail.isCurrent)
+    .map((detail) => detail.name));
+  const deletedOnServerBranches = new Set(localBranchDetails.filter((detail) => detail.deletedOnServer).map((detail) => detail.name));
+  const localBranches = (gitData?.localBranches || gitData?.branches || []).filter((branch) => !hiddenDeletedBranches.has(branch));
+  const branchLabel = (branch) => (deletedOnServerBranches.has(branch) ? `${branch} (deleted on server)` : branch);
+  const currentUpstreamDeleted = Boolean(gitData?.currentUpstreamDeleted);
   const remoteBranches = gitData?.remoteBranches || [];
   const changedFiles = gitData?.changedFiles || {};
   const staged = changedFiles.staged || [];
@@ -448,7 +462,9 @@ const WorkspaceGit = ({ workspace }) => {
       return {
         type: 'publish-branch',
         title: 'Publish this branch',
-        description: 'This branch has not been connected to the remote yet.',
+        description: gitData?.currentUpstreamDeleted
+          ? 'This branch was deleted on the server. Publish it to create it there again, or switch to another branch.'
+          : 'This branch has not been connected to the remote yet.',
         primaryLabel: 'Publish branch',
         needsCommitMessage: false
       };
@@ -491,7 +507,7 @@ const WorkspaceGit = ({ workspace }) => {
       primaryLabel: 'Refresh status',
       needsCommitMessage: false
     };
-  }, [ahead, behind, gitData?.isGitRepository, hasCommits, hasConflicts, hasLocalChanges, hasUpstream, remoteHasBranches, remoteUrl]);
+  }, [ahead, behind, gitData?.isGitRepository, gitData?.currentUpstreamDeleted, hasCommits, hasConflicts, hasLocalChanges, hasUpstream, remoteHasBranches, remoteUrl]);
 
   const refresh = useCallback(async ({ fetchRemote = false, silent = false } = {}) => {
     if (!workspace?.pathname) return;
@@ -1647,7 +1663,7 @@ const WorkspaceGit = ({ workspace }) => {
             <div className="assistant-facts">
               <span>{currentBranch || 'unknown branch'}</span>
               <span>{remoteUrl ? 'remote connected' : 'no remote'}</span>
-              <span>{hasUpstream ? `tracks ${trackingBranch}` : 'not published'}</span>
+              <span>{currentUpstreamDeleted ? `${trackingBranch} was deleted on the server` : (hasUpstream ? `tracks ${trackingBranch}` : 'not published')}</span>
               <span>{hasLocalChanges ? `${tooManyFiles ? totalChangedFiles : fileCount} changed files` : 'no local changes'}</span>
             </div>
             {(hasLocalChanges || tooManyFiles) && (
@@ -1700,12 +1716,12 @@ const WorkspaceGit = ({ workspace }) => {
                   onChange={(event) => handleRepositoryBranchChange(event.target.value)}
                 >
                   {currentBranch && !localBranches.includes(currentBranch) && (
-                    <option value={currentBranch}>{currentBranch}</option>
+                    <option value={currentBranch}>{branchLabel(currentBranch)}</option>
                   )}
                   {localBranches.length > 0 && (
                     <optgroup label="Local branches">
                       {localBranches.map((branch) => (
-                        <option key={branch} value={branch}>{branch}</option>
+                        <option key={branch} value={branch}>{branchLabel(branch)}</option>
                       ))}
                     </optgroup>
                   )}
@@ -1722,7 +1738,7 @@ const WorkspaceGit = ({ workspace }) => {
                 </select>
               </span>
               <span className="meta-label">Upstream</span>
-              <span>{hasUpstream ? `${currentBranch} -> ${trackingBranch}` : `${currentBranch || 'branch'} (not published)`}</span>
+              <span>{currentUpstreamDeleted ? `${currentBranch} -> ${trackingBranch} (deleted on server; publish to re-create it)` : (hasUpstream ? `${currentBranch} -> ${trackingBranch}` : `${currentBranch || 'branch'} (not published)`)}</span>
               <span className="meta-label">Default</span>
               <span>{remoteDefaultBranch || 'main'}</span>
               <span className="meta-label">Remote</span>
@@ -1902,7 +1918,7 @@ const WorkspaceGit = ({ workspace }) => {
                       disabled={operation === 'Checkout branch'}
                     >
                       {localBranches.map((branch) => (
-                        <option key={branch} value={branch}>{branch}</option>
+                        <option key={branch} value={branch}>{branchLabel(branch)}</option>
                       ))}
                     </select>
                     <Button size="sm" color="light" icon={<IconRefresh size={14} />} loading={operation === 'Fetch'} onClick={() => runGitOperation('Fetch', 'renderer:fetch-workspace-git')}>
@@ -1978,7 +1994,7 @@ const WorkspaceGit = ({ workspace }) => {
                         {localBranches
                           .filter((branch) => branch !== currentBranch)
                           .map((branch) => (
-                            <option key={branch} value={branch}>{branch}</option>
+                            <option key={branch} value={branch}>{branchLabel(branch)}</option>
                           ))}
                       </select>
                       <Button

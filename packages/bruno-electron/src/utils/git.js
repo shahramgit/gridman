@@ -994,7 +994,9 @@ const normalizeWorkspaceGitInput = (input) => {
     collectionPaths: input?.collectionPaths || [],
     preferCollectionParent: Boolean(input?.preferCollectionParent),
     fetchRemote: Boolean(input?.fetchRemote),
-    remote: input?.remote || 'origin'
+    remote: input?.remote || 'origin',
+    // The title bar polls every 30s and never shows the branch pickers.
+    includeBranchDetails: input?.includeBranchDetails !== false
   };
 };
 
@@ -1900,9 +1902,29 @@ const canPush = async (gitRootPath) => {
   return true;
 };
 
+const PUSH_PRECHECK_TIMEOUT_MS = 15000;
+
 const pushGitChanges = async (win, { gitRootPath, processUid, remote = 'origin', remoteBranch }) => {
   const git = getSimpleGitInstanceForPath(gitRootPath);
   const trackingTarget = await getTrackingTarget({ gitRootPath, remote, remoteBranch });
+
+  // Pushing to the upstream of a branch the team deleted on the server
+  // re-creates it there, silently, and it reappears in everyone's list. Only
+  // when the server definitely answered without it; Publish (which passes an
+  // explicit remoteBranch) stays the deliberate way to bring a branch back.
+  if (!remoteBranch && trackingTarget.trackingBranch) {
+    // Bounded: a stalled network must not hold the push. No answer, no guard.
+    const live = await Promise.race([
+      fetchRemoteBranchNamesStatus({ gitRootPath, remote: trackingTarget.remote }),
+      new Promise((resolve) => setTimeout(() => resolve({ ok: false, names: [] }), PUSH_PRECHECK_TIMEOUT_MS))
+    ]);
+    if (live.ok && !live.names.includes(trackingTarget.branch)) {
+      throw new Error(
+        `${trackingTarget.currentBranch} was deleted on the server, so pushing would create it again. `
+        + 'Switch to another branch, or use Publish branch if you do want it back.'
+      );
+    }
+  }
 
   // Check if the local branch exists before pushing
   const branchSummary = await new Promise((resolve, reject) => {
@@ -2732,7 +2754,7 @@ const getRepositoryStateForClient = (repoState = {}) => ({
 });
 
 const getWorkspaceGitData = async (input) => {
-  const { workspacePath, collectionPaths, preferCollectionParent, fetchRemote, remote } = normalizeWorkspaceGitInput(input);
+  const { workspacePath, collectionPaths, preferCollectionParent, fetchRemote, remote, includeBranchDetails } = normalizeWorkspaceGitInput(input);
   const gitTargetPath = getWorkspaceGitTargetPath({ workspacePath, collectionPaths, preferCollectionParent });
   const gitRootPath = getWorkspaceGitRootPath(gitTargetPath);
   if (!gitRootPath) {
@@ -2757,7 +2779,7 @@ const getWorkspaceGitData = async (input) => {
   // hasCommits is handed to getRepositoryState rather than resolved twice.
   const hasCommitsPromise = hasGitCommits(gitRootPath);
 
-  const [status, remotesForClient, branchMetadata, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits, auth, remoteBranchNamesFromRemote, changedFiles, repoState] = await Promise.all([
+  const [status, remotesForClient, branchMetadata, currentGitBranch, defaultGitBranch, aheadBehind, hasCommits, auth, liveRemoteBranches, changedFiles, repoState] = await Promise.all([
     getGitStatus(gitRootPath),
     Promise.resolve(remotes),
     getGitBranchMetadata({ gitRootPath, remote: remoteToFetch || remote }).catch(() => ({
@@ -2776,12 +2798,36 @@ const getWorkspaceGitData = async (input) => {
     getAheadBehindCount(gitRootPath).catch(() => ({ ahead: 0, behind: 0, aheadCommits: [], behindCommits: [] })),
     hasCommitsPromise,
     getGitAuthDiagnostics({ gitRootPath, remote: remoteToFetch || remote }).catch(() => null),
-    fetchRemoteBranchNamesFromRemote({ gitRootPath, remote: remoteToFetch || remote }).catch(() => []),
+    fetchRemoteBranchNamesStatus({ gitRootPath, remote: remoteToFetch || remote }).catch(() => ({ ok: false, names: [] })),
     getChangedFilesInCollectionGit(gitRootPath, gitRootPath),
     getRepositoryState(gitRootPath, { hasHead: hasCommitsPromise })
   ]);
 
   const mergeInProgress = repoState.merging;
+  const remoteBranchNamesFromRemote = liveRemoteBranches.names;
+  const listedRemote = remoteToFetch || remote;
+  const localBranchDetails = includeBranchDetails
+    ? await getLocalBranchDetails({ gitRootPath, remote: listedRemote, live: liveRemoteBranches }).catch(() => [])
+    : [];
+  const currentDetails = localBranchDetails.find((row) => row.isCurrent);
+  const liveNamesForUpstream = new Set(liveRemoteBranches.names);
+  // The checked-out branch's upstream was deleted on the server. git keeps the
+  // tracking config, so it still LOOKS published: Push would silently re-create
+  // the branch (now refused in pushGitChanges) and Publish was never offered, so
+  // unpushed work on it had no way out. Treat it as unpublished: the panel and
+  // title bar then offer Publish, the deliberate way to bring it back.
+  const currentUpstreamDeleted = Boolean(branchMetadata.trackingBranch) && (
+    Boolean(currentDetails?.deletedOnServer)
+    || (liveRemoteBranches.ok && branchMetadata.upstreamRemote === listedRemote
+      && Boolean(branchMetadata.upstreamBranch) && !liveNamesForUpstream.has(branchMetadata.upstreamBranch))
+  );
+  // Remote-tracking refs are only pruned by a fetch; the server's live list is
+  // fresh on every poll, so the Remote group stops listing deleted branches
+  // without the user having to press Refresh first.
+  const liveNames = new Set(liveRemoteBranches.names);
+  const remoteBranchesForClient = liveRemoteBranches.ok
+    ? (branchMetadata.remoteBranches || []).filter((name) => liveNames.has(name))
+    : branchMetadata.remoteBranches;
 
   return {
     isGitRepository: true,
@@ -2792,14 +2838,17 @@ const getWorkspaceGitData = async (input) => {
     remotes: getRemotesForClient(remotesForClient),
     branches: branchMetadata.localBranches,
     localBranches: branchMetadata.localBranches,
-    remoteBranches: branchMetadata.remoteBranches,
+    localBranchDetails,
+    remoteBranches: remoteBranchesForClient,
+    remoteBranchNamesOk: liveRemoteBranches.ok,
+    currentUpstreamDeleted,
     currentGitBranch: branchMetadata.currentBranch || currentGitBranch || defaultGitBranch || branchMetadata.remoteDefaultBranch || 'main',
     currentBranch: branchMetadata.currentBranch || currentGitBranch || defaultGitBranch || branchMetadata.remoteDefaultBranch || 'main',
     defaultGitBranch: branchMetadata.remoteDefaultBranch || defaultGitBranch || 'main',
     remoteDefaultBranch: branchMetadata.remoteDefaultBranch || defaultGitBranch || 'main',
     trackingBranch: branchMetadata.trackingBranch,
-    hasUpstream: branchMetadata.hasUpstream,
-    canPublishCurrentBranch: branchMetadata.canPublishCurrentBranch,
+    hasUpstream: branchMetadata.hasUpstream && !currentUpstreamDeleted,
+    canPublishCurrentBranch: branchMetadata.canPublishCurrentBranch || currentUpstreamDeleted,
     upstreamRemote: branchMetadata.upstreamRemote,
     upstreamBranch: branchMetadata.upstreamBranch,
     hasCommits,
@@ -2981,26 +3030,104 @@ const fetchRemoteBranches = ({ gitRootPath, remote }) => {
   });
 };
 
-const fetchRemoteBranchNamesFromRemote = async ({ gitRootPath, remote }) => {
+// The server's live branch list, with whether the server actually answered: a
+// network failure must never read as "the server has no branches" — that would
+// mark every local branch as deleted on the server.
+const fetchRemoteBranchNamesStatus = async ({ gitRootPath, remote }) => {
   if (!gitRootPath || !remote) {
-    return [];
+    return { ok: false, names: [] };
   }
 
   const git = getSimpleGitInstanceForPath(gitRootPath);
   try {
     const result = await git.raw(['ls-remote', '--heads', remote]);
-    return result
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const match = line.match(/refs\/heads\/(.+)$/);
-        return match?.[1] || '';
-      })
-      .filter(Boolean);
+    const heads = new Map();
+    for (const line of result.split('\n')) {
+      const match = line.trim().match(/^([0-9a-f]{7,64})\s+refs\/heads\/(.+)$/);
+      if (match) heads.set(match[2], match[1]);
+    }
+    return { ok: true, names: [...heads.keys()], heads };
   } catch (_) {
-    return [];
+    return { ok: false, names: [] };
   }
+};
+
+const fetchRemoteBranchNamesFromRemote = async ({ gitRootPath, remote }) => {
+  return (await fetchRemoteBranchNamesStatus({ gitRootPath, remote })).names;
+};
+
+// Local branches, and which of them the server has deleted.
+//
+// A pruning fetch only removes remote-tracking refs; the LOCAL branches users
+// created by checking out a team's dated branches (develop(1405-06-29), ...)
+// stay forever, and the Branch picker kept listing every one ever checked out
+// (reported against 4.1.0-vasl.5 and again against 4.1.0-vasl.6). A branch is
+// "deleted on the server" when git itself says its upstream is gone (after a
+// prune), or when the server's live list — which every panel poll already
+// fetches — no longer has it.
+//
+// It may be HIDDEN only when every commit on it is on a branch the server still
+// has, so nothing can look lost. "On the server" is proven only by a local
+// remote-tracking ref whose commit is exactly the one the server reports right
+// now: a stale ref (the server force-pushed or reset that branch since our last
+// fetch) may hold commits the server no longer has, and must not count.
+// unpushedCount is 0 when proven, null when it cannot be proven (never hidden).
+//
+// One git call for the proof, not one per branch — this runs on every panel
+// poll, and a team that cuts a branch a day accumulates dozens.
+const getLocalBranchDetails = async ({ gitRootPath, remote = 'origin', live = { ok: false, names: [] } }) => {
+  const git = getSimpleGitInstanceForPath(gitRootPath);
+  // lstrip=2, not :short — :short turns a branch into 'heads/<name>' whenever a
+  // tag has the same name.
+  const output = await git.raw([
+    'for-each-ref',
+    '--format=%(refname:lstrip=2)%00%(HEAD)%00%(upstream:lstrip=2)%00%(upstream:track,nobracket)',
+    'refs/heads'
+  ]);
+  const liveNames = new Set(live.ok ? live.names : []);
+  const rows = output.split('\n').filter(Boolean).map((line) => {
+    const [name, head, upstream = '', track = ''] = line.split('\0');
+    const slash = upstream.indexOf('/');
+    const upstreamRemote = slash > 0 ? upstream.slice(0, slash) : '';
+    const upstreamBranch = slash > 0 ? upstream.slice(slash + 1) : '';
+    const gone = track.trim() === 'gone';
+    const missingOnServer = live.ok && upstreamRemote === remote && Boolean(upstreamBranch) && !liveNames.has(upstreamBranch);
+    return { name, isCurrent: head === '*', upstream, deletedOnServer: Boolean(upstream) && (gone || missingOnServer), unpushedCount: null };
+  });
+
+  const deleted = rows.filter((row) => row.deletedOnServer);
+  if (!deleted.length || !live.ok || !live.heads) {
+    return rows;
+  }
+
+  const prefix = `refs/remotes/${remote}/`;
+  const tracked = await git.raw(['for-each-ref', '--format=%(objectname)%00%(refname)', `refs/remotes/${remote}`]).catch(() => '');
+  const verifiedLiveRefs = tracked.split('\n').filter(Boolean).map((line) => line.split('\0')).filter(([sha, ref]) => {
+    if (!ref || !ref.startsWith(prefix)) return false;
+    const serverSha = live.heads.get(ref.slice(prefix.length));
+    return Boolean(serverSha) && sha === serverSha;
+  }).map(([, ref]) => ref);
+
+  if (!verifiedLiveRefs.length) {
+    return rows;
+  }
+
+  // Several --merged options are a union (git 2.29+): a branch listed here has
+  // its tip — and so every commit — on at least one live server branch. An
+  // older git or any failure proves nothing, and nothing is hidden.
+  const mergedOutput = await git.raw([
+    'for-each-ref',
+    '--format=%(refname:lstrip=2)',
+    ...verifiedLiveRefs.map((ref) => `--merged=${ref}`),
+    'refs/heads'
+  ]).catch(() => '');
+  const onServer = new Set(mergedOutput.split('\n').filter(Boolean));
+  for (const row of deleted) {
+    if (onServer.has(row.name)) {
+      row.unpushedCount = 0;
+    }
+  }
+  return rows;
 };
 
 const remoteBranchExists = async ({ gitRootPath, remote, branch }) => {

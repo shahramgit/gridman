@@ -342,7 +342,9 @@ const AppTitleBar = () => {
     try {
       const result = await window.ipcRenderer.invoke('renderer:get-workspace-git-data', {
         ...getWorkspaceGitPayload(activeWorkspace),
-        fetchRemote
+        fetchRemote,
+        // this 30s poll never shows the branch pickers
+        includeBranchDetails: false
       });
       setWorkspaceGitData(result);
       if (fetchRemote && !silent && result?.isGitRepository && result?.remotes?.length) {
@@ -606,7 +608,9 @@ const AppTitleBar = () => {
     const hasRemote = Boolean(workspaceGitData?.remotes?.length);
     const hasConflicts = Boolean(workspaceGitData?.mergeInProgress || conflictedCount);
     const hasCommits = Boolean(workspaceGitData?.hasCommits);
-    const hasUpstream = Boolean(workspaceGitData?.hasUpstream || workspaceGitData?.trackingBranch || workspaceGitData?.status?.tracking);
+    // A deleted upstream keeps its tracking name; offer Publish, not a refused Push.
+    const hasUpstream = !workspaceGitData?.currentUpstreamDeleted
+      && Boolean(workspaceGitData?.hasUpstream || workspaceGitData?.trackingBranch || workspaceGitData?.status?.tracking);
     const remoteHasBranches = Boolean(workspaceGitData?.remoteHasBranches || workspaceGitData?.remoteBranchNames?.length || workspaceGitData?.remoteBranches?.length);
     const currentBranch = workspaceGitData?.currentBranch || workspaceGitData?.currentGitBranch || workspaceGitData?.status?.current || '';
     const remoteUrl = workspaceGitData?.remotes?.find((item) => item.name === 'origin')?.refs?.fetch || workspaceGitData?.remotes?.[0]?.refs?.fetch || '';
