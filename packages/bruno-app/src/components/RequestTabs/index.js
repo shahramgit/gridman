@@ -19,6 +19,7 @@ import ActionIcon from 'ui/ActionIcon/index';
 // back through every tab to get to them (reported against 4.1.0-vasl.5). They
 // now stay put at the start of the strip.
 const PINNED_WORKSPACE_TAB_TYPES = new Set(['workspaceOverview', 'workspaceEnvironments', 'workspaceGit']);
+const PINNED_TAB_TITLES = { workspaceOverview: 'Overview', workspaceEnvironments: 'Environments', workspaceGit: 'Git' };
 
 const RequestTabs = () => {
   const dispatch = useDispatch();
@@ -137,7 +138,10 @@ const RequestTabs = () => {
   }
 
   const effectiveSidebarWidth = sidebarCollapsed ? 0 : leftSidebarWidth;
-  const maxTablistWidth = screenWidth - effectiveSidebarWidth - 150 - pinnedTabsWidth;
+  // In a narrow window the pinned group (about 310px) would squeeze the request
+  // strip down to nothing; there it drops to icons, and the strip keeps a floor.
+  const compactPinnedTabs = screenWidth - effectiveSidebarWidth < 900;
+  const maxTablistWidth = Math.max(160, screenWidth - effectiveSidebarWidth - 150 - pinnedTabsWidth);
 
   // Each tab renders against ITS collection — the strip holds tabs from
   // several collections at once.
@@ -175,12 +179,13 @@ const RequestTabs = () => {
           )}
           <div className="flex items-center gap-2 pl-2" ref={collectionTabsRef}>
             {pinnedTabs.length > 0 && (
-              <ul role="tablist" aria-label="Workspace" className="pinned-tabs" ref={pinnedTabsRef} data-testid="pinned-workspace-tabs">
+              <ul role="tablist" aria-label="Workspace" className={classnames('pinned-tabs', { compact: compactPinnedTabs })} ref={pinnedTabsRef} data-testid="pinned-workspace-tabs">
                 {pinnedTabs.map((tab, index) => (
                   <li
                     key={tab.uid}
                     role="tab"
                     className={getTabClassname(tab, index)}
+                    title={compactPinnedTabs ? PINNED_TAB_TITLES[tab.type] : undefined}
                     onClick={() => handleClick(tab)}
                   >
                     {/* Their own list: close-others/left/right on a pinned tab

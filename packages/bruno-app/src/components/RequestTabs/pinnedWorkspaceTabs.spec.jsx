@@ -31,12 +31,12 @@ const WORKSPACE_TABS = [
 ];
 const REQUEST_TABS = Array.from({ length: 12 }, (_, i) => ({ uid: `req-${i}`, collectionUid: 'c1', type: 'request' }));
 
-const renderStrip = (tabs) => {
+const renderStrip = (tabs, { screenWidth = 1400 } = {}) => {
   const store = configureStore({
     reducer: (state = {
       tabs: { tabs, activeTabUid: 'req-11' },
       collections: { collections: [{ uid: 'c1', name: 'nix', items: [] }, { uid: 'scratch', name: 'scratch', items: [] }] },
-      app: { leftSidebarWidth: 250, sidebarCollapsed: false, screenWidth: 1400 },
+      app: { leftSidebarWidth: 250, sidebarCollapsed: false, screenWidth },
       workspaces: { workspaces: [], activeWorkspaceUid: null }
     }) => state
   });
@@ -85,4 +85,18 @@ it('gives each group its own list, so close-left/right/others stay inside it', (
 it('renders no pinned group when none of the workspace pages are open', () => {
   renderStrip(REQUEST_TABS);
   expect(screen.queryByTestId('pinned-workspace-tabs')).toBeNull();
+});
+
+// The pinned group is about 310px and does not shrink; in a narrow window it
+// squeezed the request strip down to nothing (found in review of vasl.6's fix).
+it('drops the pinned tabs to icons in a narrow window, keeping their names as tooltips', () => {
+  renderStrip([...WORKSPACE_TABS, ...REQUEST_TABS], { screenWidth: 1000 });
+  const pinned = screen.getByTestId('pinned-workspace-tabs');
+  expect(pinned).toHaveClass('compact');
+  expect(within(pinned).getAllByRole('tab').map((li) => li.getAttribute('title'))).toEqual(['Overview', 'Environments', 'Git']);
+});
+
+it('keeps full labels at normal width', () => {
+  renderStrip([...WORKSPACE_TABS, ...REQUEST_TABS]);
+  expect(screen.getByTestId('pinned-workspace-tabs')).not.toHaveClass('compact');
 });

@@ -22,6 +22,14 @@ const Wrapper = styled.div`
     flex-shrink: 0;
     padding-right: 6px;
     border-right: 1px solid ${(props) => props.theme.requestTabs.bottomBorder};
+
+    &.compact li {
+      min-width: 0;
+    }
+
+    &.compact .tab-name {
+      display: none;
+    }
   }
 
   .tabs-scroll-container {
