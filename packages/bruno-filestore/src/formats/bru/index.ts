@@ -331,7 +331,8 @@ export const parseBruCollection = (data: string | any, parsed: boolean = false):
     // this is only for folder bru file
     if (json.meta) {
       transformedJson.meta = {
-        name: json.meta.name
+        name: json.meta.name,
+        ...(Array.isArray(json.meta.tags) ? { tags: json.meta.tags } : {})
       };
 
       // Include seq if it exists
@@ -367,10 +368,7 @@ export const stringifyBruCollection = (json: any, isFolder?: boolean): string =>
   try {
     const collectionBruJson: any = {
       headers: _.get(json, 'request.headers', []),
-      script: {
-        req: _.get(json, 'request.script.req', ''),
-        res: _.get(json, 'request.script.res', '')
-      },
+      script: _.get(json, 'request.script', {}),
       vars: {
         req: _.get(json, 'request.vars.req', []),
         res: _.get(json, 'request.vars.res', [])
@@ -384,7 +382,8 @@ export const stringifyBruCollection = (json: any, isFolder?: boolean): string =>
     // this is only for folder bru file
     if (json?.meta) {
       collectionBruJson.meta = {
-        name: json.meta.name
+        name: json.meta.name,
+        ...(Array.isArray(json.meta.tags) ? { tags: json.meta.tags } : {})
       };
 
       // Include seq if it exists

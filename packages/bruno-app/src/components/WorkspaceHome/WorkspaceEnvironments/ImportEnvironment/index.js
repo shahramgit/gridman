@@ -18,7 +18,7 @@ const ImportEnvironment = ({ onClose, onEnvironmentCreated }) => {
           .filter((env) =>
             env.name && env.name !== 'undefined')
           .map((environment) =>
-            dispatch(addGlobalEnvironment({ name: environment.name, variables: environment.variables }))
+            dispatch(addGlobalEnvironment({ name: environment.name, variables: environment.variables, extends: environment.extends }))
               .then(() => {
                 toast.success('Environment imported successfully');
               })

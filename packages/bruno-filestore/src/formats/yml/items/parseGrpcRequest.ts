@@ -75,12 +75,7 @@ const parseGrpcRequest = (ocRequest: GrpcRequest): BrunoItem => {
   // scripts
   const scripts = toBrunoScripts(runtime?.scripts);
   if (scripts?.script && brunoRequest.script) {
-    if (scripts.script.req) {
-      brunoRequest.script.req = scripts.script.req;
-    }
-    if (scripts.script.res) {
-      brunoRequest.script.res = scripts.script.res;
-    }
+    Object.assign(brunoRequest.script, scripts.script);
   }
   if (scripts?.tests) {
     brunoRequest.tests = scripts.tests;

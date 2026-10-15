@@ -3,7 +3,7 @@ import { JSONPath } from 'jsonpath-plus';
 import cloneDeep from 'lodash/cloneDeep';
 import toast from 'react-hot-toast';
 import { uuid } from 'utils/common';
-import { findEnvironmentInCollection, getGlobalEnvironmentVariables } from 'utils/collections';
+import { findEnvironmentInCollection, getGlobalEnvironmentVariables, getGlobalEnvironmentMetadata } from 'utils/collections';
 import { normalizePath } from 'utils/common/path';
 import { sendNetworkRequest } from 'utils/network';
 import { addTab, focusTab } from 'providers/ReduxStore/slices/tabs';
@@ -1006,6 +1006,7 @@ const buildRunContextForNode = (state, workspace, node) => {
   if (loadedCollection) {
     const collectionCopy = cloneDeep(loadedCollection);
     collectionCopy.globalEnvironmentVariables = globalEnvironmentVariables;
+    collectionCopy.globalEnvironment = getGlobalEnvironmentMetadata(state.globalEnvironments);
     collectionCopy.promptVariables = {};
     const environment = findEnvironmentInCollection(collectionCopy, collectionCopy.activeEnvironmentUid);
     return { collection: collectionCopy, environment, runtimeVariables: collectionCopy.runtimeVariables || {} };
@@ -1022,6 +1023,7 @@ const buildRunContextForNode = (state, workspace, node) => {
       root: {},
       environments: [],
       globalEnvironmentVariables,
+      globalEnvironment: getGlobalEnvironmentMetadata(state.globalEnvironments),
       promptVariables: {},
       runtimeVariables: {},
       settings: {}

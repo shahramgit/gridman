@@ -64,7 +64,12 @@ const grammar = ohm.grammar(`Bru {
   quoted_key_char = ~(quote_char | esc_quote_char | nl) any
   quoted_key = disable_char? quote_char (esc_quote_char | quoted_key_char)* quote_char
   key = keychar*
-  value = multilinetextblock | valuechar*
+  value = list | multilinetextblock | valuechar*
+
+  // Folder metadata uses the same tag-list syntax as request metadata.
+  list = st* "[" nl+ listitems? st* nl+ st* "]"
+  listitems = listitem (nl+ listitem)*
+  listitem = st+ (alnum | "_" | "-")+ st*
 
   // Text Blocks
   textblock = textline (~tagend nl textline)*
@@ -102,9 +107,13 @@ const grammar = ohm.grammar(`Bru {
   authwsse = "auth:wsse" dictionary
   authapikey = "auth:apikey" dictionary
 
-  script = scriptreq | scriptres
+  script = scriptreq | scriptres | scriptbeforecallstart | scriptbeforemessagesend | scriptaftermessagereceive | scriptaftercallend
   scriptreq = "script:pre-request" st* "{" nl* textblock tagend
   scriptres = "script:post-response" st* "{" nl* textblock tagend
+  scriptbeforecallstart = "script:grpc:before-call-start" st* "{" nl* textblock tagend
+  scriptbeforemessagesend = "script:grpc:before-message-send" st* "{" nl* textblock tagend
+  scriptaftermessagereceive = "script:grpc:after-message-receive" st* "{" nl* textblock tagend
+  scriptaftercallend = "script:grpc:after-call-end" st* "{" nl* textblock tagend
   tests = "tests" st* "{" nl* textblock tagend
   docs = "docs" st* "{" nl* textblock tagend
 
@@ -136,6 +145,8 @@ const grammar = ohm.grammar(`Bru {
     | kb<"auth:oauth2:additional_params:refresh_token_req:headers">
     | kb<"auth:oauth2:additional_params:refresh_token_req:queryparams">
     | kb<"auth:oauth2:additional_params:refresh_token_req:body">
+    | kb<"script:grpc:before-call-start"> | kb<"script:grpc:before-message-send">
+    | kb<"script:grpc:after-message-receive"> | kb<"script:grpc:after-call-end">
     | kb<"script:pre-request"> | kb<"script:post-response"> | kb<"tests"> | kb<"docs">
 }`);
 
@@ -247,7 +258,7 @@ const sem = grammar.createSemantics().addAttribute('ast', {
   },
   pair(_1, annotations, _2, key, _3, _4, _5, value, _6) {
     let res = {};
-    res[key.ast] = value.ast ? value.ast.trim() : '';
+    res[key.ast] = Array.isArray(value.ast) ? value.ast : value.ast ? value.ast.trim() : '';
     const annotationList = annotations.ast;
     if (annotationList && annotationList.length > 0) {
       res[ANNOTATIONS_KEY] = annotationList;
@@ -287,6 +298,15 @@ const sem = grammar.createSemantics().addAttribute('ast', {
       console.error(err);
     }
     return chars.sourceString ? chars.sourceString.trim() : '';
+  },
+  list(_1, _2, _3, listitems, _4, _5, _6, _7) {
+    return listitems.ast.flat();
+  },
+  listitems(listitem, _1, rest) {
+    return [listitem.ast, ...rest.ast];
+  },
+  listitem(_1, chars, _2) {
+    return chars.sourceString;
   },
   textblock(line, _1, rest) {
     return [line.ast, ...rest.ast].join('\n');
@@ -677,6 +697,18 @@ const sem = grammar.createSemantics().addAttribute('ast', {
         res: vars
       }
     };
+  },
+  scriptbeforecallstart(_1, _2, _3, _4, textblock, _5) {
+    return { script: { beforeCallStart: outdentString(textblock.sourceString) } };
+  },
+  scriptbeforemessagesend(_1, _2, _3, _4, textblock, _5) {
+    return { script: { beforeMessageSend: outdentString(textblock.sourceString) } };
+  },
+  scriptaftermessagereceive(_1, _2, _3, _4, textblock, _5) {
+    return { script: { afterMessageReceive: outdentString(textblock.sourceString) } };
+  },
+  scriptaftercallend(_1, _2, _3, _4, textblock, _5) {
+    return { script: { afterCallEnd: outdentString(textblock.sourceString) } };
   },
   scriptreq(_1, _2, _3, _4, textblock, _5) {
     return {

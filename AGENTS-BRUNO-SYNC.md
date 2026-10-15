@@ -4,8 +4,9 @@ Companion to AGENTS.md. Read this BEFORE looking at an upstream release. It reco
 what we decided and why, so a sync does not re-litigate settled questions or
 quietly undo a divergence we chose on purpose.
 
-Last sync review: **upstream v4.1.0** (2026-08-20), reviewed 2026-08-25.
-Previous: v4.0.0, v3.5.2 (reviewed, nothing adopted), v3.5.1, v3.4.2.
+Last sync review: **upstream v4.2.1** (2026-09-30), reviewed 2026-10-15,
+plus selected fixes from upstream main at `8b955ce91` (unreleased v4.3 work).
+Previous: v4.1.0, v4.0.0, v3.5.2 (reviewed, nothing adopted), v3.5.1, v3.4.2.
 
 ---
 
@@ -377,3 +378,100 @@ add the `case 'app':` arm to the three `switch (targetType)` blocks in
 `AiChatSidebar/index.js` and the label in its `constants.js` — the new
 `content-type-contract.spec.js` fails until all three switches have it, which is
 the point of it.
+
+## v4.2.1 review and selected safety batch (2026-10-15)
+
+Reviewed the 155-commit `v4.1.0..v4.2.1` range (953 changed files) and the
+unreleased main branch separately. The merge-base remains `462a39308`.
+Implemented on `sync/bruno-2026-10-15`; upstream was never merged. Gridman's
+application version is `4.2.1-vasl.1`. This number identifies our selective
+sync; it does not imply every upstream feature has been adopted.
+
+**Adapted fixes and provenance:**
+
+- `#9277` / `#9226`: QuickJS's local module source loader is private to require,
+  and collection/module paths are checked after realpath resolution. Tests use
+  real file/directory symlinks, nested modules, mutated bru.cwd and private
+  closure access. The compiler is captured before user code runs: independent
+  review reproduced source capture by replacing global Function, and the
+  regression now proves that replacement cannot intercept module source.
+  In-root names beginning with two dots remain valid.
+- `#8924`: QuickJS teardown waits for pending host work, disposes handles safely
+  and replaces a trapped engine while keeping synchronous expression evaluation
+  usable. A Promise expression still returns undefined without double disposal.
+- `#9081`: developer-mode async test callbacks finish before results are read.
+- `#8873`: req.onFail returns fresh runtime/environment/global variable results
+  to GUI and CLI callers. Gridman's opt-in disk persistence is retained.
+- `#9431` (unreleased): collection settings use the same draft-aware root/config
+  for both serialized writes. Also fixed local gaps: bulk Save awaits its work;
+  saves queue per collection; a completed save cannot clear newer edits; a
+  config-only save leaves an unloaded root for the existing disk recovery; that
+  recovery fails closed on malformed YAML instead of overwriting the source.
+- `#9044` / `#8707`: NTLM uses the configured Axios pipeline and an omitted
+  domain no longer crashes the parser. Cross-origin renegotiation needs explicit
+  authorization forwarding. CLI redirects now share Gridman's secure default
+  for cookies and credential-shaped custom headers, as the app already did.
+  Real-server tests also exposed SigV4 re-signing after a blocked cross-origin
+  redirect; both transports now prevent the signer from recreating credentials.
+- `#8855`: redirect limits are normalized without the arbitrary 50 cap across
+  schema, parser, native files, converters, app, scripts, CLI and transport.
+- `#9425` (unreleased): media-type comparisons ignore parameters and case for
+  form/multipart bodies; QuickJS body bridges preserve binary bytes.
+- `#9215`: scripts receive actual sent headers, including scripted requests.
+- `#7594` / `#9407` (unreleased follow-ups): response timing includes full body
+  download and each redirect hop. Timing lives in metadata, never a synthetic
+  request-start-time header. Response-time formatting handles second boundaries.
+- `#9156` / `#9164`: CLI digest credentials interpolate, and request URL helpers
+  preserve unresolved templates during pre-request scripting.
+- `#9285` (unreleased): CLI stopExecution stops the entire run, including nested
+  runRequest/sendRequest control flow.
+- `#8853` / `#8854`: Postman imports default omitted enabled flags correctly and
+  preserve disabled collection variables on import/export.
+- `#9155`: multipart part contentType survives native and OpenCollection saves
+  and Gridman's JSON export sanitizer.
+- `#9274`: OpenCollection client certificate types map to runtime cert/pfx;
+  disabled flags survive converter and native YAML round trips.
+- `#9454` (unreleased): Postman OAuth token defaults are header + Bearer, while
+  explicit query placement and explicit empty prefixes remain meaningful.
+- `#9098`, `#8960`, `#9162`, `#9171`: Postman global variable methods and
+  pm.sendRequest promise chains/callback expressions translate correctly.
+
+**Parser compatibility, not feature activation:**
+
+New environment extends references (string or list), folder meta.tags lists and
+the four gRPC lifecycle script fields parse and survive native .bru/YAML and
+OpenCollection round trips. These fields also survive Gridman's save/export,
+environment import/copy/rename/color paths and workspace storage. This closes
+the parser failures demonstrated during the review.
+
+Environment inheritance and gRPC scripting execution remain separate feature
+work. Requests using inherited collection OR workspace environments fail with
+an explicit unsupported message; the environment table explains this and keeps
+the reference on save. gRPC execution likewise rejects hooks from request,
+folder or collection roots rather than silently omitting their behavior. Guards
+cover HTTP, WebSocket, gRPC/reflection, runner, OAuth and workflow contexts.
+
+**Still separate work:** environment inheritance UI/runtime, scope-aware variable
+creation/autocomplete (preserve Gridman's Change variable action), inherited
+auth/default header UI, documentation improvements, OpenAPI fixes, saved binary
+previews/Try example, folder tag behavior, collection/example multiselection,
+mock-server updates and new themes. Dependency updates were not part of this
+user-selected batch. Runner file offloading and NodeVM module caching need
+their own measurements and isolation review.
+
+The old v4.1 sidebar drop-below and expanded-folder persistence backlog is stale:
+both are implemented in Gridman's indexed renderer. Active-request reveal and
+modify/delete Git conflicts are also already handled. Do not port upstream's
+sidebar or storage architecture to obtain those behaviors again.
+
+**Validation (2026-10-15):** 6,325 tests passed across the app, Electron, CLI,
+JavaScript runtime, language parser, common utilities, requests, filestore,
+converters and schema packages. The suites retain 23 existing skipped tests.
+Three hidden Electron checks passed with temporary workspace/user-data folders,
+including a real YAML settings save, an HTTP request, disk-root recovery and a
+malformed-YAML rejection that preserves the original bytes. Foreground-app
+sampling observed no Electron/Gridman focus changes during those checks.
+Focused lint, CommonJS syntax checks, shared-package builds, the web build,
+build-freshness checks and `git diff --check` passed. The converters build still
+reports the existing OpenCollection `RequestDefaults.actions` declaration
+warnings. Packaged Windows validation and release installers remain untested.

@@ -62,6 +62,29 @@ describe('prepare-grpc-request: prepareGrpcRequest', () => {
     mockRuntimeVariables = {};
   });
 
+  describe('unsupported forward-compatible metadata', () => {
+    it('refuses workspace/global environment inheritance', async () => {
+      mockCollection.globalEnvironment = { name: 'Team', extends: ['Base'] };
+      await expect(prepareGrpcRequest(mockItem, mockCollection, {}, {})).rejects.toThrow('Environment inheritance is not supported');
+      expect(getEnvVars).not.toHaveBeenCalled();
+    });
+    it('refuses inherited environments before resolving variables or sending', async () => {
+      mockEnvironment.extends = ['base'];
+      await expect(prepareGrpcRequest(mockItem, mockCollection, mockEnvironment, {})).rejects.toThrow('Environment inheritance is not supported');
+      expect(getEnvVars).not.toHaveBeenCalled();
+    });
+
+    it.each(['request', 'collection', 'folder', 'unknown-block'])('refuses preserved %s gRPC lifecycle scripts', async (scope) => {
+      const script = { beforeCallStart: 'bru.setVar("before", true);' };
+      if (scope === 'request') mockItem.request.script = script;
+      if (scope === 'collection') mockCollection.root.request.script = script;
+      if (scope === 'folder') getTreePathFromCollectionToItem.mockReturnValue([{ request: { script } }, mockItem]);
+      if (scope === 'unknown-block') mockItem.unknownBlocks = [{ name: 'script:grpc:before-call-start', raw: 'script:grpc:before-call-start {\n}' }];
+      await expect(prepareGrpcRequest(mockItem, mockCollection, {}, {})).rejects.toThrow('gRPC lifecycle scripting is not supported');
+      expect(getEnvVars).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Header processing', () => {
     it('should keep regular headers as strings', async () => {
       mockItem.request.headers = [

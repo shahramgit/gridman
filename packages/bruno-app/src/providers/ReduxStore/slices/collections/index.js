@@ -2,6 +2,7 @@ import { parseQueryParams, buildQueryString as stringifyQueryParams } from '@use
 import { uuid } from 'utils/common';
 import { find, map, forOwn, concat, filter, each, cloneDeep, get, set, findIndex } from 'lodash';
 import { createSlice } from '@reduxjs/toolkit';
+import { original } from 'immer';
 import { hexy as hexdump } from 'hexy';
 import {
   areItemsTheSameExceptSeqUpdate,
@@ -1604,6 +1605,16 @@ export const collectionsSlice = createSlice({
     },
     saveCollectionDraft: (state, action) => {
       const collection = findCollectionByUid(state.collections, action.payload.collectionUid);
+
+      if (collection && Object.prototype.hasOwnProperty.call(action.payload, 'savedDraft')) {
+        const { savedDraft, savedRoot, savedConfig } = action.payload;
+        const draftUnchanged = original(collection).draft === savedDraft;
+        if (savedRoot) collection.root = savedRoot;
+        if (savedConfig) collection.brunoConfig = savedConfig;
+        // Edits made while disk I/O was pending have not been saved yet.
+        if (draftUnchanged) collection.draft = null;
+        return;
+      }
 
       if (collection && collection.draft) {
         if (collection.draft.root) {

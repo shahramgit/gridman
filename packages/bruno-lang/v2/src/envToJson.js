@@ -16,7 +16,7 @@ const ANNOTATIONS_KEY = Symbol('annotations');
 // }
 const indentLevel = 4;
 const grammar = ohm.grammar(`Bru {
-  BruEnvFile = (vars | secretvars | externalsecrets | color)*
+  BruEnvFile = (vars | secretvars | externalsecrets | extends | color)*
 
   nl = "\\r"? "\\n"
   st = " " | "\\t"
@@ -25,6 +25,7 @@ const grammar = ohm.grammar(`Bru {
   optionalnl = ~tagend nl
   keychar = ~(tagend | st | nl | ":") any
   valuechar = ~(nl | tagend | multilinetextblockstart) any
+  singlelinechar = ~nl any
 
   multilinetextblockdelimiter = "'''"
   multilinetextblockstart = "'''" nl
@@ -67,7 +68,18 @@ const grammar = ohm.grammar(`Bru {
   externalsecretsname = externalsecretsnamechar+
   externalsecretsnamechar = ~(st | nl | "{") any
   vars = "vars" dictionary
-  color = "color:" any*
+  extends = "extends" (extendslist | extendsname)
+  extendslist = st* "[" stnl* extendsvaluelist stnl* "]"
+  extendsvaluelist = stnl* extendsvalue stnl* ("," stnl* extendsvalue)*
+  extendsvalue = quotedextendsvalue | unquotedextendsvalue
+  quotedextendsvalue = "\\\"" quotedextendsvaluechar* "\\\""
+  quotedextendsvaluechar = quotedextendsvalueesc | quotedextendsvaluenorm
+  quotedextendsvalueesc = "\\\\" any
+  quotedextendsvaluenorm = ~("\\\"" | nl) any
+  unquotedextendsvalue = unquotedextendsvaluechar*
+  unquotedextendsvaluechar = ~(nl | "[" | "]" | ",") any
+  extendsname = ":" singlelinechar*
+  color = "color:" singlelinechar*
 }`);
 
 const mapPairListToKeyValPairs = (pairList = []) => {
@@ -283,6 +295,29 @@ const sem = grammar.createSemantics().addAttribute('ast', {
   },
   externalsecretsname(chars) {
     return chars.sourceString;
+  },
+  // Carry the reference without resolving it. The runtime must explicitly support
+  // inheritance before it can execute an environment containing this metadata.
+  extends(_1, reference) {
+    return { extends: reference.ast };
+  },
+  extendsname(_1, reference) {
+    return reference.sourceString.trim();
+  },
+  extendslist(_1, _2, _3, valuelist, _4, _5) {
+    return valuelist.ast.filter((name) => name.length > 0);
+  },
+  extendsvaluelist(_1, value, _2, _3, _4, rest) {
+    return [value.ast, ...rest.ast];
+  },
+  extendsvalue(value) {
+    return value.ast;
+  },
+  quotedextendsvalue(_1, chars, _2) {
+    return chars.sourceString.replace(/\\(["\\])/g, '$1');
+  },
+  unquotedextendsvalue(chars) {
+    return chars.sourceString.trim();
   },
   color: (_1, anystring) => {
     return {

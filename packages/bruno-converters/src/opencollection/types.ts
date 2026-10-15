@@ -70,7 +70,14 @@ export type { Environment } from '@opencollection/types/config/environments';
 export type { CollectionConfig } from '@opencollection/types/config/collection';
 export type { Protobuf, ProtoFileItem, ProtoFileImportPath } from '@opencollection/types/config/protobuf';
 export type { Proxy, ProxyConnectionConfig, ProxyConnectionAuth } from '@opencollection/types/config/proxy';
-export type { ClientCertificate, PemCertificate, Pkcs12Certificate } from '@opencollection/types/config/certificates';
+export type { ClientCertificate } from '@opencollection/types/config/certificates';
+import type {
+  PemCertificate as OpenCollectionPemCertificate,
+  Pkcs12Certificate as OpenCollectionPkcs12Certificate
+} from '@opencollection/types/config/certificates';
+// Keep the persisted disabled flag even when older OpenCollection declarations omit it.
+export type PemCertificate = OpenCollectionPemCertificate & { disabled?: boolean };
+export type Pkcs12Certificate = OpenCollectionPkcs12Certificate & { disabled?: boolean };
 
 // OpenCollection common types
 export type { RequestDefaults, RequestSettings } from '@opencollection/types/common/request-defaults';
@@ -200,11 +207,12 @@ export interface BrunoConfig {
   clientCertificates?: {
     certs?: Array<{
       domain?: string;
-      type?: 'pem' | 'pkcs12';
+      type?: 'cert' | 'pfx';
       certFilePath?: string;
       keyFilePath?: string;
       pfxFilePath?: string;
       passphrase?: string;
+      disabled?: boolean;
     }>;
   };
   scripts?: {

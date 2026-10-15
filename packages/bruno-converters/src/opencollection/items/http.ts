@@ -1,4 +1,5 @@
 import { uuid } from '../../common/index.js';
+import { utils } from '@usebruno/common';
 import {
   fromOpenCollectionHeaders,
   toOpenCollectionHeaders,
@@ -34,6 +35,8 @@ import type {
   BrunoHttpRequest
 } from '../types';
 import type { HttpItemSettings as BrunoHttpItemSettings } from '@usebruno/schema-types/collection/item';
+
+const { toMaxRedirects } = utils;
 
 const getHttpBody = (body: HttpRequestBody | Array<{ title: string; selected?: boolean; body: HttpRequestBody }> | undefined): HttpRequestBody | undefined => {
   if (!body) return undefined;
@@ -107,7 +110,7 @@ export const fromOpenCollectionHttpItem = (ocRequest: HttpRequest): BrunoItem =>
       encodeUrl: typeof ocRequest.settings.encodeUrl === 'boolean' ? ocRequest.settings.encodeUrl : true,
       timeout: typeof ocRequest.settings.timeout === 'number' ? ocRequest.settings.timeout : 0,
       followRedirects: typeof ocRequest.settings.followRedirects === 'boolean' ? ocRequest.settings.followRedirects : true,
-      maxRedirects: typeof ocRequest.settings.maxRedirects === 'number' ? ocRequest.settings.maxRedirects : 5
+      maxRedirects: toMaxRedirects(ocRequest.settings.maxRedirects)
     };
     brunoItem.settings = settings;
   }
@@ -223,7 +226,7 @@ export const toOpenCollectionHttpItem = (item: BrunoItem): HttpRequest => {
     encodeUrl: typeof brunoSettings?.encodeUrl === 'boolean' ? brunoSettings.encodeUrl : true,
     timeout: typeof brunoSettings?.timeout === 'number' ? brunoSettings.timeout : 0,
     followRedirects: typeof brunoSettings?.followRedirects === 'boolean' ? brunoSettings.followRedirects : true,
-    maxRedirects: typeof brunoSettings?.maxRedirects === 'number' ? brunoSettings.maxRedirects : 5
+    maxRedirects: toMaxRedirects(brunoSettings?.maxRedirects)
   };
   ocRequest.settings = settings;
 

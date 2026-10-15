@@ -3,6 +3,8 @@ const { CLI_VERSION } = require('../constants');
 const { addCookieToJar, getCookieStringForUrl } = require('./cookies');
 const { createFormData } = require('./form-data');
 const { setupProxyAgents } = require('./proxy-util');
+const { DEFAULT_MAX_REDIRECTS, getMediaType, isSameOrigin } = require('@usebruno/common').utils;
+const { getSentHeaders, handleNtlmRedirect, stripRedirectCredentials, startHop, completeHop } = require('@usebruno/requests');
 
 const redirectResponseCodes = [301, 302, 303, 307, 308];
 const METHOD_CHANGING_REDIRECTS = [301, 302, 303];
@@ -47,7 +49,8 @@ const createRedirectConfig = (error, redirectUrl) => {
       const formData = requestConfig.data;
       if (formData._released || (formData._streams && formData._streams.length === 0)) {
         if (error.config._originalMultipartData && error.config.collectionPath) {
-          const recreatedForm = createFormData(error.config._originalMultipartData, error.config.collectionPath);
+          const recreatedForm = createFormData(error.config._originalMultipartData, error.config.collectionPath, formData.getBoundary());
+          recreatedForm.getHeaders = formData.getHeaders;
           requestConfig.data = recreatedForm;
           const formHeaders = recreatedForm.getHeaders();
           Object.assign(requestConfig.headers, formHeaders);
@@ -73,7 +76,7 @@ const createRedirectConfig = (error, redirectUrl) => {
  * @returns {axios.AxiosInstance}
  */
 function makeAxiosInstance({
-  requestMaxRedirects = 5,
+  requestMaxRedirects = DEFAULT_MAX_REDIRECTS,
   disableCookies,
   followRedirects = true,
   proxyMode,
@@ -87,6 +90,11 @@ function makeAxiosInstance({
 
   /** @type {axios.AxiosInstance} */
   const instance = axios.create({
+    transformRequest: function (data, headers) {
+      if (typeof data === 'string' && getMediaType(headers.getContentType()).includes('json')) return data;
+      for (const transform of axios.defaults.transformRequest) data = transform.call(this, data, headers);
+      return data;
+    },
     proxy: false,
     maxRedirects: 0,
     headers: {}
@@ -99,7 +107,8 @@ function makeAxiosInstance({
   instance.defaults.headers.common['User-Agent'] = `bruno-runtime/${CLI_VERSION}`;
 
   instance.interceptors.request.use((config) => {
-    config.headers['request-start-time'] = Date.now();
+    config.metadata = config.metadata || {};
+    startHop(config.metadata);
 
     /**
       Apply header deletions requested via req.deleteHeader() in pre-request scripts.
@@ -132,18 +141,17 @@ function makeAxiosInstance({
 
   instance.interceptors.response.use(
     (response) => {
-      const end = Date.now();
-      const start = response.config.headers['request-start-time'];
-      response.headers['request-duration'] = end - start;
+      completeHop(response.config.metadata);
+      response.sentHeaders = getSentHeaders(response.request);
       redirectCount = 0;
 
       return response;
     },
     async (error) => {
+      error.sentHeaders = getSentHeaders(error.response?.request || error.request);
       if (error.response) {
-        const end = Date.now();
-        const start = error.config.headers['request-start-time'];
-        error.response.headers['request-duration'] = end - start;
+        completeHop(error.config.metadata);
+        error.response.sentHeaders = error.sentHeaders;
 
         if (redirectResponseCodes.includes(error.response.status)) {
           if (!followRedirects) {
@@ -178,6 +186,15 @@ function makeAxiosInstance({
           }
 
           const requestConfig = createRedirectConfig(error, redirectUrl);
+          const forwardCredentials = error.config?.settings?.forwardAuthorizationHeader === true;
+          handleNtlmRedirect(requestConfig, error.config.url, redirectUrl, forwardCredentials);
+          if (!isSameOrigin(error.config.url, redirectUrl)) {
+            requestConfig.__skipAwsV4Sign = true;
+            Object.keys(requestConfig.headers).forEach((name) => {
+              if (name.toLowerCase().startsWith('x-amz-')) delete requestConfig.headers[name];
+            });
+          }
+          stripRedirectCredentials(requestConfig.headers, error.config.url, redirectUrl, forwardCredentials);
 
           await setupProxyAgents({
             requestConfig,

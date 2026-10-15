@@ -43,6 +43,9 @@ const environmentSchema = Yup.object({
   name: Yup.string().min(1).required('name is required'),
   variables: Yup.array().of(environmentVariablesSchema).required('variables are required'),
   externalSecrets: externalSecretsSchema.nullable().optional(),
+  extends: Yup.mixed().test('environment-extends', 'extends must contain environment names', (value) =>
+    value === undefined || typeof value === 'string'
+    || (Array.isArray(value) && value.every((name) => typeof name === 'string'))),
   color: Yup.string().nullable().optional(),
   pathname: Yup.string().nullable()
 })
@@ -530,7 +533,11 @@ const grpcRequestSchema = Yup.object({
     .required('body is required'),
   script: Yup.object({
     req: Yup.string().nullable(),
-    res: Yup.string().nullable()
+    res: Yup.string().nullable(),
+    beforeCallStart: Yup.string().nullable(),
+    beforeMessageSend: Yup.string().nullable(),
+    afterMessageReceive: Yup.string().nullable(),
+    afterCallEnd: Yup.string().nullable()
   })
     .noUnknown(true)
     .strict(),
@@ -598,12 +605,17 @@ const wsSettingsSchema = Yup.object({
 });
 
 const folderRootSchema = Yup.object({
+  unknownBlocks: Yup.array().optional(),
   request: Yup.object({
     headers: Yup.array().of(keyValueSchema).nullable(),
     auth: authSchema,
     script: Yup.object({
       req: Yup.string().nullable(),
-      res: Yup.string().nullable()
+      res: Yup.string().nullable(),
+      beforeCallStart: Yup.string().nullable(),
+      beforeMessageSend: Yup.string().nullable(),
+      afterMessageReceive: Yup.string().nullable(),
+      afterCallEnd: Yup.string().nullable()
     })
       .noUnknown(true)
       .strict()
@@ -623,7 +635,8 @@ const folderRootSchema = Yup.object({
   docs: Yup.string().nullable(),
   meta: Yup.object({
     name: Yup.string().nullable(),
-    seq: Yup.number().min(1).nullable()
+    seq: Yup.number().min(1).nullable(),
+    tags: Yup.array().of(Yup.string()).optional()
   })
     .noUnknown(true)
     .strict()
@@ -657,7 +670,7 @@ const itemSchema = Yup.object({
       otherwise: Yup.object({
         encodeUrl: Yup.boolean().nullable(),
         followRedirects: Yup.boolean().nullable(),
-        maxRedirects: Yup.number().min(0).max(50).nullable(),
+        maxRedirects: Yup.number().min(0).integer().nullable(),
         timeout: Yup.mixed().nullable(),
       }).noUnknown(true)
     .strict()

@@ -29,6 +29,7 @@ jest.mock('../../src/store/cookies', () => ({
 let mockResponseStream;
 
 jest.mock('../../src/ipc/network/axios-instance', () => ({
+  ...jest.requireActual('../../src/ipc/network/axios-instance'),
   makeAxiosInstance: () => {
     const instance = () => {
       const { AxiosHeaders } = require('axios');

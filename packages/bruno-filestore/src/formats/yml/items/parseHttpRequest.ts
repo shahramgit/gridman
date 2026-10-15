@@ -10,6 +10,9 @@ import { toBrunoPostResponseVariables } from '../common/actions';
 import { toBrunoScripts } from '../common/scripts';
 import { toBrunoAssertions } from '../common/assertions';
 import { uuid, ensureString } from '../../../utils';
+import { utils } from '@usebruno/common';
+
+const { toMaxRedirects } = utils;
 
 const parseHttpRequest = (ocRequest: HttpRequest): BrunoItem => {
   const info = ocRequest.info;
@@ -49,12 +52,7 @@ const parseHttpRequest = (ocRequest: HttpRequest): BrunoItem => {
   // scripts
   const scripts = toBrunoScripts(runtime?.scripts);
   if (scripts?.script && brunoRequest.script) {
-    if (scripts.script.req) {
-      brunoRequest.script.req = scripts.script.req;
-    }
-    if (scripts.script.res) {
-      brunoRequest.script.res = scripts.script.res;
-    }
+    Object.assign(brunoRequest.script, scripts.script);
   }
   if (scripts?.tests) {
     brunoRequest.tests = scripts.tests;
@@ -120,11 +118,7 @@ const parseHttpRequest = (ocRequest: HttpRequest): BrunoItem => {
       settings.followRedirects = true;
     }
 
-    if (typeof ocRequest.settings.maxRedirects === 'number') {
-      settings.maxRedirects = ocRequest.settings.maxRedirects;
-    } else {
-      settings.maxRedirects = 5;
-    }
+    settings.maxRedirects = toMaxRedirects(ocRequest.settings.maxRedirects);
 
     brunoItem.settings = settings;
   }

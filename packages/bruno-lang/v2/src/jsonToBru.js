@@ -746,6 +746,18 @@ ${indentString(script.res)}
 `;
   }
 
+  const grpcHooks = {
+    beforeCallStart: 'script:grpc:before-call-start',
+    beforeMessageSend: 'script:grpc:before-message-send',
+    afterMessageReceive: 'script:grpc:after-message-receive',
+    afterCallEnd: 'script:grpc:after-call-end'
+  };
+  for (const [key, blockName] of Object.entries(grpcHooks)) {
+    if (script?.[key]?.length) {
+      bru += blockName + ' {\n' + indentString(script[key]) + '\n}\n\n';
+    }
+  }
+
   if (tests && tests.length) {
     bru += `tests {
 ${indentString(tests)}
@@ -786,6 +798,8 @@ ${indentString(docs)}
   // comes back out with mixed endings.
   if (unknownBlocks && unknownBlocks.length) {
     unknownBlocks.forEach((block) => {
+      const hook = Object.keys(grpcHooks).find((key) => grpcHooks[key] === block.name);
+      if (hook && script?.[hook]?.length) return;
       const raw = block?.raw;
       if (!raw || !raw.length) {
         return;

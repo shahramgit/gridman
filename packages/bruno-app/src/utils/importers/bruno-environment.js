@@ -22,6 +22,7 @@ const validateBrunoEnvironment = (env) => {
 
   return {
     name: env.name || 'Imported Environment',
+    ...(env.extends !== undefined ? { extends: env.extends } : {}),
     variables: env.variables.map((envVariable) => buildEnvVariable({ envVariable, withUuid: true })),
     color: env.color
   };

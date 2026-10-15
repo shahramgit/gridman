@@ -21,6 +21,7 @@ export const fromOpenCollectionEnvironments = (environments: Environment[] | und
   return environments.map((env): BrunoEnvironment => ({
     uid: uuid(),
     name: env.name || 'Untitled Environment',
+    ...((env as any).extends !== undefined ? { extends: (env as any).extends } : {}),
     variables: (env.variables || []).map((v): BrunoEnvironmentVariable => {
       const variable = v as OCVariable;
       const isSecret = variable.secret === true;
@@ -75,6 +76,9 @@ export const toOpenCollectionEnvironments = (environments: BrunoEnvironment[] | 
         return ocVar;
       }) as Variable[]
     };
+    if (env.extends !== undefined) {
+      (ocEnv as any).extends = env.extends;
+    }
 
     return ocEnv;
   });

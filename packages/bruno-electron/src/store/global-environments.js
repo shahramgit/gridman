@@ -124,7 +124,7 @@ class GlobalEnvironmentsStore {
     return this.store.set('environments', globalEnvironments);
   }
 
-  addGlobalEnvironment({ uid, name, variables = [], color }) {
+  addGlobalEnvironment({ uid, name, variables = [], color, extends: extendsFrom }) {
     let globalEnvironments = this.getGlobalEnvironments();
     const existingEnvironment = globalEnvironments.find((env) => env?.name == name);
     if (existingEnvironment) {
@@ -134,6 +134,7 @@ class GlobalEnvironmentsStore {
       uid,
       name,
       variables,
+      extends: extendsFrom,
       color
     });
     this.setGlobalEnvironments(globalEnvironments);

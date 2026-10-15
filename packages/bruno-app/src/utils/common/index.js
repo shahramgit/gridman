@@ -202,6 +202,11 @@ export const multiLineMsg = (...messages) => {
   return messages.filter((m) => m !== undefined && m !== null && m !== '').join('\n');
 };
 
+export const formatDuration = (durationMs) => {
+  const rounded = Math.round(durationMs);
+  return rounded < 1000 ? `${rounded}ms` : `${(rounded / 1000).toFixed(2)}s`;
+};
+
 export const formatSize = (bytes) => {
   // Handle invalid inputs
   if (isNaN(bytes) || typeof bytes !== 'number') {

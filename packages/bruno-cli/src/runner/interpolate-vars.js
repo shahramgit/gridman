@@ -1,6 +1,6 @@
 const { interpolate } = require('@usebruno/common');
 const { each, forOwn, cloneDeep, find } = require('lodash');
-const { isFormData } = require('@usebruno/common').utils;
+const { isFormData, getMediaType } = require('@usebruno/common').utils;
 
 /**
  * A `:segment` may only be substituted when the matching path param row is enabled AND carries a
@@ -100,6 +100,7 @@ const interpolateVars = (request, envVariables = {}, runtimeVariables = {}, proc
   }
 
   const contentType = getContentType(request.headers);
+  const mediaType = getMediaType(contentType);
   const isGraphqlRequest = request.mode === 'graphql';
 
   // GraphQL: interpolate query and variables in place. We do not stringify the whole body and interpolate that, because variables is a JSON string. Full-body stringify would nest it and double-escape any {{var}} inside.
@@ -110,7 +111,7 @@ const interpolateVars = (request, envVariables = {}, runtimeVariables = {}, proc
 
   // Skip body interpolation for GraphQL requests.
   if (!isGraphqlRequest) {
-    if (contentType.includes('json') && !isBinaryRequestBody(request.data)) {
+    if (mediaType.includes('json') && !isBinaryRequestBody(request.data)) {
       if (typeof request.data === 'string') {
         if (request?.data?.length) {
           request.data = _interpolate(request.data, { escapeJSONStrings: true });
@@ -122,14 +123,16 @@ const interpolateVars = (request, envVariables = {}, runtimeVariables = {}, proc
           request.data = JSON.parse(parsed);
         } catch (err) {}
       }
-    } else if (contentType === 'application/x-www-form-urlencoded') {
-      if (request.data && Array.isArray(request.data)) {
+    } else if (mediaType === 'application/x-www-form-urlencoded') {
+      if (typeof request.data === 'string') {
+        request.data = _interpolate(request.data);
+      } else if (request.data && Array.isArray(request.data)) {
         request.data = request.data.map((d) => ({
           ...d,
           value: _interpolate(d?.value)
         }));
       }
-    } else if (contentType.startsWith('multipart/')) {
+    } else if (mediaType.startsWith('multipart/')) {
       if (request?.data && typeof request.data === 'string') {
         request.data = _interpolate(request.data);
       } else if (Array.isArray(request?.data) && !isFormData(request.data)) {
@@ -303,6 +306,12 @@ const interpolateVars = (request, envVariables = {}, runtimeVariables = {}, proc
     request.awsv4config.service = _interpolate(request.awsv4config.service) || '';
     request.awsv4config.region = _interpolate(request.awsv4config.region) || '';
     request.awsv4config.profileName = _interpolate(request.awsv4config.profileName) || '';
+  }
+
+  // interpolate vars for digest auth
+  if (request.digestConfig) {
+    request.digestConfig.username = _interpolate(request.digestConfig.username) || '';
+    request.digestConfig.password = _interpolate(request.digestConfig.password) || '';
   }
 
   // interpolate vars for ntlmConfig auth

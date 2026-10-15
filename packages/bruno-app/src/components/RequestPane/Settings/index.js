@@ -49,8 +49,8 @@ const Settings = ({ item, collection }) => {
     const value = e.target.value;
     // Only allow empty string or digits
     if (value === '' || /^\d+$/.test(value)) {
-      const numericValue = value === '' ? 0 : parseInt(value, 10);
-      updateSetting({ maxRedirects: numericValue });
+      const numericValue = value === '' ? 0 : Number(value);
+      if (Number.isFinite(numericValue)) updateSetting({ maxRedirects: numericValue });
     }
   }, [updateSetting]);
 

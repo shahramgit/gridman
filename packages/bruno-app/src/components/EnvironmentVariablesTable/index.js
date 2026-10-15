@@ -704,6 +704,12 @@ const EnvironmentVariablesTable = ({
 
   return (
     <StyledWrapper className={resizing ? 'is-resizing' : ''}>
+      {environment?.extends && (
+        <div role="alert" className="text-xs mb-3 text-muted">
+          This environment uses inheritance, which Gridman does not support yet.
+          Requests using it are blocked. Its inheritance settings are preserved when saved.
+        </div>
+      )}
       {isSearchActive && filteredVariables.length === 0 ? (
         <div className="no-results">No results found for &ldquo;{searchQuery.trim()}&rdquo;</div>
       ) : (

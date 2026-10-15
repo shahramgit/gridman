@@ -6,6 +6,7 @@ export const exportBrunoEnvironment = async ({ environments, environmentType, fi
 
     let cleanEnvironments = environments.map((environment) => ({
       name: environment.name,
+      extends: environment.extends,
       variables: (environment.variables || []).map((envVariable) => buildEnvVariable({ envVariable })),
       color: environment.color ?? undefined
     }));

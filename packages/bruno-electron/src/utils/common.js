@@ -161,6 +161,8 @@ const getParamFromUrl = (urlObj, param) => {
   );
 };
 
+const isBinaryRequestBody = (data) => Buffer.isBuffer(data) || typeof data?.pipe === 'function';
+
 module.exports = {
   uuid,
   stringifyJson,
@@ -172,5 +174,6 @@ module.exports = {
   flattenDataForDotNotation,
   parseDataFromResponse,
   parseDataFromRequest,
-  getParamFromUrl
+  getParamFromUrl,
+  isBinaryRequestBody
 };

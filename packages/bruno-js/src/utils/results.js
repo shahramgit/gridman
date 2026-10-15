@@ -22,10 +22,23 @@ const getResultsSummary = (results) => {
 
 const createBruTestResultMethods = (bru, assertionResults, chai) => {
   const __brunoTestResults = new TestResults();
-  const test = Test(__brunoTestResults, chai);
+  const baseTest = Test(__brunoTestResults, chai);
+  const pendingTestPromises = [];
+  const test = (description, callback) => {
+    const promise = baseTest(description, callback);
+    pendingTestPromises.push(promise.catch(() => {}));
+    return promise;
+  };
+  // A completed test can register another test. Drain until no callbacks are
+  // pending so each script phase returns its complete results and variables.
+  const waitForPendingTests = async () => {
+    while (pendingTestPromises.length) {
+      await Promise.all(pendingTestPromises.splice(0));
+    }
+  };
   setupBruTestMethods(bru, __brunoTestResults, assertionResults);
 
-  return { __brunoTestResults, test };
+  return { __brunoTestResults, test, waitForPendingTests };
 };
 
 const setupBruTestMethods = (bru, __brunoTestResults, assertionResults) => {

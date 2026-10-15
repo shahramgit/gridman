@@ -45,10 +45,13 @@ export const isFormData = (obj: unknown): boolean => {
 };
 
 /**
- * Extracts boundary parameter from a Content-Type header value.
- * @param contentType - The Content-Type header value (e.g., "multipart/mixed; boundary=my-boundary")
- * @returns The boundary value if found, or null if not present
+ * Normalizes the media type while ignoring charset, boundary and other parameters.
  */
+export const getMediaType = (contentType: unknown): string => {
+  return typeof contentType === 'string' ? contentType.split(';', 1)[0].trim().toLowerCase() : '';
+};
+
+/** Extracts an optional boundary parameter from a Content-Type header value. */
 export const extractBoundaryFromContentType = (contentType: unknown): string | null => {
   if (typeof contentType !== 'string') {
     return null;

@@ -13,6 +13,7 @@ const parseFolder = (ymlString: string): FolderRoot => {
     const ocFolder: Folder = parseYml(ymlString);
 
     const info = ocFolder.info;
+    const tags = info?.tags;
 
     // request defaults are always present - returning `request: null` for a folder.yml
     // without a request block left callers with no auth mode to read, so a folder that
@@ -20,7 +21,8 @@ const parseFolder = (ymlString: string): FolderRoot => {
     const folderRoot: FolderRoot = {
       meta: {
         name: ensureString(info?.name, 'Untitled Folder'),
-        seq: info?.seq || 1
+        seq: info?.seq || 1,
+        ...(Array.isArray(tags) ? { tags } : {})
       },
       request: {
         headers: [],
@@ -58,12 +60,7 @@ const parseFolder = (ymlString: string): FolderRoot => {
       // scripts
       const scripts = toBrunoScripts(ocFolder.request.scripts);
       if (scripts?.script && folderRequest.script) {
-        if (scripts.script.req) {
-          folderRequest.script.req = scripts.script.req;
-        }
-        if (scripts.script.res) {
-          folderRequest.script.res = scripts.script.res;
-        }
+        Object.assign(folderRequest.script, scripts.script);
       }
       if (scripts?.tests) {
         folderRequest.tests = scripts.tests;

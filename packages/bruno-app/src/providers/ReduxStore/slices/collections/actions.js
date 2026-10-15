@@ -2,6 +2,7 @@ import { collectionSchema, environmentSchema, itemSchema } from '@usebruno/schem
 import { parseQueryParams, extractPromptVariables } from '@usebruno/common/utils';
 import { REQUEST_TYPES, DEFAULT_COLLECTION_FORMAT } from 'utils/common/constants';
 import cloneDeep from 'lodash/cloneDeep';
+import isEqual from 'lodash/isEqual';
 import filter from 'lodash/filter';
 import find from 'lodash/find';
 import get from 'lodash/get';
@@ -87,6 +88,7 @@ import { interpolateUrl, parsePathParams, splitOnFirst } from 'utils/url/index';
 import { sendCollectionOauth2Request as _sendCollectionOauth2Request } from 'utils/network/index';
 import {
   getGlobalEnvironmentVariables,
+  getGlobalEnvironmentMetadata,
   findCollectionByPathname,
   findEnvironmentInCollectionByName,
   getReorderedItemsInTargetDirectory,
@@ -326,34 +328,7 @@ export const saveMultipleRequests = (items) => (dispatch, getState) => {
   });
 };
 
-export const saveCollectionRoot = (collectionUid) => (dispatch, getState) => {
-  const state = getState();
-  const collection = findCollectionByUid(state.collections.collections, collectionUid);
-
-  return new Promise((resolve, reject) => {
-    if (!collection) {
-      return reject(new Error('Collection not found'));
-    }
-
-    const collectionCopy = cloneDeep(collection);
-
-    // Transform collection root (uses draft if exists)
-    const collectionRootToSave = transformCollectionRootToSave(collectionCopy);
-    const { ipcRenderer } = window;
-
-    ipcRenderer
-      .invoke('renderer:save-collection-root', collectionCopy.pathname, collectionRootToSave, collectionCopy.brunoConfig)
-      .then(() => {
-        toast.success('Collection Settings saved successfully');
-        dispatch(saveCollectionDraft({ collectionUid }));
-      })
-      .then(resolve)
-      .catch((err) => {
-        toast.error('Failed to save collection settings!');
-        reject(err);
-      });
-  });
-};
+export const saveCollectionRoot = (collectionUid) => saveCollectionSettings(collectionUid);
 
 export const saveFolderRoot = (collectionUid, folderUid, silent = false) => (dispatch, getState) => {
   const state = getState();
@@ -401,45 +376,10 @@ export const saveFolderRoot = (collectionUid, folderUid, silent = false) => (dis
 };
 
 export const saveMultipleCollections = (collectionDrafts) => (dispatch, getState) => {
-  const state = getState();
-  const { collections } = state.collections;
-
-  return new Promise((resolve, reject) => {
-    const savePromises = [];
-
-    each(collectionDrafts, (collectionDraft) => {
-      const collection = findCollectionByUid(collections, collectionDraft.collectionUid);
-      if (collection) {
-        const collectionCopy = cloneDeep(collection);
-        const collectionRootToSave = transformCollectionRootToSave(collectionCopy);
-        const { ipcRenderer } = window;
-
-        let savePromises = [];
-
-        savePromises.push(ipcRenderer.invoke('renderer:save-collection-root', collectionCopy.pathname, collectionRootToSave, collectionCopy.brunoConfig));
-
-        if (collectionCopy.draft?.brunoConfig) {
-          savePromises.push(ipcRenderer.invoke('renderer:update-bruno-config', collectionCopy.draft.brunoConfig, collectionCopy.pathname, collectionCopy.root));
-        }
-
-        Promise.all(savePromises)
-          .then(() => {
-            dispatch(saveCollectionDraft({ collectionUid: collectionDraft.collectionUid }));
-          })
-          .catch((err) => {
-            toast.error('Failed to save collection settings!');
-            reject(err);
-          });
-      }
-    });
-
-    Promise.all(savePromises)
-      .then(resolve)
-      .catch((err) => {
-        toast.error('Failed to save collection settings!');
-        reject(err);
-      });
-  });
+  const { collections } = getState().collections;
+  return Promise.all(collectionDrafts
+    .filter(({ collectionUid }) => findCollectionByUid(collections, collectionUid))
+    .map(({ collectionUid }) => dispatch(saveCollectionSettings(collectionUid, null, true))));
 };
 
 export const saveMultipleFolders = (folderDrafts) => (dispatch, getState) => {
@@ -503,6 +443,8 @@ export const sendCollectionOauth2Request = (collectionUid, itemUid) => (dispatch
     });
     collectionCopy.globalEnvironmentVariables = globalEnvironmentVariables;
 
+    collectionCopy.globalEnvironment = getGlobalEnvironmentMetadata(state.globalEnvironments);
+
     const environment = findEnvironmentInCollection(collectionCopy, collection.activeEnvironmentUid);
 
     _sendCollectionOauth2Request(collectionCopy, environment, collectionCopy.runtimeVariables)
@@ -543,6 +485,8 @@ export const wsConnectOnly = (item, collectionUid) => (dispatch, getState) => {
       activeGlobalEnvironmentUid
     });
     collectionCopy.globalEnvironmentVariables = globalEnvironmentVariables;
+
+    collectionCopy.globalEnvironment = getGlobalEnvironmentMetadata(state.globalEnvironments);
 
     const environment = findEnvironmentInCollection(collectionCopy, collectionCopy.activeEnvironmentUid);
 
@@ -650,6 +594,8 @@ export const sendRequest = (item, collectionUid) => (dispatch, getState) => {
       activeGlobalEnvironmentUid
     });
     collectionCopy.globalEnvironmentVariables = globalEnvironmentVariables;
+
+    collectionCopy.globalEnvironment = getGlobalEnvironmentMetadata(state.globalEnvironments);
 
     const requestUid = uuid();
     itemCopy.requestUid = requestUid;
@@ -783,6 +729,8 @@ export const runCollectionFolder
         activeGlobalEnvironmentUid
       });
       collectionCopy.globalEnvironmentVariables = globalEnvironmentVariables;
+
+      collectionCopy.globalEnvironment = getGlobalEnvironmentMetadata(state.globalEnvironments);
 
       const folder = findItemInCollection(collectionCopy, folderUid);
 
@@ -2352,6 +2300,7 @@ export const loadGrpcMethodsFromReflection = (item, collectionUid, url) => async
       activeGlobalEnvironmentUid
     });
     collectionCopy.globalEnvironmentVariables = globalEnvironmentVariables;
+    collectionCopy.globalEnvironment = getGlobalEnvironmentMetadata(state.globalEnvironments);
     const environment = findEnvironmentInCollection(collectionCopy, collectionCopy.activeEnvironmentUid);
     const runtimeVariables = collectionCopy.runtimeVariables;
 
@@ -2398,6 +2347,7 @@ export const generateGrpcurlCommand = (item, collectionUid) => async (dispatch, 
       activeGlobalEnvironmentUid
     });
     collectionCopy.globalEnvironmentVariables = globalEnvironmentVariables;
+    collectionCopy.globalEnvironment = getGlobalEnvironmentMetadata(state.globalEnvironments);
     const environment = findEnvironmentInCollection(collectionCopy, collectionCopy.activeEnvironmentUid);
     const runtimeVariables = collectionCopy.runtimeVariables;
 
@@ -2436,7 +2386,7 @@ export const addEnvironment = (name, collectionUid) => (dispatch, getState) => {
   });
 };
 
-export const importEnvironment = ({ name, variables, color, collectionUid }) => (dispatch, getState) => {
+export const importEnvironment = ({ name, variables, color, extends: extendsFrom, collectionUid }) => (dispatch, getState) => {
   return new Promise((resolve, reject) => {
     const state = getState();
     const collection = findCollectionByUid(state.collections.collections, collectionUid);
@@ -2448,7 +2398,7 @@ export const importEnvironment = ({ name, variables, color, collectionUid }) => 
 
     const { ipcRenderer } = window;
     ipcRenderer
-      .invoke('renderer:create-environment', collection.pathname, sanitizedName, variables, color)
+      .invoke('renderer:create-environment', collection.pathname, sanitizedName, variables, color, extendsFrom)
       .then(
         dispatch(
           updateLastAction({
@@ -2490,7 +2440,7 @@ export const copyEnvironment = (name, baseEnvUid, collectionUid) => (dispatch, g
       });
 
     ipcRenderer
-      .invoke('renderer:create-environment', collection.pathname, sanitizedName, variablesToCopy)
+      .invoke('renderer:create-environment', collection.pathname, sanitizedName, variablesToCopy, baseEnv.color, baseEnv.extends)
       .then(
         dispatch(
           updateLastAction({
@@ -3053,62 +3003,73 @@ export const browseFiles = (filters, properties) => (_dispatch, _getState) => {
   });
 };
 
+const collectionSaveQueues = new Map();
+
+const queueCollectionSave = (collectionUid, save) => {
+  const previous = collectionSaveQueues.get(collectionUid);
+  const pending = previous ? previous.catch(() => {}).then(save) : save();
+  collectionSaveQueues.set(collectionUid, pending);
+  const cleanup = () => {
+    if (collectionSaveQueues.get(collectionUid) === pending) collectionSaveQueues.delete(collectionUid);
+  };
+  pending.then(cleanup, cleanup);
+  return pending;
+};
+
 export const saveCollectionSettings = (collectionUid, brunoConfig = null, silent = false) => (dispatch, getState) => {
-  const state = getState();
-  const collection = findCollectionByUid(state.collections.collections, collectionUid);
+  const save = async () => {
+    const collection = findCollectionByUid(getState().collections.collections, collectionUid);
+    if (!collection) throw new Error('Collection not found');
 
-  return new Promise((resolve, reject) => {
-    if (!collection) {
-      return reject(new Error('Collection not found'));
-    }
-
-    const collectionCopy = cloneDeep(collection);
-
-    // Transform collection root (uses draft if exists)
-    const collectionRootToSave = transformCollectionRootToSave(collectionCopy);
+    const sourceRoot = collection.draft?.root || collection.root;
+    const collectionRootToSave = sourceRoot && Object.keys(sourceRoot).length
+      ? transformCollectionRootToSave(collection) : null;
+    const brunoConfigToSave = brunoConfig || collection.draft?.brunoConfig;
     const { ipcRenderer } = window;
 
-    const savePromises = [];
-
-    // Save collection.bru file
-    savePromises.push(ipcRenderer.invoke('renderer:save-collection-root', collectionCopy.pathname, collectionRootToSave, collectionCopy.brunoConfig));
-
-    // Save bruno.json if brunoConfig is provided or if there's a brunoConfig draft
-    const brunoConfigToSave = brunoConfig || (collectionCopy.draft && collectionCopy.draft.brunoConfig);
-    if (brunoConfigToSave) {
-      savePromises.push(ipcRenderer.invoke('renderer:update-bruno-config', brunoConfigToSave, collectionCopy.pathname, collectionCopy.root));
+    try {
+      // Both IPCs rewrite opencollection.yml. Use the same draft-aware snapshot
+      // and serialize them so neither can overwrite the other's changes.
+      if (collectionRootToSave) {
+        await ipcRenderer.invoke('renderer:save-collection-root', collection.pathname,
+          collectionRootToSave, brunoConfigToSave || collection.brunoConfig);
+      }
+      if (brunoConfigToSave) {
+        await ipcRenderer.invoke('renderer:update-bruno-config', brunoConfigToSave,
+          collection.pathname, collectionRootToSave || sourceRoot);
+      }
+      if (!silent) toast.success('Collection Settings saved successfully');
+      dispatch(saveCollectionDraft({
+        collectionUid,
+        savedDraft: collection.draft,
+        savedRoot: collectionRootToSave ? sourceRoot : undefined,
+        savedConfig: brunoConfigToSave || collection.brunoConfig
+      }));
+    } catch (err) {
+      toast.error('Failed to save collection settings!');
+      throw err;
     }
-
-    Promise.all(savePromises)
-      .then(() => {
-        if (!silent) {
-          toast.success('Collection Settings saved successfully');
-        }
-        dispatch(saveCollectionDraft({ collectionUid }));
-      })
-      .then(resolve)
-      .catch((err) => {
-        toast.error('Failed to save collection settings!');
-        reject(err);
-      });
-  });
+  };
+  // Autosave and manual Save can overlap. Take each snapshot after the prior
+  // save finishes, so an older completion cannot overwrite a newer save.
+  return queueCollectionSave(collectionUid, save);
 };
 
 export const updateBrunoConfig = (brunoConfig, collectionUid) => (dispatch, getState) => {
-  const state = getState();
-
-  const collection = findCollectionByUid(state.collections.collections, collectionUid);
-
-  return new Promise((resolve, reject) => {
-    if (!collection) {
-      return reject(new Error('Collection not found'));
+  const before = findCollectionByUid(getState().collections.collections, collectionUid)?.brunoConfig || {};
+  const changedKeys = [...new Set([...Object.keys(before), ...Object.keys(brunoConfig)])]
+    .filter((key) => !isEqual(before[key], brunoConfig[key]));
+  return queueCollectionSave(collectionUid, async () => {
+    const collection = findCollectionByUid(getState().collections.collections, collectionUid);
+    if (!collection) throw new Error('Collection not found');
+    // A proto-file update should not undo proxy/config changes saved while it
+    // waited in the queue. Apply only the config sections its caller changed.
+    const configToSave = { ...collection.brunoConfig };
+    for (const key of changedKeys) {
+      if (Object.prototype.hasOwnProperty.call(brunoConfig, key)) configToSave[key] = brunoConfig[key];
+      else delete configToSave[key];
     }
-
-    const { ipcRenderer } = window;
-    ipcRenderer
-      .invoke('renderer:update-bruno-config', brunoConfig, collection.pathname, collection.root)
-      .then(resolve)
-      .catch(reject);
+    return window.ipcRenderer.invoke('renderer:update-bruno-config', configToSave, collection.pathname, collection.root);
   });
 };
 
@@ -3540,7 +3501,8 @@ export const fetchOauth2Credentials = (payload) => async (dispatch, getState) =>
   request.globalEnvironmentVariables = globalEnvironmentVariables;
   return new Promise((resolve, reject) => {
     window.ipcRenderer
-      .invoke('renderer:fetch-oauth2-credentials', { itemUid, request, collection })
+      .invoke('renderer:fetch-oauth2-credentials', { itemUid, request,
+        collection: { ...collection, globalEnvironment: getGlobalEnvironmentMetadata(state.globalEnvironments) } })
       .then(({ credentials, url, collectionUid, credentialsId, debugInfo }) => {
         dispatch(
           collectionAddOauth2CredentialsByUrl({
@@ -3567,7 +3529,8 @@ export const refreshOauth2Credentials = (payload) => async (dispatch, getState) 
   request.globalEnvironmentVariables = globalEnvironmentVariables;
   return new Promise((resolve, reject) => {
     window.ipcRenderer
-      .invoke('renderer:refresh-oauth2-credentials', { itemUid, request, collection })
+      .invoke('renderer:refresh-oauth2-credentials', { itemUid, request,
+        collection: { ...collection, globalEnvironment: getGlobalEnvironmentMetadata(state.globalEnvironments) } })
       .then(({ credentials, url, collectionUid, debugInfo, credentialsId }) => {
         dispatch(
           collectionAddOauth2CredentialsByUrl({

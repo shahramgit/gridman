@@ -48,6 +48,7 @@ jest.mock('../../src/utils/form-data', () => ({
   createFormData: jest.fn()
 }));
 jest.mock('@usebruno/requests', () => ({
+  ...jest.requireActual('@usebruno/requests'),
   addDigestInterceptor: jest.fn(),
   getHttpHttpsAgents: jest.fn(() => ({})),
   makeAxiosInstance: jest.fn(),
@@ -72,6 +73,7 @@ jest.mock('@usebruno/common', () => {
   const ogUtils = jest.requireActual('@usebruno/common').utils;
   return {
     utils: {
+      ...ogUtils,
       encodeUrl: jest.fn((u) => u),
       buildFormUrlEncodedPayload: jest.fn(),
       extractPromptVariables: mockExtractPromptVariables,
@@ -140,13 +142,7 @@ describe('runSingleRequest: duration and size fields (issue #7352)', () => {
 
   it('should return numeric duration and size on successful request', async () => {
     const responseBody = JSON.stringify({ message: 'ok' });
-    const mockHeaders = new Map([['request-duration', '253']]);
-    mockHeaders.delete = function (key) { this.delete(key); };
-    // Use a plain object with get/delete to simulate axios headers
-    const headers = {
-      get: (key) => key === 'request-duration' ? '253' : null,
-      delete: jest.fn()
-    };
+    const headers = {};
 
     prepareRequest.mockResolvedValue({
       method: 'GET',
@@ -160,6 +156,7 @@ describe('runSingleRequest: duration and size fields (issue #7352)', () => {
       status: 200,
       statusText: 'OK',
       headers,
+      config: { metadata: { completedHopsTime: 253 } },
       data: responseBody,
       request: { protocol: 'http:', host: 'example.com', path: '/api' }
     });

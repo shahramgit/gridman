@@ -9,6 +9,7 @@ import type { Action } from '@opencollection/types/common/actions';
 import type { HttpRequestParam, HttpRequestHeader } from '@opencollection/types/requests/http';
 import { stringifyYml } from '../utils';
 import { isNonEmptyString, isNumber } from '../../../utils';
+import { utils } from '@usebruno/common';
 import { toOpenCollectionAuth } from '../common/auth';
 import { toOpenCollectionHttpHeaders } from '../common/headers';
 import { toOpenCollectionParams } from '../common/params';
@@ -16,6 +17,8 @@ import { toOpenCollectionVariables } from '../common/variables';
 import { toOpenCollectionActions } from '../common/actions';
 import { toOpenCollectionScripts } from '../common/scripts';
 import { toOpenCollectionAssertions } from '../common/assertions';
+
+const { toMaxRedirects } = utils;
 
 const stringifyGraphQLRequest = (item: BrunoItem): string => {
   try {
@@ -144,12 +147,7 @@ const stringifyGraphQLRequest = (item: BrunoItem): string => {
       settings.followRedirects = true;
     }
 
-    const maxRedirects = httpSettings?.maxRedirects;
-    if (isNumber(maxRedirects)) {
-      settings.maxRedirects = maxRedirects;
-    } else {
-      settings.maxRedirects = 5;
-    }
+    settings.maxRedirects = toMaxRedirects(httpSettings?.maxRedirects);
 
     ocRequest.settings = settings;
 

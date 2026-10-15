@@ -7,10 +7,16 @@ import {
   relativeDate,
   getContentType,
   formatSize,
+  formatDuration,
   prettifyJsonString
 } from './index';
 
 describe('common utils', () => {
+  it.each([[0, '0ms'], [12.6, '13ms'], [999.6, '1.00s'], [1000, '1.00s'], [1050, '1.05s'], [1999, '2.00s']])(
+    'formats %s milliseconds as %s', (duration, expected) => {
+      expect(formatDuration(duration)).toBe(expected);
+    }
+  );
   describe('normalizeFileName', () => {
     it('should remove special characters', () => {
       expect(normalizeFileName('hello world')).toBe('hello world');

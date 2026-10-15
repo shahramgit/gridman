@@ -9,6 +9,9 @@ import { toBrunoPostResponseVariables } from '../common/actions';
 import { toBrunoScripts } from '../common/scripts';
 import { toBrunoAssertions } from '../common/assertions';
 import { uuid, ensureString } from '../../../utils';
+import { utils } from '@usebruno/common';
+
+const { toMaxRedirects } = utils;
 
 const parseGraphQLRequest = (ocRequest: GraphQLRequest): BrunoItem => {
   const info = ocRequest.info;
@@ -51,12 +54,7 @@ const parseGraphQLRequest = (ocRequest: GraphQLRequest): BrunoItem => {
   // scripts
   const scripts = toBrunoScripts(runtime?.scripts);
   if (scripts?.script && brunoRequest.script) {
-    if (scripts.script.req) {
-      brunoRequest.script.req = scripts.script.req;
-    }
-    if (scripts.script.res) {
-      brunoRequest.script.res = scripts.script.res;
-    }
+    Object.assign(brunoRequest.script, scripts.script);
   }
   if (scripts?.tests) {
     brunoRequest.tests = scripts.tests;
@@ -122,11 +120,7 @@ const parseGraphQLRequest = (ocRequest: GraphQLRequest): BrunoItem => {
       settings.followRedirects = true;
     }
 
-    if (typeof ocRequest.settings.maxRedirects === 'number') {
-      settings.maxRedirects = ocRequest.settings.maxRedirects;
-    } else {
-      settings.maxRedirects = 5;
-    }
+    settings.maxRedirects = toMaxRedirects(ocRequest.settings.maxRedirects);
 
     brunoItem.settings = settings;
   }

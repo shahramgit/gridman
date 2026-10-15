@@ -1,10 +1,12 @@
 import get from 'lodash/get';
 import mime from 'mime-types';
 import { validateSchema, transformItemsInCollection, hydrateSeqInCollection, uuid } from '../common';
-import { transformExampleStatusInCollection } from '@usebruno/common';
+import { transformExampleStatusInCollection, utils } from '@usebruno/common';
 import each from 'lodash/each';
 import postmanTranslation from './postman-translations';
 import { invalidVariableCharacterRegex } from '../constants/index';
+
+const { parseMaxRedirects } = utils;
 
 /**
  * Postman's `mode: "file"` body carries no per-file content type, so infer one from the
@@ -218,7 +220,7 @@ const importCollectionLevelVariables = (variables, requestObject) => {
     uid: uuid(),
     name: (v.key ?? '').replace(invalidVariableCharacterRegex, '_'),
     value: v.value == null ? '' : typeof v.value === 'string' ? v.value : JSON.stringify(v.value),
-    enabled: true
+    enabled: !v.disabled
   }));
 
   requestObject.vars.req = vars;
@@ -317,6 +319,11 @@ export const processAuth = (auth, requestObject, isCollection = false) => {
       const postmanGrantType = findValueUsingKey('grant_type');
       const targetGrantType = oauth2GrantTypeMaps[postmanGrantType] || 'client_credentials'; // Default
 
+      const tokenPlacement = findValueUsingKey('addTokenTo') === 'queryParams' ? 'url' : 'header';
+      const tokenHeaderPrefix = tokenPlacement === 'header' && authValues.headerPrefix == null
+        ? 'Bearer'
+        : findValueUsingKey('headerPrefix');
+
       // Common properties for all OAuth2 grant types
       const baseOAuth2Config = {
         grantType: targetGrantType,
@@ -326,7 +333,9 @@ export const processAuth = (auth, requestObject, isCollection = false) => {
         clientSecret: findValueUsingKey('clientSecret'),
         scope: findValueUsingKey('scope'),
         state: findValueUsingKey('state'),
-        tokenPlacement: findValueUsingKey('addTokenTo') === 'header' ? 'header' : 'url',
+        tokenPlacement,
+        tokenHeaderPrefix,
+        tokenQueryKey: 'access_token',
         credentialsPlacement: findValueUsingKey('client_authentication') === 'body' ? 'body' : 'basic_auth_header'
       };
 
@@ -499,8 +508,11 @@ const importPostmanV2CollectionItem = (brunoParent, item, { useWorkers = false }
       }
 
       // Handle maxRedirects setting
-      if (i.protocolProfileBehavior?.maxRedirects !== undefined) {
-        settings.maxRedirects = i.protocolProfileBehavior.maxRedirects;
+      const maxRedirects = parseMaxRedirects(i.protocolProfileBehavior?.maxRedirects);
+      if (maxRedirects !== undefined) {
+        settings.maxRedirects = maxRedirects;
+      } else if (i.protocolProfileBehavior?.maxRedirects !== undefined) {
+        console.warn('Invalid Postman maxRedirects ignored: expected a finite number of 0 or more.');
       }
 
       brunoRequestItem.settings = settings;

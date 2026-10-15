@@ -1,4 +1,5 @@
 import { uuid } from '../../common/index.js';
+import { utils } from '@usebruno/common';
 import {
   fromOpenCollectionHeaders,
   toOpenCollectionHeaders,
@@ -30,6 +31,8 @@ import type {
   BrunoKeyValue,
   BrunoHttpRequestParam
 } from '../types';
+
+const { toMaxRedirects } = utils;
 
 const getGraphqlBody = (body: GraphQLBody | GraphQLBodyVariant[] | undefined): GraphQLBody | undefined => {
   if (!body) return undefined;
@@ -88,7 +91,7 @@ export const fromOpenCollectionGraphqlItem = (item: GraphQLRequest): BrunoItem =
       (brunoItem.settings as Record<string, unknown>).followRedirects = settings.followRedirects;
     }
     if (settings.maxRedirects !== undefined) {
-      (brunoItem.settings as Record<string, unknown>).maxRedirects = settings.maxRedirects;
+      (brunoItem.settings as Record<string, unknown>).maxRedirects = toMaxRedirects(settings.maxRedirects);
     }
   }
 
@@ -181,7 +184,7 @@ export const toOpenCollectionGraphqlItem = (item: BrunoItem): GraphQLRequest => 
     encodeUrl: typeof brunoSettings.encodeUrl === 'boolean' ? brunoSettings.encodeUrl : true,
     timeout: typeof brunoSettings.timeout === 'number' ? brunoSettings.timeout : 0,
     followRedirects: typeof brunoSettings.followRedirects === 'boolean' ? brunoSettings.followRedirects : true,
-    maxRedirects: typeof brunoSettings.maxRedirects === 'number' ? brunoSettings.maxRedirects : 5
+    maxRedirects: toMaxRedirects(brunoSettings.maxRedirects)
   };
   ocRequest.settings = settings;
 

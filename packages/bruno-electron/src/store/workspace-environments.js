@@ -119,7 +119,7 @@ class GlobalEnvironmentsManager {
     }
   }
 
-  async createGlobalEnvironment(workspacePath, { uid, name, variables, color }) {
+  async createGlobalEnvironment(workspacePath, { uid, name, variables, color, extends: extendsFrom }) {
     try {
       if (!workspacePath) {
         throw new Error('Workspace path is required');
@@ -140,6 +140,7 @@ class GlobalEnvironmentsManager {
       const environment = {
         name: name,
         variables: variables || [],
+        extends: extendsFrom,
         color
       };
 
@@ -154,6 +155,7 @@ class GlobalEnvironmentsManager {
         uid: generateUidBasedOnHash(environmentFilePath),
         name,
         variables,
+        extends: extendsFrom,
         color
       };
     } catch (error) {
@@ -173,7 +175,9 @@ class GlobalEnvironmentsManager {
         throw new Error(`Environment file not found for uid: ${environmentUid}`);
       }
 
+      const existing = await this.parseEnvironmentFile(envFile.filePath, workspacePath);
       const environment = {
+        ...existing,
         name: envFile.name,
         variables: variables
       };

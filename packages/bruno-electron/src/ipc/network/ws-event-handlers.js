@@ -25,6 +25,8 @@ const path = require('node:path');
 const { setAuthHeaders } = require('./prepare-request');
 
 const prepareWsRequest = async (item, collection, environment, runtimeVariables, certsAndProxyConfig = {}) => {
+  require('@usebruno/common').utils.assertSupportedEnvironment(environment);
+  require('@usebruno/common').utils.assertSupportedEnvironment(collection?.globalEnvironment);
   const request = item.draft ? item.draft.request : item.request;
   const collectionRoot = collection?.draft?.root ? get(collection, 'draft.root', {}) : get(collection, 'root', {});
   const brunoConfig = collection.draft?.brunoConfig

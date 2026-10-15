@@ -8,7 +8,7 @@ const createManagedQuickJsContext = (module) => {
   const vm = module.newContext();
   const disposeTracked = trackQuickJsContext(vm);
   const evalCodeRetained = vm.evalCode.bind(vm);
-  const waitForPendingDeferreds = trackPendingDeferreds(vm);
+  const { waitForPendingDeferreds, disposePendingDeferreds } = trackPendingDeferreds(vm);
 
   vm.evalCode = (code, filename = 'eval.js') => {
     const result = evalCodeRetained(code, filename);
@@ -25,7 +25,7 @@ const createManagedQuickJsContext = (module) => {
   return {
     vm,
     waitForPendingDeferreds,
-    dispose: () => disposeQuickJsContext(vm, disposeTracked)
+    dispose: () => disposeQuickJsContext(vm, disposeTracked, disposePendingDeferreds)
   };
 };
 
@@ -46,19 +46,30 @@ const createManagedQuickJsContext = (module) => {
 
 const trackPendingDeferreds = (vm) => {
   const pendingDeferreds = [];
+  const deferreds = [];
   const originalNewPromise = vm.newPromise.bind(vm);
   vm.newPromise = (...args) => {
     const deferred = originalNewPromise(...args);
+    deferreds.push(deferred);
     pendingDeferreds.push(deferred.settled.catch(() => { }));
     return deferred;
   };
 
-  return async () => {
+  const waitForPendingDeferreds = async () => {
     while (pendingDeferreds.length) {
       const batch = pendingDeferreds.splice(0);
       await Promise.all(batch);
     }
   };
+  const disposePendingDeferreds = () => {
+    while (deferreds.length) {
+      const deferred = deferreds.pop();
+      if (deferred.alive) {
+        deferred.dispose();
+      }
+    }
+  };
+  return { waitForPendingDeferreds, disposePendingDeferreds };
 };
 
 /**
@@ -98,16 +109,12 @@ const trackQuickJsContext = (vm) => {
 };
 
 /**
- * Clears shim globals, drains pending QuickJS jobs, and disposes the context.
- * Pass disposeTracked from trackQuickJsContext() to free shim handles first.
+ * Drain jobs before flushing handles: a job can allocate more handles or
+ * deferreds that must also be freed before the runtime is disposed.
  */
-const disposeQuickJsContext = (vm, disposeTracked) => {
+const disposeQuickJsContext = (vm, disposeTracked, disposePendingDeferreds) => {
   if (!vm?.alive) {
     return;
-  }
-
-  if (typeof disposeTracked === 'function') {
-    disposeTracked();
   }
 
   // Drain the runtime's pending job queue (resolved/rejected promise callbacks)
@@ -121,6 +128,12 @@ const disposeQuickJsContext = (vm, disposeTracked) => {
       result.error.dispose();
       break;
     }
+  }
+  if (typeof disposePendingDeferreds === 'function') {
+    disposePendingDeferreds();
+  }
+  if (typeof disposeTracked === 'function') {
+    disposeTracked();
   }
   vm.dispose();
 };

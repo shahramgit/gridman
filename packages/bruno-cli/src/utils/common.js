@@ -45,5 +45,6 @@ const parseDataFromResponse = (response, disableParsingResponseJson = false) => 
 module.exports = {
   lpad,
   rpad,
-  parseDataFromResponse
+  parseDataFromResponse,
+  isBinaryRequestBody: (data) => Buffer.isBuffer(data) || typeof data?.pipe === 'function'
 };

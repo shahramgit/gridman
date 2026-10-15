@@ -83,6 +83,10 @@ const parseEnvironment = (ymlString: string): BrunoEnvironment => {
       variables: toBrunoEnvironmentVariables(ocEnvironment.variables),
       color: ocEnvironment.color || null
     };
+    const extendsFrom = (ocEnvironment as any).extends;
+    if (typeof extendsFrom === 'string' || Array.isArray(extendsFrom)) {
+      brunoEnvironment.extends = extendsFrom;
+    }
 
     const externalSecrets = toBrunoExternalSecrets((ocEnvironment as any).externalSecrets);
     if (externalSecrets) {

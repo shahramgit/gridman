@@ -118,6 +118,8 @@ const configureRequest = async (grpcRequest, request, collection, envVars, runti
 };
 
 const prepareGrpcRequest = async (item, collection, environment, runtimeVariables) => {
+  require('@usebruno/common').utils.assertSupportedEnvironment(environment);
+  require('@usebruno/common').utils.assertSupportedEnvironment(collection?.globalEnvironment);
   const request = item.draft ? item.draft.request : item.request;
   const collectionRoot = collection?.draft?.root ? get(collection, 'draft.root', {}) : get(collection, 'root', {});
   const headers = {};
@@ -126,6 +128,12 @@ const prepareGrpcRequest = async (item, collection, environment, runtimeVariable
 
   const scriptFlow = collection?.brunoConfig?.scripts?.flow ?? 'sandwich';
   const requestTreePath = getTreePathFromCollectionToItem(collection, item);
+  const lifecycleHooks = ['beforeCallStart', 'beforeMessageSend', 'afterMessageReceive', 'afterCallEnd'];
+  const scriptSources = [item.draft || item, collectionRoot, ...requestTreePath.map((ancestor) => ancestor.draft || ancestor)];
+  if (scriptSources.some((source) => lifecycleHooks.some((name) => (source.request?.script || source.script)?.[name]?.trim())
+    || source.unknownBlocks?.some((block) => block.name.startsWith('script:grpc:')))) {
+    throw new Error('gRPC lifecycle scripting is not supported by this version of Gridman. Remove the gRPC script hooks before sending this request.');
+  }
   if (requestTreePath && requestTreePath.length > 0) {
     mergeAuth(collection, request, requestTreePath);
     mergeHeaders(collection, request, requestTreePath);

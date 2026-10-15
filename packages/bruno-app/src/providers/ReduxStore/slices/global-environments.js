@@ -18,12 +18,13 @@ export const globalEnvironmentsSlice = createSlice({
       state.activeGlobalEnvironmentUid = action.payload?.activeGlobalEnvironmentUid;
     },
     _addGlobalEnvironment: (state, action) => {
-      const { name, uid, variables = [], color } = action.payload;
+      const { name, uid, variables = [], color, extends: extendsFrom } = action.payload;
       if (name?.length) {
         state.globalEnvironments.push({
           uid,
           name,
           variables,
+          extends: extendsFrom,
           color
         });
       }
@@ -47,11 +48,12 @@ export const globalEnvironmentsSlice = createSlice({
       }
     },
     _copyGlobalEnvironment: (state, action) => {
-      const { name, uid, variables } = action.payload;
+      const { name, uid, variables, extends: extendsFrom } = action.payload;
       if (name?.length && uid) {
         state.globalEnvironments.push({
           uid,
           name,
+          extends: extendsFrom,
           variables
         });
       }
@@ -111,23 +113,23 @@ const getWorkspaceContext = (state) => {
   return { workspaceUid, workspacePath: workspace?.pathname };
 };
 
-export const addGlobalEnvironment = ({ name, variables = [], color }) => (dispatch, getState) => {
+export const addGlobalEnvironment = ({ name, variables = [], color, extends: extendsFrom }) => (dispatch, getState) => {
   return new Promise((resolve, reject) => {
     const uid = uuid();
-    const environment = { name, uid, variables };
+    const environment = { name, uid, variables, extends: extendsFrom };
     const { ipcRenderer } = window;
     const state = getState();
     const { workspaceUid, workspacePath } = getWorkspaceContext(state);
 
     environmentSchema
       .validate(environment)
-      .then(() => ipcRenderer.invoke('renderer:create-global-environment', { name, uid, variables, color, workspaceUid, workspacePath }))
+      .then(() => ipcRenderer.invoke('renderer:create-global-environment', { name, uid, variables, color, extends: extendsFrom, workspaceUid, workspacePath }))
       .then((result) => {
         const finalUid = result?.uid || uid;
         const finalName = result?.name || name;
         const finalVariables = result?.variables || variables;
         const finalColor = result?.color || color;
-        dispatch(_addGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables, color: finalColor }));
+        dispatch(_addGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables, color: finalColor, extends: result?.extends ?? extendsFrom }));
         return finalUid;
       })
       .then((finalUid) => dispatch(selectGlobalEnvironment({ environmentUid: finalUid })))
@@ -146,17 +148,17 @@ export const copyGlobalEnvironment = ({ name, environmentUid: baseEnvUid }) => (
       return reject(new Error('Base environment not found'));
     }
     const uid = uuid();
-    const environment = { uid, name, variables: baseEnv.variables };
+    const environment = { uid, name, variables: baseEnv.variables, extends: baseEnv.extends };
     const { ipcRenderer } = window;
 
     environmentSchema
       .validate(environment)
-      .then(() => ipcRenderer.invoke('renderer:create-global-environment', { uid, name, variables: baseEnv.variables, workspaceUid, workspacePath }))
+      .then(() => ipcRenderer.invoke('renderer:create-global-environment', { uid, name, variables: baseEnv.variables, extends: baseEnv.extends, workspaceUid, workspacePath }))
       .then((result) => {
         const finalUid = result?.uid || uid;
         const finalName = result?.name || name;
         const finalVariables = result?.variables || baseEnv.variables;
-        dispatch(_copyGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables }));
+        dispatch(_copyGlobalEnvironment({ name: finalName, uid: finalUid, variables: finalVariables, extends: result?.extends ?? baseEnv.extends }));
       })
       .then(resolve)
       .catch(reject);

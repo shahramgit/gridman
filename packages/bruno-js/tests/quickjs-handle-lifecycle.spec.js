@@ -255,6 +255,24 @@ describe('QuickJS VM handle lifecycle', () => {
       }
       expect(createManagedQuickJsContextSpy).toHaveBeenCalledTimes(25);
     });
+
+    it('returns undefined for an async expression without double-disposing its Promise', async () => {
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(executeQuickJsVm({
+          script: 'bru.sleep(1)',
+          context: { bru: makeBru() },
+          scriptType: 'expression'
+        })).toBeUndefined();
+        assertHandlesWereCleared();
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(executeQuickJsVm({ script: '6 * 7', context: {}, scriptType: 'expression' })).toBe(42);
+        expect(errorSpy).not.toHaveBeenCalled();
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
   });
 
   describe('executeQuickJsVmAsync', () => {

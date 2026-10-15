@@ -1,6 +1,7 @@
 import { default as axios, AxiosRequestConfig, AxiosRequestHeaders, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import http from 'node:http';
 import https from 'node:https';
+import { getMediaType } from '@usebruno/common/utils';
 
 /**
  *
@@ -33,7 +34,7 @@ const baseRequestConfig: Partial<AxiosRequestConfig> = {
   httpsAgent: new https.Agent({ keepAlive: true }),
   transformRequest: function transformRequest(data: any, headers: AxiosRequestHeaders) {
     const contentType = headers.getContentType() || '';
-    const hasJSONContentType = contentType.includes('json');
+    const hasJSONContentType = getMediaType(contentType).includes('json');
     if (typeof data === 'string' && hasJSONContentType) {
       return data;
     }

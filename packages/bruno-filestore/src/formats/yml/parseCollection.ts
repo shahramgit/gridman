@@ -146,14 +146,16 @@ const parseCollection = (ymlString: string): ParsedCollection => {
               type: 'cert',
               certFilePath: cert.certificateFilePath,
               keyFilePath: cert.privateKeyFilePath,
-              passphrase: cert.passphrase || ''
+              passphrase: cert.passphrase || '',
+              ...(cert.disabled && { disabled: true })
             };
           } else if (cert.type === 'pkcs12') {
             return {
               domain: cert.domain,
               type: 'pfx',
               pfxFilePath: cert.pkcs12FilePath,
-              passphrase: cert.passphrase || ''
+              passphrase: cert.passphrase || '',
+              ...(cert.disabled && { disabled: true })
             };
           }
           return null;
@@ -205,12 +207,7 @@ const parseCollection = (ymlString: string): ParsedCollection => {
       // scripts
       const scripts = toBrunoScripts(oc.request.scripts);
       if (scripts?.script && collectionRoot.request.script) {
-        if (scripts.script.req) {
-          collectionRoot.request.script.req = scripts.script.req;
-        }
-        if (scripts.script.res) {
-          collectionRoot.request.script.res = scripts.script.res;
-        }
+        Object.assign(collectionRoot.request.script, scripts.script);
       }
       if (scripts?.tests) {
         collectionRoot.request.tests = scripts.tests;

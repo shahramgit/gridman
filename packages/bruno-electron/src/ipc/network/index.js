@@ -11,22 +11,22 @@ const { ipcMain } = require('electron');
 const { each, get, extend, cloneDeep, merge } = require('lodash');
 const { NtlmClient } = require('axios-ntlm');
 const { VarsRuntime, AssertRuntime, ScriptRuntime, TestRuntime, formatErrorWithContextV2 } = require('@usebruno/js');
-const { encodeUrl, hasExplicitScheme } = require('@usebruno/common').utils;
+const { encodeUrl, hasExplicitScheme, DEFAULT_MAX_REDIRECTS } = require('@usebruno/common').utils;
 const { extractPromptVariables } = require('@usebruno/common').utils;
 const { interpolateString } = require('./interpolate-string');
 const { resolveAwsV4Credentials, addAwsV4Interceptor } = require('./awsv4auth-helper');
-const { addDigestInterceptor } = require('@usebruno/requests');
+const { addDigestInterceptor, applySentHeadersToRequest, measureResponseTime } = require('@usebruno/requests');
 const prepareGqlIntrospectionRequest = require('./prepare-gql-introspection-request');
 const { prepareRequest } = require('./prepare-request');
 const interpolateVars = require('./interpolate-vars');
-const { makeAxiosInstance } = require('./axios-instance');
+const { makeAxiosInstance, completeOpenHop } = require('./axios-instance');
 const { resolveInheritedSettings } = require('../../utils/collection');
 const { cancelTokens, saveCancelToken, deleteCancelToken } = require('../../utils/cancel-token');
-const { uuid, safeStringifyJSON, safeParseJSON, parseDataFromResponse, parseDataFromRequest } = require('../../utils/common');
+const { uuid, safeStringifyJSON, safeParseJSON, parseDataFromResponse, parseDataFromRequest, isBinaryRequestBody } = require('../../utils/common');
 const { chooseFileToSave, writeFile, getCollectionFormat, hasRequestExtension } = require('../../utils/filesystem');
 const { addCookieToJar, getDomainsWithCookies, getCookieStringForUrl } = require('../../utils/cookies');
 const { createFormData } = require('../../utils/form-data');
-const { findItemInCollectionByPathname, sortFolder, getAllRequestsInFolderRecursively, getEnvVars, getTreePathFromCollectionToItem, mergeVars, sortByNameThenSequence } = require('../../utils/collection');
+const { findItemInCollectionByPathname, sortFolder, getAllRequestsInFolderRecursively, getEnvVars: getUncheckedEnvVars, getTreePathFromCollectionToItem, mergeVars, sortByNameThenSequence } = require('../../utils/collection');
 const { getOAuth2TokenUsingAuthorizationCode, getOAuth2TokenUsingClientCredentials, getOAuth2TokenUsingPasswordCredentials, getOAuth2TokenUsingImplicitGrant, updateCollectionOauth2Credentials, clearOauth2CredentialsByCredentialsId } = require('../../utils/oauth2');
 const { preferencesUtil } = require('../../store/preferences');
 const { getProcessEnvVars } = require('../../store/process-env');
@@ -37,9 +37,15 @@ const { cookiesStore } = require('../../store/cookies');
 const registerGrpcEventHandlers = require('./grpc-event-handlers');
 const { registerWsEventHandlers } = require('./ws-event-handlers');
 const { getCertsAndProxyConfig, buildCertsAndProxyConfig } = require('./cert-utils');
-const { buildFormUrlEncodedPayload, isFormData, extractBoundaryFromContentType } = require('@usebruno/common').utils;
+const { buildFormUrlEncodedPayload, isFormData, getMediaType, extractBoundaryFromContentType } = require('@usebruno/common').utils;
 
 const ERROR_OCCURRED_WHILE_EXECUTING_REQUEST = 'Error occurred while executing the request!';
+
+const getEnvVars = (environment, collection) => {
+  require('@usebruno/common').utils.assertSupportedEnvironment(environment);
+  require('@usebruno/common').utils.assertSupportedEnvironment(collection?.globalEnvironment);
+  return getUncheckedEnvVars(environment);
+};
 
 const saveCookies = (url, headers) => {
   if (preferencesUtil.shouldStoreCookies()) {
@@ -195,6 +201,7 @@ const configureRequest = async (
   collectionPath,
   globalEnvironmentVariables
 ) => {
+  require('@usebruno/common').utils.assertSupportedEnvironment(collection?.globalEnvironment);
   const hasVariables = request.url.startsWith('{{');
   if (!hasVariables && !hasExplicitScheme(request.url)) {
     request.url = `http://${request.url}`;
@@ -215,11 +222,11 @@ const configureRequest = async (
   const followRedirects = request.settings?.followRedirects ?? true;
 
   // Get maxRedirects from request settings, fallback to request.maxRedirects, then default to 5
-  let requestMaxRedirects = request.settings?.maxRedirects ?? request.maxRedirects ?? 5;
+  let requestMaxRedirects = request.settings?.maxRedirects ?? request.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
 
   // Ensure it's a valid number
   if (typeof requestMaxRedirects !== 'number' || requestMaxRedirects < 0) {
-    requestMaxRedirects = 5; // Default to 5 redirects
+    requestMaxRedirects = DEFAULT_MAX_REDIRECTS;
   }
 
   // If followRedirects is disabled, set maxRedirects to 0 to disable all redirects
@@ -231,7 +238,7 @@ const configureRequest = async (
 
   const { promptVariables = {} } = collection;
   let { proxyMode, proxyModeReason, proxyConfig, httpsAgentRequestFields, interpolationOptions } = certsAndProxyConfig;
-  let axiosInstance = makeAxiosInstance({
+  const axiosInstance = makeAxiosInstance({
     proxyMode,
     proxyModeReason,
     proxyConfig,
@@ -242,7 +249,8 @@ const configureRequest = async (
   });
 
   if (request.ntlmConfig) {
-    axiosInstance = NtlmClient(request.ntlmConfig, axiosInstance.defaults);
+    const ntlmInstance = NtlmClient(request.ntlmConfig, {});
+    axiosInstance.defaults.adapter = (config) => ntlmInstance.request({ ...config, adapter: axios.getAdapter('http') });
     delete request.ntlmConfig;
   }
 
@@ -451,7 +459,7 @@ const fetchGqlSchemaHandler = async (event, endpoint, environment, _request, col
     const resolvedRequest = cloneDeep(_request);
     // mergeVars modifies the request in place, but we'll assign it to ensure consistency
     mergeVars(collection, resolvedRequest, requestTreePath);
-    const envVars = getEnvVars(environment);
+    const envVars = getEnvVars(environment, collection);
 
     const globalEnvironmentVars = collection.globalEnvironmentVariables;
     const folderVars = resolvedRequest.folderVariables;
@@ -527,6 +535,26 @@ const fetchGqlSchemaHandler = async (event, endpoint, environment, _request, col
 };
 
 const registerNetworkIpc = (mainWindow) => {
+  const sendVariableUpdates = (result, { collectionUid, requestUid, collection, envVars, runtimeVariables }) => {
+    if (!result) return;
+    extend(envVars, result.envVariables);
+    extend(runtimeVariables, result.runtimeVariables);
+    collection.globalEnvironmentVariables = result.globalEnvironmentVariables;
+    mainWindow.webContents.send('main:script-environment-update', {
+      envVariables: result.envVariables,
+      runtimeVariables: result.runtimeVariables,
+      persistentEnvVariables: result.persistentEnvVariables,
+      requestUid,
+      collectionUid
+    });
+    mainWindow.webContents.send('main:persistent-env-variables-update', {
+      persistentEnvVariables: result.persistentEnvVariables,
+      collectionUid
+    });
+    mainWindow.webContents.send('main:global-environment-variables-update', {
+      globalEnvironmentVariables: result.globalEnvironmentVariables
+    });
+  };
   const onConsoleLog = (type, args) => {
     console[type](...args);
 
@@ -701,23 +729,26 @@ const registerNetworkIpc = (mainWindow) => {
     // stringify the request url encoded params
     const contentTypeHeader = Object.keys(request.headers).find((name) => name.toLowerCase() === 'content-type');
 
-    if (contentTypeHeader && request.headers[contentTypeHeader] === 'application/x-www-form-urlencoded') {
+    const contentType = contentTypeHeader ? request.headers[contentTypeHeader] : '';
+    const mediaType = getMediaType(contentType);
+
+    if (mediaType === 'application/x-www-form-urlencoded') {
       if (Array.isArray(request.data)) {
         request.data = buildFormUrlEncodedPayload(request.data);
-      } else if (typeof request.data !== 'string') {
+      } else if (typeof request.data !== 'string' && !isBinaryRequestBody(request.data)) {
         request.data = qs.stringify(request.data, { arrayFormat: 'repeat' });
       }
       // if `data` is of string type - return as-is (assumes already encoded)
     }
 
-    const contentType = contentTypeHeader ? request.headers[contentTypeHeader] : '';
-    if (typeof contentType === 'string' && contentType.startsWith('multipart/')) {
-      if (typeof request.data !== 'string' && !isFormData(request.data)) {
+    if (mediaType.startsWith('multipart/')) {
+      if (typeof request.data !== 'string' && !isFormData(request.data) && !isBinaryRequestBody(request.data)) {
         request._originalMultipartData = request.data;
         request.collectionPath = collectionPath;
         let form;
+        const existingBoundary = extractBoundaryFromContentType(contentType);
         try {
-          form = createFormData(request.data, collectionPath);
+          form = createFormData(request.data, collectionPath, existingBoundary);
         } catch (error) {
           // Building the multipart body is request preparation, not the user's
           // pre-request script. Tag it so it is reported as a body error rather
@@ -729,7 +760,6 @@ const registerNetworkIpc = (mainWindow) => {
         if (contentType !== 'multipart/form-data') {
           // Patch: Axios leverages getHeaders method to get the headers so FormData should be monkey patched
           const formHeaders = form.getHeaders();
-          const existingBoundary = extractBoundaryFromContentType(contentType);
           if (existingBoundary) {
             formHeaders['content-type'] = contentType;
           } else {
@@ -928,7 +958,8 @@ const registerNetworkIpc = (mainWindow) => {
                     data: res.data,
                     dataBuffer: res.dataBuffer,
                     size: res.size,
-                    duration: res.duration
+                    duration: res.duration,
+                    timeline: res.timeline
                   }
                 : null,
               error: err || (res?.error ? { message: res.error } : null),
@@ -1134,11 +1165,10 @@ const registerNetworkIpc = (mainWindow) => {
 
         if (!isResponseStream) {
           response.data = await promisifyStream(response.data);
+          completeOpenHop(response.config);
         }
-
-        // Prevents the duration on leaking to the actual result
-        responseTime = response.headers.get('request-duration');
-        response.headers.delete('request-duration');
+        responseTime = measureResponseTime(response.config.metadata);
+        applySentHeadersToRequest(request, response);
       } catch (error) {
         deleteCancelToken(cancelTokenUid);
 
@@ -1156,15 +1186,17 @@ const registerNetworkIpc = (mainWindow) => {
         if (error?.response) {
           response = error.response;
 
-          // Prevents the duration on leaking to the actual result
-          responseTime = response.headers.get('request-duration');
-          response.headers.delete('request-duration');
           isResponseStream = hasStreamHeaders(response.headers);
           if (!isResponseStream) {
             response.data = await promisifyStream(response.data);
+            completeOpenHop(response.config);
           }
+          responseTime = measureResponseTime(response.config.metadata);
+          applySentHeadersToRequest(request, response);
         } else {
-          await executeRequestOnFailHandler(request, error);
+          await executeRequestOnFailHandler(request, error, (onFailScriptResult) => {
+            sendVariableUpdates(onFailScriptResult, { collectionUid, requestUid, collection, envVars, runtimeVariables });
+          });
 
           // if it's not a network error, don't continue
           // we are not rejecting the promise here and instead returning a response object with `error` which is handled in the `send-http-request` invocation
@@ -1367,6 +1399,8 @@ const registerNetworkIpc = (mainWindow) => {
       };
       if (isResponseStream) {
         axiosDataStream.on('close', () => {
+          completeOpenHop(response.config);
+          response.responseTime = measureResponseTime(response.config.metadata);
           // Rebuild the body from the collected chunks so res.getBody() is populated for
           // post-response scripts and tests. Upstream fix: usebruno/bruno#8212 (79504ed72).
           // Deferred by one event-loop turn: the concat + decode + JSON.parse of up to
@@ -1471,7 +1505,7 @@ const registerNetworkIpc = (mainWindow) => {
   ipcMain.handle('send-http-request', async (event, item, collection, environment, runtimeVariables) => {
     let seq = 0;
     const collectionUid = collection.uid;
-    const envVars = getEnvVars(environment);
+    const envVars = getEnvVars(environment, collection);
     const processEnvVars = getProcessEnvVars(collectionUid);
     const response = await runRequest({ item, collection, envVars, processEnvVars, runtimeVariables, runInBackground: false });
     if (response.stream) {
@@ -1551,7 +1585,7 @@ const registerNetworkIpc = (mainWindow) => {
       const brunoConfig = getBrunoConfig(collectionUid, collection);
       const scriptingConfig = get(brunoConfig, 'scripts', {});
       scriptingConfig.runtime = getJsSandboxRuntime(collection);
-      const envVars = getEnvVars(environment);
+      const envVars = getEnvVars(environment, collection);
       const processEnvVars = getProcessEnvVars(collectionUid);
       let stopRunnerExecution = false;
       let currentAbortController;
@@ -1649,7 +1683,8 @@ const registerNetworkIpc = (mainWindow) => {
                       data: res.data,
                       dataBuffer: res.dataBuffer,
                       size: res.size,
-                      duration: res.duration
+                      duration: res.duration,
+                      timeline: res.timeline
                     }
                   : null,
                 error: err || (res?.error ? { message: res.error } : null),
@@ -1760,9 +1795,6 @@ const registerNetworkIpc = (mainWindow) => {
               });
             });
           };
-
-          let timeStart;
-          let timeEnd;
 
           mainWindow.webContents.send('main:run-folder-event', {
             type: 'request-queued',
@@ -1984,7 +2016,6 @@ const registerNetworkIpc = (mainWindow) => {
               });
             }
 
-            timeStart = Date.now();
             let response, responseTime;
             try {
               if (delay && !Number.isNaN(delay) && delay > 0) {
@@ -2002,13 +2033,13 @@ const registerNetworkIpc = (mainWindow) => {
               /** @type {import('axios').AxiosResponse} */
               response = await axiosInstance(request);
               response.data = await promisifyStream(response.data, currentAbortController, false);
-              timeEnd = Date.now();
+              completeOpenHop(response.config);
+              response.responseTime = measureResponseTime(response.config.metadata);
+              applySentHeadersToRequest(request, response);
 
               const { data, dataBuffer } = parseDataFromResponse(response, request.__brunoDisableParsingResponseJson);
               response.data = data;
               response.dataBuffer = dataBuffer;
-              response.responseTime = response.headers.get('request-duration');
-              response.headers.delete('request-duration');
 
               // save cookies
               if (preferencesUtil.shouldStoreCookies()) {
@@ -2026,7 +2057,7 @@ const registerNetworkIpc = (mainWindow) => {
                   status: response.status,
                   statusText: response.statusText,
                   headers: response.headers,
-                  duration: timeEnd - timeStart,
+                  duration: response.responseTime,
                   dataBuffer: dataBuffer.toString('base64'),
                   size: Buffer.byteLength(dataBuffer),
                   data: response.data,
@@ -2044,9 +2075,10 @@ const registerNetworkIpc = (mainWindow) => {
 
               if (error?.response) {
                 error.response.data = await promisifyStream(error.response.data, currentAbortController, false);
+                completeOpenHop(error.response.config);
+                error.response.responseTime = measureResponseTime(error.response.config.metadata);
+                applySentHeadersToRequest(request, error.response);
                 const { data, dataBuffer } = parseDataFromResponse(error.response);
-                error.response.responseTime = error.response.headers.get('request-duration');
-                error.response.headers.delete('request-duration');
                 error.response.data = data;
                 error.response.dataBuffer = dataBuffer;
 
@@ -2055,12 +2087,11 @@ const registerNetworkIpc = (mainWindow) => {
                   saveCookies(request.url, error.response.headers);
                 }
 
-                timeEnd = Date.now();
                 response = {
                   status: error.response.status,
                   statusText: error.response.statusText,
                   headers: error.response.headers,
-                  duration: timeEnd - timeStart,
+                  duration: error.response.responseTime,
                   dataBuffer: dataBuffer.toString('base64'),
                   size: Buffer.byteLength(dataBuffer),
                   data: error.response.data,
@@ -2076,7 +2107,9 @@ const registerNetworkIpc = (mainWindow) => {
                   ...eventData
                 });
               } else {
-                await executeRequestOnFailHandler(request, error);
+                await executeRequestOnFailHandler(request, error, (onFailScriptResult) => {
+                  sendVariableUpdates(onFailScriptResult, { collectionUid, requestUid, collection, envVars, runtimeVariables });
+                });
 
                 // if it's not a network error, don't continue
                 throw error;
@@ -2375,14 +2408,19 @@ const registerNetworkIpc = (mainWindow) => {
  * Executes the custom error handler if it exists on the request
  * @param {Object} request - The request object that may contain an onFailHandler
  * @param {Error} error - The error that occurred
+ * @param {Function} onResult - Callback for handling the script result
  */
-const executeRequestOnFailHandler = async (request, error) => {
+const executeRequestOnFailHandler = async (request, error, onResult) => {
   if (!request || typeof request.onFailHandler !== 'function') {
     return;
   }
 
   try {
-    await request.onFailHandler(error);
+    const result = await request.onFailHandler(error);
+    if (result && typeof onResult === 'function') {
+      onResult(result);
+    }
+    return result;
   } catch (handlerError) {
     console.error('Error executing onFail handler', handlerError);
     // @TODO: This is a temporary solution to display the error message in the response pane. Revisit and handle properly.

@@ -17,6 +17,9 @@ import { toOpenCollectionActions } from '../common/actions';
 import { toOpenCollectionScripts } from '../common/scripts';
 import { toOpenCollectionAssertions } from '../common/assertions';
 import { isNumber, isNonEmptyString } from '../../../utils';
+import { utils } from '@usebruno/common';
+
+const { toMaxRedirects } = utils;
 
 const stringifyHttpRequest = (item: BrunoItem): string => {
   try {
@@ -131,12 +134,7 @@ const stringifyHttpRequest = (item: BrunoItem): string => {
       settings.followRedirects = true;
     }
 
-    const maxRedirects = httpSettings?.maxRedirects;
-    if (isNumber(maxRedirects)) {
-      settings.maxRedirects = maxRedirects;
-    } else {
-      settings.maxRedirects = 5;
-    }
+    settings.maxRedirects = toMaxRedirects(httpSettings?.maxRedirects);
 
     ocRequest.settings = settings;
 

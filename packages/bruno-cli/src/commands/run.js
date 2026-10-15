@@ -627,6 +627,21 @@ const handler = async function (argv) {
       }
     }
 
+    const runAbortController = new AbortController();
+    const runAbortSignal = runAbortController.signal;
+
+    const createSkippedResult = (requestItem, skipReason) => {
+      const relativePath = path.relative(collectionPath, requestItem.pathname);
+      return {
+        test: { filename: relativePath },
+        request: { method: requestItem.request?.method || null, url: requestItem.request?.url || null, headers: null, data: null },
+        response: { status: 'skipped', statusText: null, data: null, responseTime: 0 },
+        status: 'skipped', skipped: true, skipReason,
+        assertionResults: [], testResults: [], preRequestTestResults: [], postResponseTestResults: [],
+        runDuration: 0, suitename: stripExtension(requestItem.pathname), name: requestItem.name, path: relativePath
+      };
+    };
+
     const runSingleRequestByPathname = async (relativeItemPathname) => {
       const ext = FORMAT_CONFIG[collection.format].ext;
       return new Promise(async (resolve, reject) => {
@@ -647,8 +662,10 @@ const handler = async function (argv) {
             runtime,
             collection,
             runSingleRequestByPathname,
-            globalEnvVars
+            globalEnvVars,
+            runAbortSignal
           );
+          if (res?.shouldStopRunnerExecution) runAbortController.abort('stopExecution');
           resolve(res?.response);
         }
         reject(`bru.runRequest: invalid request path - ${itemPathname}`);
@@ -674,7 +691,8 @@ const handler = async function (argv) {
         runtime,
         collection,
         runSingleRequestByPathname,
-        globalEnvVars
+        globalEnvVars,
+        runAbortSignal
       );
 
       const isLastRun = currentRequestIndex === requestItems.length - 1;
@@ -762,6 +780,7 @@ const handler = async function (argv) {
             bailedAt: name,
             skippedByBail: remainingItems.length
           };
+          runAbortController.abort('bail');
 
           console.log(
             '\n' + chalk.hex(constants.COLORS.ORANGE)(
@@ -776,7 +795,11 @@ const handler = async function (argv) {
       // determine next request
       const nextRequestName = result?.nextRequestName;
 
-      if (result?.shouldStopRunnerExecution) {
+      if (result?.shouldStopRunnerExecution || runAbortSignal.aborted) {
+        for (const request of requestItems.slice(currentRequestIndex + 1)) {
+          results.push(createSkippedResult(request, 'stopExecution'));
+        }
+        runAbortController.abort('stopExecution');
         break;
       }
 

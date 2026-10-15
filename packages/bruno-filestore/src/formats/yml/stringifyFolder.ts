@@ -28,8 +28,7 @@ const hasRequestAuth = (folderRoot: FolderRoot): boolean => {
 };
 
 const hasRequestScripts = (folderRoot: FolderRoot): boolean => {
-  return Boolean((folderRoot.request?.script?.req)
-    || (folderRoot.request?.script?.res)
+  return Boolean(Object.values(folderRoot.request?.script || {}).some((code) => typeof code === 'string' && code.length)
     || (folderRoot.request?.tests));
 };
 
@@ -44,6 +43,10 @@ const stringifyFolder = (folderRoot: FolderRoot): string => {
       seq: folderRoot.meta?.seq || 1
     };
     ocFolder.info = info;
+    const tags = folderRoot.meta?.tags;
+    if (Array.isArray(tags) && tags.length) {
+      info.tags = tags;
+    }
 
     // request defaults
     if (hasRequestDefaults(folderRoot)) {

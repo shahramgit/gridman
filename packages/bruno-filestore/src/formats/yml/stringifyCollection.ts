@@ -54,8 +54,7 @@ const hasRequestAuth = (collectionRoot: any): boolean => {
 const hasRequestScripts = (collectionRoot: any): boolean => {
   if (!collectionRoot?.request) return false;
 
-  return (collectionRoot.request.script?.req)
-    || (collectionRoot.request.script?.res)
+  return Object.values(collectionRoot.request.script || {}).some((code) => typeof code === 'string' && code.length)
     || (collectionRoot.request.tests);
 };
 
@@ -145,7 +144,8 @@ const stringifyCollection = (collectionRoot: any, brunoConfig: any): string => {
                 type: 'pem',
                 certificateFilePath: cert.certFilePath,
                 privateKeyFilePath: cert.keyFilePath,
-                ...(cert.passphrase && { passphrase: cert.passphrase })
+                ...(cert.passphrase && { passphrase: cert.passphrase }),
+                ...(cert.disabled && { disabled: true })
               };
               return pemCert;
             } else if (cert.type === 'pfx') {
@@ -153,7 +153,8 @@ const stringifyCollection = (collectionRoot: any, brunoConfig: any): string => {
                 domain: cert.domain,
                 type: 'pkcs12',
                 pkcs12FilePath: cert.pfxFilePath,
-                ...(cert.passphrase && { passphrase: cert.passphrase })
+                ...(cert.passphrase && { passphrase: cert.passphrase }),
+                ...(cert.disabled && { disabled: true })
               };
               return pkcs12Cert;
             } else {

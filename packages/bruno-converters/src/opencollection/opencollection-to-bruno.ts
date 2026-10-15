@@ -68,18 +68,20 @@ const fromOpenCollectionConfig = (oc: OpenCollection): BrunoConfig => {
           const pemCert = cert as PemCertificate;
           return {
             domain: pemCert.domain || '',
-            type: 'pem' as const,
+            type: 'cert' as const,
             certFilePath: pemCert.certificateFilePath || '',
             keyFilePath: pemCert.privateKeyFilePath || '',
-            passphrase: pemCert.passphrase || ''
+            passphrase: pemCert.passphrase || '',
+            ...(pemCert.disabled && { disabled: true })
           };
         } else if (cert.type === 'pkcs12') {
           const pkcs12Cert = cert as Pkcs12Certificate;
           return {
             domain: pkcs12Cert.domain || '',
-            type: 'pkcs12' as const,
+            type: 'pfx' as const,
             pfxFilePath: pkcs12Cert.pkcs12FilePath || '',
-            passphrase: pkcs12Cert.passphrase || ''
+            passphrase: pkcs12Cert.passphrase || '',
+            ...(pkcs12Cert.disabled && { disabled: true })
           };
         }
         return null;

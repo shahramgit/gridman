@@ -1410,7 +1410,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
   });
 
   // create environment
-  ipcMain.handle('renderer:create-environment', async (event, collectionPathname, name, variables, color) => {
+  ipcMain.handle('renderer:create-environment', async (event, collectionPathname, name, variables, color, extendsFrom) => {
     try {
       const envDirPath = path.join(collectionPathname, 'environments');
       if (!fs.existsSync(envDirPath)) {
@@ -1434,6 +1434,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       const environment = {
         name: uniqueName,
         variables: variables || [],
+        extends: extendsFrom,
         color
       };
 
@@ -1628,6 +1629,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
       // For single environments and folder exports, include info in each environment
       const environmentWithInfo = (environment) => ({
         name: environment.name,
+        extends: environment.extends,
         variables: environment.variables,
         color: environment.color ?? undefined,
         info: {
@@ -2868,7 +2870,7 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
               const existing = fs.readFileSync(ocYmlPath, 'utf8');
               rootToWrite = parseCollection(existing, { format }).collectionRoot;
             } catch (e) {
-              rootToWrite = collectionRoot;
+              throw new Error(`Collection settings could not be read; the file was not changed: ${e.message}`);
             }
           }
         }
@@ -3084,6 +3086,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         let requestCopy = _.cloneDeep(request);
         const { uid: collectionUid, pathname: collectionPath, runtimeVariables, environments = [], activeEnvironmentUid } = collection;
         const environment = _.find(environments, (e) => e.uid === activeEnvironmentUid);
+        utils.assertSupportedEnvironment(environment);
+        utils.assertSupportedEnvironment(collection.globalEnvironment);
         const envVars = getEnvVars(environment);
         const processEnvVars = getProcessEnvVars(collectionUid);
         const partialItem = { uid: itemUid };
@@ -3215,6 +3219,8 @@ const registerRendererEventHandlers = (mainWindow, watcher) => {
         let requestCopy = _.cloneDeep(request);
         const { uid: collectionUid, pathname: collectionPath, runtimeVariables, environments = [], activeEnvironmentUid } = collection;
         const environment = _.find(environments, (e) => e.uid === activeEnvironmentUid);
+        utils.assertSupportedEnvironment(environment);
+        utils.assertSupportedEnvironment(collection.globalEnvironment);
         const envVars = getEnvVars(environment);
         const processEnvVars = getProcessEnvVars(collectionUid);
         const partialItem = { uid: itemUid };

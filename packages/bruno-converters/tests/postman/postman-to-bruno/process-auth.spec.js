@@ -278,6 +278,8 @@ describe('processAuth', () => {
       state: 'test-state',
       pkce: false,
       tokenPlacement: 'header',
+      tokenHeaderPrefix: 'Bearer',
+      tokenQueryKey: 'access_token',
       credentialsPlacement: 'body'
     });
   });
@@ -312,6 +314,8 @@ describe('processAuth', () => {
       scope: 'test-scope',
       state: 'test-state',
       tokenPlacement: 'header',
+      tokenHeaderPrefix: 'Bearer',
+      tokenQueryKey: 'access_token',
       credentialsPlacement: 'body'
     });
   });
@@ -342,6 +346,8 @@ describe('processAuth', () => {
       scope: 'test-scope',
       state: 'test-state',
       tokenPlacement: 'header',
+      tokenHeaderPrefix: 'Bearer',
+      tokenQueryKey: 'access_token',
       credentialsPlacement: 'body'
     });
   });
@@ -361,7 +367,9 @@ describe('processAuth', () => {
       clientSecret: '',
       scope: '',
       state: '',
-      tokenPlacement: 'url',
+      tokenPlacement: 'header',
+      tokenHeaderPrefix: 'Bearer',
+      tokenQueryKey: 'access_token',
       credentialsPlacement: 'basic_auth_header'
     });
   });
@@ -380,7 +388,9 @@ describe('processAuth', () => {
       clientSecret: '',
       scope: '',
       state: '',
-      tokenPlacement: 'url',
+      tokenPlacement: 'header',
+      tokenHeaderPrefix: 'Bearer',
+      tokenQueryKey: 'access_token',
       credentialsPlacement: 'basic_auth_header'
     });
   });
@@ -416,6 +426,8 @@ describe('processAuth', () => {
       state: 'test-state',
       pkce: true,
       tokenPlacement: 'header',
+      tokenHeaderPrefix: 'Bearer',
+      tokenQueryKey: 'access_token',
       credentialsPlacement: 'body'
     });
   });

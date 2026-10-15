@@ -1,5 +1,9 @@
 export { addDigestInterceptor, getOAuth2Token, createOAuth1Authorizer, computeBodyHash, applyOAuth1ToRequest } from './auth';
 export { GrpcClient, generateGrpcSampleMessage } from './grpc';
+export { handleNtlmRedirect } from './auth/ntlm';
+export { stripRedirectCredentials } from './network/redirect-credentials';
+export { getSentHeaders, applySentHeadersToRequest } from './network/sent-headers';
+export { readCurrentTime, measureTimeSince, startHop, completeHop, measureResponseTime } from './network/response-time';
 export { WsClient } from './ws/ws-client';
 export { default as cookies } from './cookies';
 

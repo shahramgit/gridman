@@ -360,6 +360,7 @@ export const transformCollectionToSaveToExportAsFile = (collection, options = {}
         type: param.type,
         name: param.name,
         value: param.value,
+        contentType: param.contentType,
         description: param.description,
         enabled: param.enabled
       };
@@ -451,6 +452,7 @@ export const transformCollectionToSaveToExportAsFile = (collection, options = {}
         seq: si.seq,
         settings: si.settings,
         tags: si.tags,
+        ...(si.unknownBlocks?.length ? { unknownBlocks: si.unknownBlocks } : {}),
         examples: copyExamples(si.examples || [])
       };
 
@@ -664,6 +666,7 @@ export const transformCollectionToSaveToExportAsFile = (collection, options = {}
 
       if (si.type == 'folder' && si?.root) {
         di.root = {
+          ...(si.root.unknownBlocks?.length ? { unknownBlocks: si.root.unknownBlocks } : {}),
           request: {}
         };
 
@@ -681,13 +684,7 @@ export const transformCollectionToSaveToExportAsFile = (collection, options = {}
         }
         // folder level script
         if (Object.keys(script)?.length) {
-          di.root.request.script = {};
-          if (script?.req?.length) {
-            di.root.request.script.req = script?.req;
-          }
-          if (script?.res?.length) {
-            di.root.request.script.res = script?.res;
-          }
+          di.root.request.script = { ...script };
         }
         // folder level vars
         if (Object.keys(vars)?.length) {
@@ -709,10 +706,8 @@ export const transformCollectionToSaveToExportAsFile = (collection, options = {}
           di.root.docs = docs;
         }
 
-        if (meta?.name) {
-          di.root.meta = {};
-          di.root.meta.name = meta?.name;
-          di.root.meta.seq = meta?.seq;
+        if (meta) {
+          di.root.meta = { ...meta };
         }
         if (!Object.keys(di.root.request)?.length) {
           delete di.root.request;
@@ -750,6 +745,7 @@ export const transformCollectionToSaveToExportAsFile = (collection, options = {}
   }));
 
   collectionToSave.root = {
+    ...(collection.root?.unknownBlocks?.length ? { unknownBlocks: collection.root.unknownBlocks } : {}),
     request: {}
   };
 
@@ -766,13 +762,7 @@ export const transformCollectionToSaveToExportAsFile = (collection, options = {}
   }
   // collection level script
   if (Object.keys(script)?.length) {
-    collectionToSave.root.request.script = {};
-    if (script?.req?.length) {
-      collectionToSave.root.request.script.req = script?.req;
-    }
-    if (script?.res?.length) {
-      collectionToSave.root.request.script.res = script?.res;
-    }
+    collectionToSave.root.request.script = { ...script };
   }
   // collection level vars
   if (Object.keys(vars)?.length) {
@@ -947,6 +937,7 @@ export const transformCollectionRootToSave = (collection) => {
   const _collection = collection.draft?.root ? collection.draft.root : collection.root;
 
   const collectionRootToSave = {
+    ...(_collection?.unknownBlocks?.length ? { unknownBlocks: _collection.unknownBlocks } : {}),
     docs: _collection?.docs,
     meta: _collection?.meta,
     request: {
@@ -975,7 +966,9 @@ export const transformCollectionRootToSave = (collection) => {
 export const transformFolderRootToSave = (folder) => {
   const _folder = folder.draft ? folder.draft : folder.root;
   const folderRootToSave = {
+    ...(_folder?.unknownBlocks?.length ? { unknownBlocks: _folder.unknownBlocks } : {}),
     meta: {
+      ..._folder?.meta,
       name: folder.name,
       seq: folder.seq
     },
@@ -1301,6 +1294,11 @@ export const getDefaultRequestPaneTab = (item) => {
   if (['ws-request', 'grpc-request'].includes(item.type)) {
     return 'body';
   }
+};
+
+export const getGlobalEnvironmentMetadata = ({ globalEnvironments, activeGlobalEnvironmentUid }) => {
+  const environment = globalEnvironments?.find((env) => env?.uid === activeGlobalEnvironmentUid);
+  return environment ? { name: environment.name, extends: environment.extends } : undefined;
 };
 
 export const getGlobalEnvironmentVariables = ({ globalEnvironments, activeGlobalEnvironmentUid }) => {

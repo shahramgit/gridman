@@ -197,9 +197,13 @@ const grammar = ohm.grammar(`Bru {
   example = "example" st* "{" nl* examplecontent tagend
   examplecontent = (~tagend any)*
   
-  script = scriptreq | scriptres
+  script = scriptreq | scriptres | scriptbeforecallstart | scriptbeforemessagesend | scriptaftermessagereceive | scriptaftercallend
   scriptreq = "script:pre-request" st* "{" nl* textblock tagend
   scriptres = "script:post-response" st* "{" nl* textblock tagend
+  scriptbeforecallstart = "script:grpc:before-call-start" st* "{" nl* textblock tagend
+  scriptbeforemessagesend = "script:grpc:before-message-send" st* "{" nl* textblock tagend
+  scriptaftermessagereceive = "script:grpc:after-message-receive" st* "{" nl* textblock tagend
+  scriptaftercallend = "script:grpc:after-call-end" st* "{" nl* textblock tagend
   tests = "tests" st* "{" nl* textblock tagend
   docs = "docs" st* "{" nl* textblock tagend
 
@@ -251,6 +255,8 @@ const grammar = ohm.grammar(`Bru {
     | kb<"body:graphql"> | kb<"body:graphql:vars"> | kb<"body:grpc"> | kb<"body:ws">
     | kb<"body:form-urlencoded"> | kb<"body:multipart-form"> | kb<"body:file">
     | kb<"example">
+    | kb<"script:grpc:before-call-start"> | kb<"script:grpc:before-message-send">
+    | kb<"script:grpc:after-message-receive"> | kb<"script:grpc:after-call-end">
     | kb<"script:pre-request"> | kb<"script:post-response"> | kb<"tests"> | kb<"docs">
 }`);
 
@@ -603,11 +609,12 @@ const sem = grammar.createSemantics().addAttribute('ast', {
       parsedSettings.followRedirects = typeof settings.followRedirects === 'boolean' ? settings.followRedirects : settings.followRedirects === 'true';
     }
 
-    // Parse maxRedirects as number
-    if (settings.maxRedirects !== undefined) {
-      const maxRedirects = parseInt(settings.maxRedirects, 10);
-      if (!isNaN(maxRedirects)) {
-        parsedSettings.maxRedirects = maxRedirects;
+    // Number preserves scientific notation. Keep this leaf package consistent with
+    // common.toMaxRedirects, but leave invalid/unset values absent on disk.
+    if (settings.maxRedirects) {
+      const maxRedirects = Number(settings.maxRedirects);
+      if (Number.isFinite(maxRedirects) && maxRedirects >= 0) {
+        parsedSettings.maxRedirects = Math.trunc(maxRedirects);
       }
     }
 
@@ -840,7 +847,7 @@ const sem = grammar.createSemantics().addAttribute('ast', {
 
     const username = usernameKey ? usernameKey.value : '';
     const password = passwordKey ? passwordKey.value : '';
-    const domain = passwordKey ? domainKey.value : '';
+    const domain = domainKey ? domainKey.value : '';
 
     return {
       auth: {
@@ -1183,6 +1190,20 @@ const sem = grammar.createSemantics().addAttribute('ast', {
     return {
       assertions: mapPairListToKeyValPairs(dictionary.ast)
     };
+  },
+  // Parser-only compatibility: execution is guarded until these lifecycle hooks
+  // are implemented. A shared file must keep its scripts when saved/exported.
+  scriptbeforecallstart(_1, _2, _3, _4, textblock, _5) {
+    return { script: { beforeCallStart: outdentString(textblock.sourceString) } };
+  },
+  scriptbeforemessagesend(_1, _2, _3, _4, textblock, _5) {
+    return { script: { beforeMessageSend: outdentString(textblock.sourceString) } };
+  },
+  scriptaftermessagereceive(_1, _2, _3, _4, textblock, _5) {
+    return { script: { afterMessageReceive: outdentString(textblock.sourceString) } };
+  },
+  scriptaftercallend(_1, _2, _3, _4, textblock, _5) {
+    return { script: { afterCallEnd: outdentString(textblock.sourceString) } };
   },
   scriptreq(_1, _2, _3, _4, textblock, _5) {
     return {

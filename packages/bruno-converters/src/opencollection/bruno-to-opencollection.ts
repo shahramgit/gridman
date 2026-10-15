@@ -43,7 +43,7 @@ const toOpenCollectionConfig = (brunoConfig: BrunoConfig | undefined): Collectio
   if (brunoConfig.clientCertificates?.certs?.length) {
     config.clientCertificates = brunoConfig.clientCertificates.certs
       .map((cert): ClientCertificate | null => {
-        if (cert.type === 'pem') {
+        if (cert.type === 'cert') {
           const pemCert: PemCertificate = {
             domain: cert.domain || '',
             type: 'pem',
@@ -53,8 +53,9 @@ const toOpenCollectionConfig = (brunoConfig: BrunoConfig | undefined): Collectio
           if (cert.passphrase) {
             pemCert.passphrase = cert.passphrase;
           }
+          if (cert.disabled) pemCert.disabled = true;
           return pemCert;
-        } else if (cert.type === 'pkcs12') {
+        } else if (cert.type === 'pfx') {
           const pkcs12Cert: Pkcs12Certificate = {
             domain: cert.domain || '',
             type: 'pkcs12',
@@ -63,6 +64,7 @@ const toOpenCollectionConfig = (brunoConfig: BrunoConfig | undefined): Collectio
           if (cert.passphrase) {
             pkcs12Cert.passphrase = cert.passphrase;
           }
+          if (cert.disabled) pkcs12Cert.disabled = true;
           return pkcs12Cert;
         }
         return null;
@@ -78,8 +80,7 @@ const hasRequestDefaults = (root: BrunoCollectionRoot | undefined): boolean => {
   return Boolean(
     request?.headers?.length ||
     request?.vars?.req?.length ||
-    request?.script?.req ||
-    request?.script?.res ||
+    Object.values(request?.script || {}).some((code) => typeof code === 'string' && code.length) ||
     request?.tests ||
     (request?.auth && request.auth.mode !== 'none')
   );

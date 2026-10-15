@@ -48,7 +48,7 @@ function addAwsV4Interceptor(axiosInstance, request) {
     }
   });
 
-  axiosInstance.interceptors.request.use(interceptor);
+  axiosInstance.interceptors.request.use((config) => config.__skipAwsV4Sign ? config : interceptor(config));
 }
 
 module.exports = {

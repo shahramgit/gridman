@@ -7,6 +7,7 @@ import {
   setSelectedRequest
 } from 'providers/ReduxStore/slices/logs';
 import StyledWrapper from './StyledWrapper';
+import { formatDuration } from 'utils/common';
 
 const MethodBadge = ({ method }) => {
   const methodLower = method?.toLowerCase() || 'get';
@@ -41,12 +42,6 @@ const RequestRow = ({ request, isSelected, onClick }) => {
       second: '2-digit',
       fractionalSecondDigits: 3
     });
-  };
-
-  const formatDuration = (duration) => {
-    if (!duration) return '-';
-    if (duration < 1000) return `${Math.round(duration)}ms`;
-    return `${(duration / 1000).toFixed(2)}s`;
   };
 
   const formatSize = (size) => {
@@ -104,7 +99,7 @@ const RequestRow = ({ request, isSelected, onClick }) => {
       </div>
 
       <div className="request-duration">
-        {formatDuration(res?.duration)}
+        {typeof res?.duration === 'number' ? formatDuration(res.duration) : '-'}
       </div>
 
       <div className="request-size">

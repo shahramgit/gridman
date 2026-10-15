@@ -129,6 +129,7 @@ const bruToJson = (bru) => {
 };
 
 const getEnvVars = (environment = {}) => {
+  require('@usebruno/common').utils.assertSupportedEnvironment(environment);
   const variables = environment.variables;
   if (!variables || !variables.length) {
     return {};

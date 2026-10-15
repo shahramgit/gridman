@@ -10,6 +10,8 @@ const { addCookieToJar, getCookieStringForUrl } = require('../../utils/cookies')
 const { preferencesUtil } = require('../../store/preferences');
 const { safeStringifyJSON } = require('../../utils/common');
 const { createFormData } = require('../../utils/form-data');
+const { getSentHeaders, handleNtlmRedirect, readCurrentTime, measureTimeSince, startHop, completeHop } = require('@usebruno/requests');
+const { getMediaType, DEFAULT_MAX_REDIRECTS } = require('@usebruno/common').utils;
 
 const LOCAL_IPV6 = '::1';
 const LOCAL_IPV4 = '127.0.0.1';
@@ -149,17 +151,20 @@ const checkConnection = (host, port) =>
     }
   });
 
-/**
- * Function that configures axios with timing interceptors
- * Important to note here that the timings are not completely accurate.
- * @see https://github.com/axios/axios/issues/695
- * @returns {axios.AxiosInstance}
- */
+/** Close and record a response hop once the caller has consumed its body. */
+const completeOpenHop = (config) => {
+  const hopTime = config?.metadata ? completeHop(config.metadata) : undefined;
+  if (hopTime !== undefined) {
+    config.metadata.timeline?.push({ timestamp: new Date(), type: 'timing', message: `Request completed in ${hopTime} ms` });
+  }
+};
+
+/** @returns {axios.AxiosInstance} Client with proxy, redirect and response timing support. */
 function makeAxiosInstance({
   proxyMode = 'off',
   proxyModeReason = '',
   proxyConfig = {},
-  requestMaxRedirects = 5,
+  requestMaxRedirects = DEFAULT_MAX_REDIRECTS,
   httpsAgentRequestFields = {},
   interpolationOptions = {},
   followRedirects = true
@@ -168,7 +173,7 @@ function makeAxiosInstance({
   const instance = axios.create({
     transformRequest: function (data, headers) {
       const contentType = headers?.['Content-Type'] || headers?.['content-type'] || '';
-      const hasJSONContentType = contentType.includes('json');
+      const hasJSONContentType = getMediaType(contentType).includes('json');
       if (typeof data === 'string' && hasJSONContentType) {
         return data;
       }
@@ -192,7 +197,8 @@ function makeAxiosInstance({
   instance.interceptors.request.use(async (config) => {
     const url = URL.parse(config.url);
     config.metadata = config.metadata || {};
-    config.metadata.startTime = new Date().getTime();
+    completeOpenHop(config);
+    const preparationStartTime = readCurrentTime();
     const timeline = config.metadata.timeline || [];
     // Add initial request details to the timeline
     timeline.push({
@@ -243,8 +249,6 @@ function makeAxiosInstance({
       delete config.lookup;
     }
 
-    config.headers['request-start-time'] = Date.now();
-
     /**
       Apply header deletions requested via req.deleteHeader() in pre-request scripts.
       Using set(name, null) rather than delete(): the axios http adapter guards its
@@ -269,18 +273,6 @@ function makeAxiosInstance({
       });
       delete config.__headersToDelete;
     }
-
-    // Log request headers AFTER deletion so the timeline reflects what is actually sent.
-    // Skip null values (headers marked for deletion) and false values (e.g. content-type
-    // suppressed for no-body requests — see https://github.com/usebruno/bruno/issues/1693).
-    Object.entries(config.headers).forEach(([key, value]) => {
-      if (value === null || value === false) return;
-      timeline.push({
-        timestamp: new Date(),
-        type: 'requestHeader',
-        message: `${key}: ${value}`
-      });
-    });
 
     const agentOptions = {
       ...httpsAgentRequestFields,
@@ -307,6 +299,11 @@ function makeAxiosInstance({
     }
 
     config.metadata.timeline = timeline;
+    const preparationTime = measureTimeSince(preparationStartTime);
+    startHop(config.metadata);
+    if (preparationTime > 0) {
+      timeline.push({ timestamp: new Date(), type: 'timing', message: `Request prepared in ${preparationTime} ms` });
+    }
     return config;
   });
 
@@ -315,14 +312,19 @@ function makeAxiosInstance({
   instance.interceptors.response.use(
     (response) => {
       let timeline;
-      const end = Date.now();
-      const start = response.config.headers['request-start-time'];
-      response.headers['request-duration'] = end - start;
       redirectCount = 0;
 
       const config = response.config;
       timeline = config?.metadata?.timeline || [];
-      const duration = end - config?.metadata.startTime;
+      response.sentHeaders = getSentHeaders(response.request);
+      Object.entries(response.sentHeaders).forEach(([key, value]) => {
+        timeline.push({ timestamp: new Date(), type: 'requestHeader', message: `${key}: ${value}` });
+      });
+      if (config.responseType === 'stream') {
+        timeline.push({ timestamp: new Date(), type: 'timing', message: `Response headers received in ${measureTimeSince(config.metadata.hopStartTime)} ms` });
+      } else {
+        completeOpenHop(config);
+      }
 
       const httpVersion = response?.request?.res?.httpVersion || response?.httpVersion;
       if (httpVersion?.startsWith('2')) {
@@ -346,27 +348,29 @@ function makeAxiosInstance({
         });
       });
 
-      timeline.push({
-        timestamp: new Date(),
-        type: 'info',
-        message: `Request completed in ${duration} ms`
-      });
       response.timeline = timeline;
       return response;
     },
     async (error) => {
       const config = error.config;
       const timeline = config?.metadata?.timeline || [];
+      error.sentHeaders = getSentHeaders(error.response?.request || error.request);
+      if (error.response) error.response.sentHeaders = error.sentHeaders;
+      Object.entries(error.sentHeaders).forEach(([key, value]) => {
+        timeline.push({ timestamp: new Date(), type: 'requestHeader', message: `${key}: ${value}` });
+      });
       timeline?.push({
         timestamp: new Date(),
         type: 'error',
         message: 'there was an error executing the request!'
       });
       if (error.response) {
-        const end = Date.now();
-        const start = error.config.headers['request-start-time'];
-        error.response.headers['request-duration'] = end - start;
-        const duration = end - config?.metadata?.startTime;
+        const isStreamedBody = config.responseType === 'stream';
+        if (isStreamedBody) {
+          timeline.push({ timestamp: new Date(), type: 'timing', message: `Response headers received in ${measureTimeSince(config.metadata.hopStartTime)} ms` });
+        } else {
+          completeOpenHop(config);
+        }
         if (error.response && redirectResponseCodes.includes(error.response.status)) {
           timeline.push({
             timestamp: new Date(),
@@ -379,11 +383,6 @@ function makeAxiosInstance({
               type: 'responseHeader',
               message: `${key}: ${value}`
             });
-          });
-          timeline.push({
-            timestamp: new Date(),
-            type: 'info',
-            message: `Request completed in ${duration} ms`
           });
 
           // Attach the timeline to the response
@@ -426,6 +425,11 @@ function makeAxiosInstance({
             return Promise.reject(error);
           }
 
+          // Redirect responses are not consumed by the caller. Release their
+          // stream before the next hop, and close timing exactly once.
+          if (isStreamedBody) error.response.data?.destroy?.();
+          completeOpenHop(config);
+
           let redirectUrl = locationHeader;
 
           // Handle relative URLs by resolving them against the original request URL
@@ -448,6 +452,17 @@ function makeAxiosInstance({
               ...error.config.headers
             }
           };
+
+          handleNtlmRedirect(requestConfig, error.config.url, redirectUrl, error.config?.settings?.forwardAuthorizationHeader === true);
+
+          // A host-bound AWS signature must not be recreated for a redirect's
+          // destination, even when forwarding authored Authorization is enabled.
+          if (!isSameOrigin(error.config.url, redirectUrl)) {
+            requestConfig.__skipAwsV4Sign = true;
+            Object.keys(requestConfig.headers).forEach((name) => {
+              if (name.toLowerCase().startsWith('x-amz-')) delete requestConfig.headers[name];
+            });
+          }
 
           const strippedHeaders = stripCredentialsForCrossOriginRedirect({
             headers: requestConfig.headers,
@@ -495,7 +510,8 @@ function makeAxiosInstance({
                     message: `Recreating consumed FormData for ${statusCode} redirect`
                   });
 
-                  const recreatedForm = createFormData(error.config._originalMultipartData, error.config.collectionPath);
+                  const recreatedForm = createFormData(error.config._originalMultipartData, error.config.collectionPath, formData.getBoundary());
+                  recreatedForm.getHeaders = formData.getHeaders;
                   requestConfig.data = recreatedForm;
 
                   const formHeaders = recreatedForm.getHeaders();
@@ -611,5 +627,6 @@ function makeAxiosInstance({
 }
 
 module.exports = {
-  makeAxiosInstance
+  makeAxiosInstance,
+  completeOpenHop
 };

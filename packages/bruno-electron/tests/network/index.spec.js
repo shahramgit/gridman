@@ -1,5 +1,10 @@
 const { configureRequest } = require('../../src/ipc/network/index');
 
+it('blocks direct HTTP/OAuth configuration with an inherited workspace environment', async () => {
+  const collection = { globalEnvironment: { name: 'Team', extends: 'Base' } };
+  await expect(configureRequest(null, collection, { url: 'http://localhost' }, {}, {}, {}, null)).rejects.toThrow('Environment inheritance is not supported');
+});
+
 // Integration tests: full configureRequest (URL must survive cookie-jar parse)
 describe('index: configureRequest — URL normalization', () => {
   it('prepends http:// to localhost:port', async () => {

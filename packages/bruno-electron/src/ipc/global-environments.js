@@ -50,7 +50,7 @@ const migrateActiveGlobalEnvironmentUid = async (workspacePath) => {
 };
 
 const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager) => {
-  ipcMain.handle('renderer:create-global-environment', async (event, { uid, name, variables, color, workspaceUid, workspacePath }) => {
+  ipcMain.handle('renderer:create-global-environment', async (event, { uid, name, variables, color, extends: extendsFrom, workspaceUid, workspacePath }) => {
     try {
       // If workspace path provided, use workspace environments manager
       if (workspacePath && workspaceEnvironmentsManager) {
@@ -60,7 +60,7 @@ const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager)
         const sanitizedName = sanitizeName(name);
         const uniqueName = generateUniqueName(sanitizedName, (name) => existingNames.includes(name));
 
-        return await workspaceEnvironmentsManager.addGlobalEnvironmentByPath(workspacePath, { uid, name: uniqueName, variables, color });
+        return await workspaceEnvironmentsManager.addGlobalEnvironmentByPath(workspacePath, { uid, name: uniqueName, variables, color, extends: extendsFrom });
       }
 
       const existingGlobalEnvironments = globalEnvironmentsStore.getGlobalEnvironments();
@@ -69,9 +69,9 @@ const registerGlobalEnvironmentsIpc = (mainWindow, workspaceEnvironmentsManager)
       const sanitizedName = sanitizeName(name);
       const uniqueName = generateUniqueName(sanitizedName, (name) => existingNames.includes(name));
 
-      globalEnvironmentsStore.addGlobalEnvironment({ uid, name: uniqueName, variables, color });
+      globalEnvironmentsStore.addGlobalEnvironment({ uid, name: uniqueName, variables, color, extends: extendsFrom });
 
-      return { name: uniqueName, color };
+      return { name: uniqueName, color, extends: extendsFrom };
     } catch (error) {
       console.error('Error in renderer:create-global-environment:', error);
       return Promise.reject(error);

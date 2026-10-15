@@ -53,6 +53,9 @@ const stringifyEnvironment = (environment: BrunoEnvironment): string => {
     const ocEnvironment: Environment = {
       name: environment.name
     };
+    if (typeof environment.extends === 'string' || Array.isArray(environment.extends)) {
+      (ocEnvironment as any).extends = environment.extends;
+    }
 
     if (environment.color) {
       ocEnvironment.color = environment.color;

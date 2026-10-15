@@ -33,6 +33,13 @@ describe('prepareWsRequest: API Key Query Params', () => {
   });
 
   describe('API Key with Query Params placement', () => {
+    it('blocks inherited environments before sending', async () => {
+      await expect(prepareWsRequest(createMockItem(), createMockCollection(), { extends: 'base' }, {})).rejects.toThrow('Environment inheritance is not supported');
+    });
+    it('blocks inherited workspace/global environments before sending', async () => {
+      const collection = { ...createMockCollection(), globalEnvironment: { name: 'Team', extends: 'Base' } };
+      await expect(prepareWsRequest(createMockItem(), collection, {}, {})).rejects.toThrow('Environment inheritance is not supported');
+    });
     it('should append API key to URL when placement is queryparams', async () => {
       const item = createMockItem({
         mode: 'apikey',

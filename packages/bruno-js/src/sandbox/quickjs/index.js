@@ -4,9 +4,22 @@ const addConsoleShimToContext = require('./shims/console');
 const addBrunoResponseShimToContext = require('./shims/bruno-response');
 const addTestShimToContext = require('./shims/test');
 const addLibraryShimsToContext = require('./shims/lib');
-const addLocalModuleLoaderShimToContext = require('./shims/local-module');
-const { getRequireCode } = require('./shims/require');
-const { newQuickJSWASMModule, memoizePromiseFactory } = require('quickjs-emscripten');
+const { addRequireShimToContext } = require('./shims/require');
+const { newQuickJSWASMModuleFromVariant, newVariant, RELEASE_SYNC } = require('quickjs-emscripten');
+
+// Only the known, contained cleanup assertion is hidden on the CLI. Keep all
+// other engine diagnostics, and all diagnostics in the Electron console.
+const isElectronHost = Boolean(process.versions.electron);
+const quietEngineVariant = newVariant(RELEASE_SYNC, {
+  emscriptenModule: {
+    printErr: (line) => {
+      const containedAbort = String(line).includes('list_empty(&rt->gc_obj_list)') && String(line).includes('JS_FreeRuntime');
+      if (isElectronHost || !containedAbort) {
+        console.error(line);
+      }
+    }
+  }
+});
 
 // execute `npm run sandbox:bundle-libraries` if the below file doesn't exist
 const getBundledCode = require('../bundle-browser-rollup');
@@ -16,8 +29,52 @@ const addCryptoUtilsShimToContext = require('./shims/lib/crypto-utils');
 const { wrapScriptInClosure, SANDBOX } = require('../../utils/sandbox');
 
 let QuickJSModule;
-const loader = memoizePromiseFactory(() => newQuickJSWASMModule());
-loader().then((mod) => (QuickJSModule = mod));
+let quickJSModulePromise;
+let quickJSModuleLoading = false;
+let quickJSModuleRecycleCount = 0;
+
+// Keep the old generation serving synchronous expressions while a replacement
+// loads. Failed replacements fall back to it; failed initial loads can retry.
+const loader = ({ reload = false } = {}) => {
+  if (!quickJSModulePromise || (reload && !quickJSModuleLoading)) {
+    const previousPromise = quickJSModulePromise;
+    quickJSModuleLoading = true;
+    quickJSModulePromise = newQuickJSWASMModuleFromVariant(quietEngineVariant)
+      .then((mod) => {
+        QuickJSModule = mod;
+        return mod;
+      })
+      .catch((loadError) => {
+        console.error(reload ? 'QuickJS module reload failed' : 'QuickJS module load failed', loadError);
+        quickJSModulePromise = reload ? previousPromise : null;
+        if (quickJSModulePromise) {
+          return quickJSModulePromise;
+        }
+        throw loadError;
+      })
+      .finally(() => {
+        quickJSModuleLoading = false;
+      });
+  }
+  return quickJSModulePromise;
+};
+loader().catch(() => {});
+
+const recycleQuickJSModuleOnAbort = (teardownError, ownerModule) => {
+  if (!(teardownError instanceof WebAssembly.RuntimeError)) {
+    return false;
+  }
+  if (!ownerModule || ownerModule === QuickJSModule) {
+    quickJSModuleRecycleCount += 1;
+    console.warn(
+      quickJSModuleRecycleCount === 1
+        ? 'QuickJS engine crashed during cleanup and was replaced; the run was not affected'
+        : `QuickJS engine replaced again (${quickJSModuleRecycleCount} this session)`
+    );
+    loader({ reload: true }).catch(() => {});
+  }
+  return true;
+};
 
 const toNumber = (value) => {
   const num = Number(value);
@@ -57,8 +114,9 @@ const executeQuickJsVm = ({ script: externalScript, context: externalContext, sc
     externalScript = removeQuotes(externalScript);
   }
   let managedQuickJsContext;
+  const quickJsModule = QuickJSModule;
   try {
-    managedQuickJsContext = createManagedQuickJsContext(QuickJSModule);
+    managedQuickJsContext = createManagedQuickJsContext(quickJsModule);
     const vm = managedQuickJsContext.vm;
     const { bru, req, res, ...variables } = externalContext;
 
@@ -82,13 +140,24 @@ const executeQuickJsVm = ({ script: externalScript, context: externalContext, sc
       return e;
     } else {
       let v = vm.dump(result.value);
+      // dump consumes Promise handles itself. Synchronous vars cannot await
+      // those expressions; preserve their undefined result without double-freeing.
+      if (!result.value.alive) {
+        return undefined;
+      }
       result.value.dispose();
       return v;
     }
   } catch (error) {
     console.error('Error executing the script!', error);
   } finally {
-    managedQuickJsContext?.dispose();
+    try {
+      managedQuickJsContext?.dispose();
+    } catch (teardownError) {
+      if (!recycleQuickJSModuleOnAbort(teardownError, quickJsModule)) {
+        console.error('Error disposing QuickJS context', teardownError);
+      }
+    }
   }
 };
 
@@ -99,9 +168,11 @@ const executeQuickJsVmAsync = async ({ script: externalScript, context: external
   externalScript = externalScript?.trim();
 
   let managedQuickJsContext;
+  let scriptError;
+  let quickJsModule;
   try {
-    const module = await loader();
-    managedQuickJsContext = createManagedQuickJsContext(module);
+    quickJsModule = await loader();
+    managedQuickJsContext = createManagedQuickJsContext(quickJsModule);
     const vm = managedQuickJsContext.vm;
 
     // add crypto utilities required by the crypto-js library in bundledCode
@@ -109,12 +180,7 @@ const executeQuickJsVmAsync = async ({ script: externalScript, context: external
 
     const bundledCode = getBundledCode?.toString() || '';
 
-    vm.evalCode(
-      `
-        (${bundledCode})()
-        ${getRequireCode()}
-      `
-    );
+    vm.evalCode(`(${bundledCode})()`);
 
     const { bru, req, res, test, __brunoTestResults, console: consoleFn } = externalContext;
 
@@ -122,7 +188,7 @@ const executeQuickJsVmAsync = async ({ script: externalScript, context: external
     bru && addBruShimToContext(vm, bru);
     req && addBrunoRequestShimToContext(vm, req);
     res && addBrunoResponseShimToContext(vm, res);
-    addLocalModuleLoaderShimToContext(vm, collectionPath);
+    addRequireShimToContext(vm, collectionPath);
     addPathShimToContext(vm);
 
     await addLibraryShimsToContext(vm);
@@ -137,21 +203,28 @@ const executeQuickJsVmAsync = async ({ script: externalScript, context: external
     promiseHandle.dispose();
     const resolvedHandle = vm.unwrapResult(resolvedResult);
     resolvedHandle.dispose();
-    return;
   } catch (error) {
     error.__isQuickJS = true;
-    throw error;
-  } finally {
-    // Wait for any in-flight async work (sendRequest, axios, cookie jar, timers,
-    // un-awaited promises) to settle before tearing down the VM. Disposing while
-    // a deferred is still pending lets its later host callback touch a freed
-    // context, throwing `QuickJSUseAfterFree`.
+    scriptError = error;
+  }
+
+  if (managedQuickJsContext) {
+    // Settle promises are pre-caught when tracked. Wait for all host work,
+    // including fire-and-forget callbacks, before the context is disposed.
+    await managedQuickJsContext.waitForPendingDeferreds();
     try {
-      await managedQuickJsContext?.waitForPendingDeferreds?.();
-      managedQuickJsContext?.dispose();
+      managedQuickJsContext.dispose();
     } catch (teardownError) {
-      throw teardownError;
+      const recycled = recycleQuickJSModuleOnAbort(teardownError, quickJsModule);
+      if (!scriptError && !recycled) {
+        scriptError = teardownError;
+      } else if (!recycled) {
+        console.error('Error disposing QuickJS context', teardownError);
+      }
     }
+  }
+  if (scriptError) {
+    throw scriptError;
   }
 };
 

@@ -32,7 +32,7 @@ export const fromOpenCollectionFolder = (folder: Folder): BrunoItem => {
     seq: info.seq || 1
   };
 
-  if (folder.request || folder.docs) {
+  if (folder.request || folder.docs || info.tags?.length) {
     const root: BrunoFolderRoot = {};
 
     if (folder.request) {
@@ -59,14 +59,11 @@ export const fromOpenCollectionFolder = (folder: Folder): BrunoItem => {
 
     root.meta = {
       name: info.name || 'Untitled Folder',
-      seq: info.seq || 1
+      seq: info.seq || 1,
+      ...(info.tags?.length ? { tags: info.tags } : {})
     };
 
     brunoFolder.root = root;
-  }
-
-  if (info.tags?.length) {
-    brunoFolder.tags = info.tags;
   }
 
   if (folder.items?.length) {
@@ -86,8 +83,9 @@ export const toOpenCollectionFolder = (folder: BrunoItem): Folder => {
     info.seq = folder.seq;
   }
 
-  if (folder.tags?.length) {
-    info.tags = folder.tags;
+  const tags = folder.root?.meta?.tags ?? folder.tags;
+  if (tags?.length) {
+    info.tags = tags;
   }
 
   const ocFolder: Folder = {

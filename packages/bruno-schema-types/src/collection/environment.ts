@@ -29,6 +29,7 @@ export interface Environment {
   variables: EnvironmentVariable[];
   externalSecrets?: ExternalSecrets;
   color?: string | null;
+  extends?: string | string[];
 }
 
 export type Environments = Environment[];

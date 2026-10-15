@@ -42,6 +42,7 @@ const NetworkLogsEntry = ({ entry }) => {
       className = 'network-logs-entry network-logs-entry--tls';
       break;
     case 'info':
+    case 'timing':
       className = 'network-logs-entry network-logs-entry--info';
       break;
     default:

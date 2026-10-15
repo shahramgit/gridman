@@ -193,13 +193,15 @@ export const brunoToPostman = (collection) => {
     let reqVars = (collection.root?.request?.vars?.req || []).map((v) => ({
       key: v.name,
       value: v.value,
-      type: 'default'
+      type: 'default',
+      ...(v.enabled === false ? { disabled: true } : {})
     }));
 
     let resVars = (collection.root?.request?.vars?.res || []).map((v) => ({
       key: v.name,
       value: v.value,
-      type: 'default'
+      type: 'default',
+      ...(v.enabled === false ? { disabled: true } : {})
     }));
 
     // Merge and deduplicate final result

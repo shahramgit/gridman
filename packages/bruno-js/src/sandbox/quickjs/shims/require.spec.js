@@ -1,6 +1,6 @@
 const { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } = require('@jest/globals');
 const { newQuickJSWASMModule } = require('quickjs-emscripten');
-const { addRequireShimToContext, getRequireCode } = require('./require');
+const { addRequireShimToContext, getRequireFactoryCode } = require('./require');
 const { createEvalHelper } = require('../utils/test-helpers');
 
 describe('require shim tests', () => {
@@ -14,7 +14,7 @@ describe('require shim tests', () => {
     vm = module.newContext();
     evalAndDump = createEvalHelper(vm);
     // Initialize empty requireObject
-    vm.evalCode('globalThis.requireObject = {}');
+    evalAndDump('globalThis.requireObject = {}');
   });
 
   afterEach(() => {
@@ -39,13 +39,13 @@ describe('require shim tests', () => {
     }
   });
 
-  describe('getRequireCode', () => {
+  describe('getRequireFactoryCode', () => {
     it('should return a string', () => {
-      expect(typeof getRequireCode()).toBe('string');
+      expect(typeof getRequireFactoryCode()).toBe('string');
     });
 
     it('should contain require function definition', () => {
-      const code = getRequireCode();
+      const code = getRequireFactoryCode();
       expect(code).toContain('globalThis.require');
       expect(code).toContain('requireObject');
     });
@@ -62,7 +62,7 @@ describe('require shim tests', () => {
       addRequireShimToContext(vm);
 
       // Register a mock module
-      vm.evalCode(`
+      evalAndDump(`
         globalThis.requireObject['test-module'] = { foo: 'bar', answer: 42 };
       `);
 
@@ -75,9 +75,9 @@ describe('require shim tests', () => {
     });
 
     it('should support destructuring from required modules', () => {
-      addRequireShimToContext(vm, { enableLocalModules: false });
+      addRequireShimToContext(vm);
 
-      vm.evalCode(`
+      evalAndDump(`
         globalThis.requireObject['my-lib'] = {
           greet: (name) => 'Hello, ' + name,
           VERSION: '1.0.0'
@@ -96,7 +96,7 @@ describe('require shim tests', () => {
     it('should support aliased destructuring', () => {
       addRequireShimToContext(vm);
 
-      vm.evalCode(`
+      evalAndDump(`
         globalThis.requireObject['utils'] = { v1: () => 'version-1' };
       `);
 
@@ -130,7 +130,7 @@ describe('require shim tests', () => {
     it('should allow requiring the same module multiple times', () => {
       addRequireShimToContext(vm);
 
-      vm.evalCode(`
+      evalAndDump(`
         globalThis.requireObject['counter'] = { count: 0 };
       `);
 
@@ -144,11 +144,12 @@ describe('require shim tests', () => {
     });
   });
 
-  describe('enableLocalModules option', () => {
-    it('should include local module loading code when enabled', () => {
-      const code = getRequireCode();
+  describe('local module loading', () => {
+    it('captures the local module loader instead of exposing a global', () => {
+      const code = getRequireFactoryCode();
       expect(code).toContain('isModuleAPath');
-      expect(code).toContain('__brunoLoadLocalModule');
+      expect(code).toContain('loadLocalModule');
+      expect(code).not.toContain('__brunoLoadLocalModule');
     });
   });
 });

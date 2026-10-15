@@ -22,7 +22,7 @@ import { DocExplorer } from '@usebruno/graphql-docs';
 
 import StyledWrapper from './StyledWrapper';
 import FolderSettings from 'components/FolderSettings';
-import { getGlobalEnvironmentVariables, getGlobalEnvironmentVariablesMasked } from 'utils/collections/index';
+import { getGlobalEnvironmentVariables, getGlobalEnvironmentVariablesMasked, getGlobalEnvironmentMetadata } from 'utils/collections/index';
 import CollectionOverview from 'components/CollectionSettings/Overview';
 import RequestNotLoaded from './RequestNotLoaded';
 import RequestIsLoading from './RequestIsLoading';
@@ -113,6 +113,7 @@ const RequestTabPanel = () => {
   const collection = baseCollection
     ? {
         ...baseCollection,
+        globalEnvironment: getGlobalEnvironmentMetadata({ globalEnvironments, activeGlobalEnvironmentUid }),
         globalEnvironmentVariables: getGlobalEnvironmentVariables({
           globalEnvironments,
           activeGlobalEnvironmentUid

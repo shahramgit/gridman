@@ -9,6 +9,7 @@ const parseEnvironmentJson = (parsed = {}) => {
 
   const normalized = {
     name: parsed.name,
+    extends: parsed.extends,
     variables: (parsed.variables || []).filter(Boolean).map((variable) => ({
       name: variable.name,
       value: variable.value,
