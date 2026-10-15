@@ -238,6 +238,7 @@ class MultiLineEditor extends Component {
       this.maskedEditor = null;
     }
     if (this.editor) {
+      this.editor.setOption('brunoVarInfo', false);
       this.editor.off('change', this._onEdit);
       this.editor.off('focus', this._onFocus);
       this.editor.off('blur', this._onBlur);

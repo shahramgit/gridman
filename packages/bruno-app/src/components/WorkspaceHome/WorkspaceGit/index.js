@@ -1653,8 +1653,8 @@ const WorkspaceGit = ({ workspace }) => {
                 size="sm"
                 color={guidedAction?.type === 'synced' ? 'light' : 'primary'}
                 icon={getGuidedActionIcon(guidedAction?.type)}
-                loading={operation === guidedAction?.primaryLabel}
-                disabled={!guidedAction}
+                loading={guidedAction?.type === 'synced' ? loading : operation === guidedAction?.primaryLabel}
+                disabled={!guidedAction || loading}
                 onClick={handleGuidedPrimaryAction}
               >
                 {guidedAction?.primaryLabel || 'Refresh'}

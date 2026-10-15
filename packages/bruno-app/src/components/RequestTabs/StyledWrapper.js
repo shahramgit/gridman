@@ -18,10 +18,32 @@ const Wrapper = styled.div`
     display: none;
   }
 
-  .pinned-tabs {
+  .workspace-navigation-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-right: 12px;
+
+    > div {
+      flex: 1;
+      min-width: 0;
+    }
+  }
+
+  .workspace-navigation-header .pinned-tabs {
     flex-shrink: 0;
-    padding-right: 6px;
-    border-right: 1px solid ${(props) => props.theme.requestTabs.bottomBorder};
+    padding: 4px 0;
+
+    li, li.active {
+      margin-bottom: 0;
+      padding: 6px 0;
+      border-radius: ${(props) => props.theme.border.radius.base};
+
+      &::before, &::after {
+        display: none;
+      }
+    }
 
     &.compact li {
       min-width: 0;

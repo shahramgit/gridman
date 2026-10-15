@@ -17,7 +17,7 @@ import ActionIcon from 'ui/ActionIcon/index';
 // The workspace's own pages. They sat in the scrolling strip with the request
 // tabs, so with many requests open they scrolled out of reach and users paged
 // back through every tab to get to them (reported against 4.1.0-vasl.5). They
-// now stay put at the start of the strip.
+// now live beside the collection/workspace header, above the request strip.
 const PINNED_WORKSPACE_TAB_TYPES = new Set(['workspaceOverview', 'workspaceEnvironments', 'workspaceGit']);
 const PINNED_TAB_TITLES = { workspaceOverview: 'Overview', workspaceEnvironments: 'Environments', workspaceGit: 'Git' };
 
@@ -26,8 +26,7 @@ const RequestTabs = () => {
   const tabsRef = useRef();
   const scrollContainerRef = useRef();
   const collectionTabsRef = useRef();
-  const pinnedTabsRef = useRef();
-  const [pinnedTabsWidth, setPinnedTabsWidth] = useState(0);
+  const workspaceTabsRef = useRef();
   const [newRequestModalOpen, setNewRequestModalOpen] = useState(false);
   const [tabOverflowStates, setTabOverflowStates] = useState({});
   const [showChevrons, setShowChevrons] = useState(false);
@@ -73,20 +72,6 @@ const RequestTabs = () => {
     [collectionRequestTabs]
   );
 
-  // The scroller's width budget has to leave room for the pinned group.
-  useEffect(() => {
-    const node = pinnedTabsRef.current;
-    if (!node) {
-      setPinnedTabsWidth(0);
-      return undefined;
-    }
-    const measure = () => setPinnedTabsWidth(node.offsetWidth || 0);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [pinnedTabs.length]);
-
   // Show a collection hint on tabs only when tabs from several collections
   // are open at once.
   const showCollectionHint = useMemo(() => {
@@ -115,7 +100,7 @@ const RequestTabs = () => {
     }
 
     return () => resizeObserver.disconnect();
-  }, [activeTabUid, activeTab, scrollingTabs.length, pinnedTabsWidth, screenWidth, leftSidebarWidth, sidebarCollapsed]);
+  }, [activeTabUid, activeTab, scrollingTabs.length, screenWidth, leftSidebarWidth, sidebarCollapsed]);
 
   const getTabClassname = (tab, index) => {
     return classnames('request-tab select-none', {
@@ -138,10 +123,9 @@ const RequestTabs = () => {
   }
 
   const effectiveSidebarWidth = sidebarCollapsed ? 0 : leftSidebarWidth;
-  // In a narrow window the pinned group (about 310px) would squeeze the request
-  // strip down to nothing; there it drops to icons, and the strip keeps a floor.
+  // Keep the workspace controls compact beside the header in narrow windows.
   const compactPinnedTabs = screenWidth - effectiveSidebarWidth < 900;
-  const maxTablistWidth = Math.max(160, screenWidth - effectiveSidebarWidth - 150 - pinnedTabsWidth);
+  const maxTablistWidth = Math.max(160, screenWidth - effectiveSidebarWidth - 150);
 
   // Each tab renders against ITS collection — the strip holds tabs from
   // several collections at once.
@@ -171,22 +155,31 @@ const RequestTabs = () => {
       )}
       {collectionRequestTabs && collectionRequestTabs.length ? (
         <>
-          {activeCollection && (
-            <CollectionHeader
-              collection={activeCollection}
-              isScratchCollection={isScratchCollection}
-            />
-          )}
-          <div className="flex items-center gap-2 pl-2" ref={collectionTabsRef}>
+          <div className="workspace-navigation-header" ref={workspaceTabsRef} data-testid="workspace-navigation-header">
+            {activeCollection && (
+              <CollectionHeader
+                collection={activeCollection}
+                isScratchCollection={isScratchCollection}
+              />
+            )}
             {pinnedTabs.length > 0 && (
-              <ul role="tablist" aria-label="Workspace" className={classnames('pinned-tabs', { compact: compactPinnedTabs })} ref={pinnedTabsRef} data-testid="pinned-workspace-tabs">
+              <ul role="tablist" aria-label="Workspace" className={classnames('pinned-tabs', { compact: compactPinnedTabs })} data-testid="pinned-workspace-tabs">
                 {pinnedTabs.map((tab, index) => (
                   <li
                     key={tab.uid}
                     role="tab"
+                    aria-selected={tab.uid === activeTabUid}
+                    aria-label={PINNED_TAB_TITLES[tab.type]}
+                    tabIndex={0}
                     className={getTabClassname(tab, index)}
                     title={compactPinnedTabs ? PINNED_TAB_TITLES[tab.type] : undefined}
                     onClick={() => handleClick(tab)}
+                    onKeyDown={(event) => {
+                      if (event.target === event.currentTarget && ['Enter', ' '].includes(event.key)) {
+                        event.preventDefault();
+                        handleClick(tab);
+                      }
+                    }}
                   >
                     {/* Their own list: close-others/left/right on a pinned tab
                         stays among the pinned ones, and the same actions on a
@@ -200,12 +193,14 @@ const RequestTabs = () => {
                       folderUid={tab.folderUid}
                       hasOverflow={tabOverflowStates[tab.uid]}
                       setHasOverflow={createSetHasOverflow(tab.uid)}
-                      dropdownContainerRef={collectionTabsRef}
+                      dropdownContainerRef={workspaceTabsRef}
                     />
                   </li>
                 ))}
               </ul>
             )}
+          </div>
+          <div className="flex items-center gap-2 pl-2" ref={collectionTabsRef}>
             <div className={classnames('scroll-chevrons', { hidden: !showChevrons })}>
               <ActionIcon size="lg" onClick={leftSlide} aria-label="Left Chevron" style={{ marginBottom: '3px' }}>
                 <IconChevronLeft size={18} strokeWidth={1.5} />

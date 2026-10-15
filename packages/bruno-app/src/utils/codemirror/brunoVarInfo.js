@@ -14,6 +14,7 @@ import { defineCodeMirrorBrunoVariablesMode } from 'utils/common/codemirror';
 import { MaskedEditor } from 'utils/common/masked-editor';
 import { setupAutoComplete } from 'utils/codemirror/autocomplete';
 import { variableNameRegex } from 'utils/common/regex';
+import { createVariableReferencePicker, trackVariableReference } from './variableReferencePicker';
 
 let CodeMirror;
 const SERVER_RENDERED = typeof window === 'undefined' || global['PREVENT_CODEMIRROR_RENDER'] === true;
@@ -313,6 +314,43 @@ export const renderVarInfo = (token, options) => {
   header.appendChild(scopeBadge);
   into.appendChild(header);
 
+  const finish = () => {
+    if (options.onReplaceVariable) {
+      const variables = options.variables || {};
+      const overriddenByScript = (name) => Object.prototype.hasOwnProperty.call(collection?.runtimeVariables || {}, name)
+        || Object.prototype.hasOwnProperty.call(collection?.promptVariables || {}, name);
+      const isMaskedReference = (name, seen = new Set()) => {
+        if (seen.has(name)) return true;
+        if (seen.size >= 20) return true;
+        seen.add(name);
+        if (variables.maskedEnvVariables?.includes(name)) return true;
+        if (!overriddenByScript(name) && isVariableSecret(getVariableScope(name, collection, item))) return true;
+        const raw = get(variables, name);
+        if (typeof raw !== 'string') return false;
+        return [...raw.matchAll(/\{\{([^}]+)\}\}/g)].some((match) => isMaskedReference(match[1].trim(), new Set(seen)));
+      };
+      into.appendChild(createVariableReferencePicker({
+        variables,
+        variableName,
+        onSelect: options.onReplaceVariable,
+        getDetails: (name) => {
+          const scope = overriddenByScript(name) ? 'runtime'
+            : name.startsWith('process.env.') ? 'process.env'
+              : getVariableScope(name, collection, item)?.type || 'global';
+          let preview = '[masked]';
+          if (!isMaskedReference(name)) {
+            const value = interpolate(get(variables, name), variables);
+            preview = value && typeof value === 'object'
+              ? (Array.isArray(value) ? '[Array]' : '[Object]')
+              : String(value ?? '').replace(/\s+/g, ' ').slice(0, 120);
+          }
+          return `${getScopeLabel(scope)} - ${preview}`;
+        }
+      }));
+    }
+    return into;
+  };
+
   // Check if variable name is valid
   const isValidVariableName = scopeInfo.type === 'process.env' || scopeInfo.type === 'dynamic' || scopeInfo.type === 'oauth2' || variableNameRegex.test(variableName);
 
@@ -323,8 +361,8 @@ export const renderVarInfo = (token, options) => {
     warningNote.textContent = 'Invalid variable name! Variables must only contain alpha-numeric characters, "-", "_", "."';
     into.appendChild(warningNote);
 
-    // Don't show value or any other content for invalid variable names
-    return into;
+    // Allow correcting an invalid reference without changing variable values.
+    return finish();
   }
 
   // Show warning for invalid dynamic variable (starts with $ but not a valid dynamic function)
@@ -333,7 +371,7 @@ export const renderVarInfo = (token, options) => {
     warningNote.className = 'var-warning-note';
     warningNote.textContent = `Unknown dynamic variable "${variableName}". Check the variable name.`;
     into.appendChild(warningNote);
-    return into;
+    return finish();
   }
 
   // For valid dynamic variables, show appropriate read-only note based on type
@@ -344,7 +382,7 @@ export const renderVarInfo = (token, options) => {
       ? 'Generates current timestamp on each request'
       : 'Generates random value on each request';
     into.appendChild(readOnlyNote);
-    return into;
+    return finish();
   }
 
   // Show warning for invalid OAuth2 variable (token not found)
@@ -353,7 +391,7 @@ export const renderVarInfo = (token, options) => {
     warningNote.className = 'var-warning-note';
     warningNote.textContent = `OAuth2 token not found. Make sure you have fetched the token with the correct Token ID.`;
     into.appendChild(warningNote);
-    return into;
+    return finish();
   }
 
   // Value container with icons
@@ -653,7 +691,7 @@ export const renderVarInfo = (token, options) => {
 
   into.appendChild(valueContainer);
 
-  return into;
+  return finish();
 };
 
 if (!SERVER_RENDERED) {
@@ -666,7 +704,9 @@ if (!SERVER_RENDERED) {
     if (old && old !== CodeMirror.Init) {
       const oldOnMouseOver = cm.state.brunoVarInfo.onMouseOver;
       CodeMirror.off(cm.getWrapperElement(), 'mouseover', oldOnMouseOver);
+      cm.off('keydown', cm.state.brunoVarInfo.onKeyDown);
       clearTimeout(cm.state.brunoVarInfo.hoverTimeout);
+      if (activePopup?._editor === cm) activePopup._hidePopup({ immediate: true });
       delete cm.state.brunoVarInfo;
     }
 
@@ -674,6 +714,16 @@ if (!SERVER_RENDERED) {
       const state = (cm.state.brunoVarInfo = createState(options));
       state.onMouseOver = onMouseOver.bind(null, cm);
       CodeMirror.on(cm.getWrapperElement(), 'mouseover', state.onMouseOver);
+      state.onKeyDown = (editor, event) => {
+        if (event.altKey && event.key === 'ArrowDown') {
+          const cursor = editor.getCursor();
+          if (onMouseHover(editor, editor.charCoords(cursor), cursor)) {
+            event.preventDefault();
+            activePopup?.querySelector('.change-variable-button')?.focus();
+          }
+        }
+      };
+      cm.on('keydown', state.onKeyDown);
     }
   });
 
@@ -729,8 +779,8 @@ if (!SERVER_RENDERED) {
     CodeMirror.on(cm.getWrapperElement(), 'mouseout', onMouseOut);
   }
 
-  function onMouseHover(cm, box) {
-    const pos = cm.coordsChar({
+  function onMouseHover(cm, box, cursor) {
+    const pos = cursor || cm.coordsChar({
       left: (box.left + box.right) / 2,
       top: (box.top + box.bottom) / 2
     });
@@ -785,11 +835,21 @@ if (!SERVER_RENDERED) {
 
             if (inner) {
               const token = { string: fullVariableString, start, end };
-              const brunoVarInfo = renderVarInfo(token, options);
+              const reference = cm.getOption('readOnly') ? null : trackVariableReference(cm, token, pos.line);
+              const brunoVarInfo = renderVarInfo(token, {
+                ...options,
+                onReplaceVariable: reference ? (name) => {
+                  reference.replace(name);
+                  activePopup?._hidePopup({ immediate: true });
+                  cm.focus();
+                } : null
+              });
               if (brunoVarInfo) {
+                brunoVarInfo._clearReference = reference?.clear;
                 showPopup(cm, box, brunoVarInfo);
-                return; // EXIT: We found a variable, don't look for path params
+                return true;
               }
+              reference?.clear();
             }
           }
         }
@@ -823,7 +883,7 @@ if (!SERVER_RENDERED) {
           const brunoVarInfo = renderVarInfo(token, options);
           if (brunoVarInfo) {
             showPopup(cm, box, brunoVarInfo);
-            return; // EXIT: Popup shown
+            return true;
           }
         }
       }
@@ -841,51 +901,39 @@ if (!SERVER_RENDERED) {
 
     const popup = document.createElement('div');
     popup.className = 'CodeMirror-brunoVarInfo';
+    popup.setAttribute('role', 'dialog');
+    popup.setAttribute('aria-label', 'Variable details');
+    popup._editor = cm;
     popup.appendChild(brunoVarInfo);
     document.body.appendChild(popup);
 
     // Track this popup as the active one
     activePopup = popup;
 
-    const popupBox = popup.getBoundingClientRect();
-    const popupStyle = popup.currentStyle || window.getComputedStyle(popup);
-    const popupWidth
-      = popupBox.right - popupBox.left + parseFloat(popupStyle.marginLeft) + parseFloat(popupStyle.marginRight);
-    const popupHeight
-      = popupBox.bottom - popupBox.top + parseFloat(popupStyle.marginTop) + parseFloat(popupStyle.marginBottom);
+    const positionPopup = () => {
+      const popupBox = popup.getBoundingClientRect();
+      const popupStyle = popup.currentStyle || window.getComputedStyle(popup);
+      const popupWidth
+        = popupBox.right - popupBox.left + (parseFloat(popupStyle.marginLeft) || 0) + (parseFloat(popupStyle.marginRight) || 0);
+      const popupHeight
+        = popupBox.bottom - popupBox.top + (parseFloat(popupStyle.marginTop) || 0) + (parseFloat(popupStyle.marginBottom) || 0);
 
-    const GAP_REM = 0.5;
-    const EDGE_MARGIN_REM = 0.9375;
+      const gap = 8;
+      const edgeMargin = 15;
+      let top = box.bottom + gap;
+      if (popupHeight > window.innerHeight - box.bottom - edgeMargin && box.top > window.innerHeight - box.bottom) {
+        top = box.top - popupHeight - gap;
+      }
+      top = Math.max(edgeMargin, Math.min(top, window.innerHeight - popupHeight - edgeMargin));
+      const left = Math.max(0, Math.min(box.left, window.innerWidth - popupWidth - edgeMargin));
 
-    // Position below the trigger by default with gap
-    let topPos = box.bottom + (GAP_REM * 16);
-
-    // Check if there's enough space below; if not, position above
-    if (popupHeight > window.innerHeight - box.bottom - (EDGE_MARGIN_REM * 16) && box.top > window.innerHeight - box.bottom) {
-      topPos = box.top - popupHeight - (GAP_REM * 16);
-    }
-
-    // Ensure it doesn't go off the top of the screen
-    if (topPos < 0) {
-      topPos = box.bottom + (GAP_REM * 16);
-    }
-
-    // Horizontal positioning - align to left of trigger
-    let leftPos = box.left;
-
-    // Ensure it doesn't go off the right edge
-    if (leftPos + popupWidth > window.innerWidth - (EDGE_MARGIN_REM * 16)) {
-      leftPos = window.innerWidth - popupWidth - (EDGE_MARGIN_REM * 16);
-    }
-
-    // Ensure it doesn't go off the left edge
-    if (leftPos < 0) {
-      leftPos = 0;
-    }
-
-    popup.style.opacity = 1;
-    popup.style.top = `${topPos / 16}rem`;
-    popup.style.left = `${leftPos / 16}rem`;
+      popup.style.opacity = 1;
+      popup.style.top = `${top / 16}rem`;
+      popup.style.left = `${left / 16}rem`;
+    };
+    positionPopup();
+    const resizeObserver = new ResizeObserver(positionPopup);
+    resizeObserver.observe(popup);
 
     let popupTimeout;
     let isPinned = false;
@@ -896,7 +944,7 @@ if (!SERVER_RENDERED) {
     };
 
     const onMouseOut = function () {
-      if (isPinned) {
+      if (isPinned || popup.contains(document.activeElement)) {
         return;
       }
       clearTimeout(popupTimeout);
@@ -912,10 +960,6 @@ if (!SERVER_RENDERED) {
     };
 
     const onDocumentClick = function (e) {
-      if (popup.contains(document.activeElement)) {
-        return;
-      }
-
       if (!popup.contains(e.target)) {
         isPinned = false;
         hidePopup();
@@ -930,11 +974,14 @@ if (!SERVER_RENDERED) {
 
       const { immediate = false } = options;
       clearTimeout(popupTimeout);
+      resizeObserver.disconnect();
+      brunoVarInfo._clearReference?.();
       CodeMirror.off(popup, 'mouseover', onMouseOverPopup);
       CodeMirror.off(popup, 'mouseout', onMouseOut);
       CodeMirror.off(popup, 'click', onPopupClick);
       CodeMirror.off(cm.getWrapperElement(), 'mouseout', onMouseOut);
       CodeMirror.off(document, 'click', onDocumentClick);
+      CodeMirror.off(document, 'keydown', onDocumentKeyDown);
       CodeMirror.off(cm, 'change', onEditorChange);
 
       // Cleanup CodeMirror and MaskedEditor instances
@@ -993,11 +1040,19 @@ if (!SERVER_RENDERED) {
     // Allow replacing existing popup with full cleanup
     popup._hidePopup = hidePopup;
 
+    const onDocumentKeyDown = (event) => {
+      if (event.key === 'Escape' && !event.defaultPrevented) {
+        hidePopup({ immediate: true });
+        cm.focus();
+      }
+    };
+
     CodeMirror.on(popup, 'mouseover', onMouseOverPopup);
     CodeMirror.on(popup, 'mouseout', onMouseOut);
     CodeMirror.on(popup, 'click', onPopupClick);
     CodeMirror.on(cm.getWrapperElement(), 'mouseout', onMouseOut);
     CodeMirror.on(document, 'click', onDocumentClick);
+    CodeMirror.on(document, 'keydown', onDocumentKeyDown);
     CodeMirror.on(cm, 'change', onEditorChange);
   }
 }

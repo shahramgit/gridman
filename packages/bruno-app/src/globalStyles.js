@@ -284,7 +284,8 @@ const GlobalStyle = createGlobalStyle`
     min-width: 18.1875rem;
     max-width: 18.1875rem;
     opacity: 0;
-    overflow: visible;
+    max-height: calc(100vh - 1.875rem);
+    overflow-y: auto;
     padding: 0.5rem;
     position: fixed;
     transition: opacity 0.15s;
@@ -538,6 +539,67 @@ const GlobalStyle = createGlobalStyle`
 
   .CodeMirror-brunoVarInfo .copy-success {
     color: ${(props) => props.theme.colors.text.green} !important;
+  }
+
+  .CodeMirror-brunoVarInfo .var-reference-picker {
+    margin-top: 0.5rem;
+
+    button, input {
+      width: 100%;
+      padding: 0.375rem 0.5rem;
+      border: 1px solid ${(props) => props.theme.border.border2};
+      border-radius: ${(props) => props.theme.border.radius.base};
+      background: ${(props) => props.theme.dropdown.bg};
+      color: ${(props) => props.theme.dropdown.color};
+      font: inherit;
+      text-align: left;
+
+      &:focus-visible {
+        outline: 2px solid ${(props) => props.theme.brand};
+        outline-offset: 1px;
+      }
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    input {
+      margin-top: 0.375rem;
+    }
+
+    .var-reference-options {
+      max-height: 14rem;
+      overflow-y: auto;
+      margin-top: 0.25rem;
+    }
+
+    .var-reference-option {
+      cursor: pointer;
+      padding: 0.375rem 0.5rem;
+      border-radius: ${(props) => props.theme.border.radius.base};
+
+      &[aria-selected='true'] {
+        background: ${(props) => props.theme.dropdown.hoverBg};
+      }
+    }
+
+    .var-reference-name, .var-reference-details {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .var-reference-details {
+      font-size: ${(props) => props.theme.font.size.xs};
+      color: ${(props) => props.theme.dropdown.mutedText};
+    }
+
+    .var-reference-note {
+      margin-top: 0.25rem;
+      font-size: ${(props) => props.theme.font.size.xs};
+      color: ${(props) => props.theme.dropdown.color};
+    }
   }
 
   /* Read-only Note */

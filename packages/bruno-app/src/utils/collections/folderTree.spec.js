@@ -6,6 +6,25 @@ import {
 } from './folderTree';
 
 describe('folderTree', () => {
+  it.each(['index', 'items'])('keeps sidebar sequence order at every level using %s', (source) => {
+    const folders = [
+      { uid: 'a', type: 'folder', name: 'Alpha', pathname: '/c/a' },
+      { uid: 'z', type: 'folder', name: 'Zulu', pathname: '/c/z', seq: 1, items: [
+        { uid: 'n2', type: 'folder', name: 'A nested', pathname: '/c/z/a', seq: 2 },
+        { uid: 'n1', type: 'folder', name: 'Z nested', pathname: '/c/z/z', seq: 1 }
+      ] },
+      { uid: 'b', type: 'folder', name: 'Beta', pathname: '/c/b', seq: 2 }
+    ];
+    const before = JSON.stringify(folders);
+    const tree = source === 'items' ? buildFolderTreeFromItems(folders) : buildFolderTreeFromIndex({
+      nodesByUid: Object.fromEntries([...folders, ...folders[1].items].map((node) => [node.uid, node])),
+      childrenByParentUid: { root: ['a', 'z', 'b'], z: ['n2', 'n1'] }
+    });
+
+    expect(flattenFolderTree(tree).map((row) => row.name)).toEqual(['Zulu', 'Z nested', 'A nested', 'Beta', 'Alpha']);
+    expect(JSON.stringify(folders)).toBe(before);
+  });
+
   const index = {
     nodesByUid: {
       f1: { uid: 'f1', type: 'folder', name: 'Zeta', pathname: '/c/zeta', parentUid: null },

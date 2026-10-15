@@ -72,6 +72,10 @@ it('keeps the workspace tabs outside the scrolling request strip', () => {
   expect(scroller).not.toContainElement(pinned);
   expect(within(scroller).getAllByTestId(/^tab-/)).toHaveLength(12);
   expect(within(scroller).queryByTestId('tab-overview')).toBeNull();
+  const header = screen.getByTestId('workspace-navigation-header');
+  expect(header).toContainElement(pinned);
+  expect(header).not.toContainElement(scroller);
+  expect(header.compareDocumentPosition(scroller) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 it('gives each group its own list, so close-left/right/others stay inside it', () => {

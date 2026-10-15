@@ -441,6 +441,7 @@ class CodeEditor extends React.Component {
 
   componentWillUnmount() {
     if (this.editor) {
+      this.editor.setOption('brunoVarInfo', false);
       if (this.props.onScroll) {
         this.props.onScroll(this._lastScrollTop);
       }

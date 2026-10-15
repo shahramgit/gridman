@@ -3,7 +3,7 @@
 // collections where the tree items are never fully loaded — and falls back to
 // walking the hydrated collection tree.
 
-const byName = (a, b) => (a.name || '').localeCompare(b.name || '');
+import { sortByNameThenSequence } from 'utils/common';
 
 export const buildFolderTreeFromIndex = (index) => {
   if (!index?.nodesByUid) {
@@ -11,10 +11,9 @@ export const buildFolderTreeFromIndex = (index) => {
   }
 
   const childrenByParentUid = index.childrenByParentUid || {};
-  const build = (parentKey) => (childrenByParentUid[parentKey] || [])
+  const build = (parentKey) => sortByNameThenSequence((childrenByParentUid[parentKey] || [])
     .map((uid) => index.nodesByUid[uid])
-    .filter((node) => node && node.type === 'folder')
-    .sort(byName)
+    .filter((node) => node && node.type === 'folder'))
     .map((node) => ({
       uid: node.uid,
       name: node.name || node.filename || 'Untitled',
@@ -26,9 +25,7 @@ export const buildFolderTreeFromIndex = (index) => {
 };
 
 export const buildFolderTreeFromItems = (items = []) => {
-  return (items || [])
-    .filter((item) => item?.type === 'folder')
-    .sort(byName)
+  return sortByNameThenSequence((items || []).filter((item) => item?.type === 'folder'))
     .map((item) => ({
       uid: item.uid,
       name: item.name || item.filename || 'Untitled',

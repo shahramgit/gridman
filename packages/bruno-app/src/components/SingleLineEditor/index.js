@@ -226,6 +226,7 @@ class SingleLineEditor extends Component {
   componentWillUnmount() {
     clearTimeout(this._copyTimer);
     if (this.editor) {
+      this.editor.setOption('brunoVarInfo', false);
       if (this.editor?._destroyLinkAware) {
         this.editor._destroyLinkAware();
       }
