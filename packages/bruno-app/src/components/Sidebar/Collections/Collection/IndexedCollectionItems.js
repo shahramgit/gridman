@@ -28,7 +28,7 @@ import { getEmptyImage } from 'react-dnd-html5-backend';
 import { useDrag, useDrop } from 'react-dnd';
 import path from 'utils/common/path';
 import { addTab, focusTab, makeTabPermanent } from 'providers/ReduxStore/slices/tabs';
-import { addResponseExample, collectionIndexNodeActivated, collectionIndexNodesActivated, collectionIndexNodesResequenced } from 'providers/ReduxStore/slices/collections';
+import { addResponseExample, collectionExpandedFoldersChanged, collectionIndexNodeActivated, collectionIndexNodesActivated, collectionIndexNodesResequenced } from 'providers/ReduxStore/slices/collections';
 import {
   cloneCollectionItemByPath,
   deleteCollectionItemByPath,
@@ -1585,6 +1585,34 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
   const persistedExpandedFolders = useSelector(
     (state) => state.collections.collectionUiState?.[collectionUid]?.expandedFolders
   );
+  const expandedFoldersUpdated = useSelector(
+    (state) => state.collections.collectionUiState?.[collectionUid]?.expandedFoldersUpdated
+  );
+  const restoredExpansionRef = useRef(false);
+  const expandedNodeUidsRef = useRef(expandedNodeUids);
+  const expandedFolderPathsRef = useRef(null);
+  const indexRef = useRef(index);
+  indexRef.current = index;
+  const updateExpandedNodeUids = useCallback((update) => {
+    const previous = expandedNodeUidsRef.current;
+    const next = update(previous);
+    const firstUpdate = !restoredExpansionRef.current;
+    // Once browsing has begun, a late mount snapshot must not open old folders.
+    restoredExpansionRef.current = true;
+    const sameUids = next.size === previous.size && [...next].every((uid) => previous.has(uid));
+    const expandedFolders = [];
+    for (const uid of next) {
+      const relative = toCollectionRelativePathname(collectionPathnameForPersist, indexRef.current?.nodesByUid?.[uid]?.pathname);
+      if (relative) expandedFolders.push(relative);
+    }
+    if (!firstUpdate && sameUids && isEqual(expandedFolderPathsRef.current, expandedFolders)) return;
+    expandedNodeUidsRef.current = next;
+    expandedFolderPathsRef.current = expandedFolders;
+    if (!sameUids) setExpandedNodeUids(next);
+    // Keep the current session in Redux immediately. Collapsing a collection
+    // unmounts this component and must not restore its original disk snapshot.
+    dispatch(collectionExpandedFoldersChanged({ collectionUid, expandedFolders }));
+  }, [collectionUid, collectionPathnameForPersist, dispatch]);
   // null = still capped at rowCap; a number = the user asked for the rest and
   // this many rows are mounted so far (see the progressive growth effect).
   const [expandedRowCount, setExpandedRowCount] = useState(null);
@@ -1702,7 +1730,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
       return;
     }
 
-    setExpandedNodeUids((current) => {
+    updateExpandedNodeUids((current) => {
       const next = new Set(current);
       const seen = new Set();
       let parentUid = node.parentUid;
@@ -1727,7 +1755,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
     // totalNodes-change tick could be missed — which showed up as save-as
     // "sometimes" not scrolling to the new row. The body early-returns when
     // there's nothing pending, so extra runs are a cheap no-op.
-  }, [sidebarReveal?.nonce, sidebarReveal?.pending, index]);
+  }, [sidebarReveal?.nonce, sidebarReveal?.pending, index, updateExpandedNodeUids]);
 
   useEffect(() => {
     if (!pendingRevealNodeUidRef.current) {
@@ -1822,9 +1850,8 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
    * yesterday's uid means nothing today. A folder that has since been deleted
    * or renamed simply does not resolve and is dropped.
    */
-  const restoredExpansionRef = useRef(false);
   useEffect(() => {
-    if (restoredExpansionRef.current || !persistedExpandedFolders?.length || !index?.nodesByUid || !collectionPathnameForPersist) {
+    if (restoredExpansionRef.current || !persistedExpandedFolders?.length || index?.status !== 'ready' || !collectionPathnameForPersist) {
       return;
     }
     const wanted = new Set(persistedExpandedFolders.map((entry) => normalizeForPathCompare(entry)));
@@ -1838,26 +1865,33 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
     }
     restoredExpansionRef.current = true;
     if (uids.size) {
-      setExpandedNodeUids((current) => new Set([...current, ...uids]));
+      updateExpandedNodeUids((current) => new Set([...current, ...uids]));
     }
-  }, [persistedExpandedFolders, index, collectionPathnameForPersist]);
+  }, [persistedExpandedFolders, index, collectionPathnameForPersist, updateExpandedNodeUids]);
 
   // Write back on a trailing debounce. Expanding a deep path fires this once
   // per level, and the store rewrites its whole JSON file on every set.
+  const pendingExpansionPersistRef = useRef(null);
   useEffect(() => {
-    if (!restoredExpansionRef.current || !collectionPathnameForPersist || !index?.nodesByUid) {
+    if (!expandedFoldersUpdated || !collectionPathnameForPersist) {
       return undefined;
     }
+    const pending = { collectionPathname: collectionPathnameForPersist, expandedFolders: persistedExpandedFolders };
+    pendingExpansionPersistRef.current = pending;
     const timer = setTimeout(() => {
-      const expandedFolders = [];
-      for (const uid of expandedNodeUids) {
-        const relative = toCollectionRelativePathname(collectionPathnameForPersist, index.nodesByUid[uid]?.pathname);
-        if (relative) expandedFolders.push(relative);
-      }
-      dispatch(persistExpandedFolders({ collectionPathname: collectionPathnameForPersist, expandedFolders }));
+      pendingExpansionPersistRef.current = null;
+      dispatch(persistExpandedFolders(pending));
     }, 500);
     return () => clearTimeout(timer);
-  }, [expandedNodeUids, collectionPathnameForPersist, index, dispatch]);
+  }, [persistedExpandedFolders, expandedFoldersUpdated, collectionPathnameForPersist, dispatch]);
+
+  useEffect(() => () => {
+    // A quick collection collapse must not cancel the last disk write.
+    if (pendingExpansionPersistRef.current) {
+      dispatch(persistExpandedFolders(pendingExpansionPersistRef.current));
+      pendingExpansionPersistRef.current = null;
+    }
+  }, [dispatch]);
 
   // Nothing was saved for this collection, so there is nothing to wait for and
   // the first toggle should already be written.
@@ -1866,6 +1900,14 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
       restoredExpansionRef.current = true;
     }
   }, [persistedExpandedFolders]);
+
+  useEffect(() => {
+    // A move/rename keeps node identities but changes their persisted paths.
+    // Wait through an index rebuild instead of dropping temporarily absent nodes.
+    if (restoredExpansionRef.current && index?.status === 'ready') {
+      updateExpandedNodeUids((current) => current);
+    }
+  }, [index, updateExpandedNodeUids]);
 
   // Stable identity so memoized rows don't re-render on unrelated parent
   // renders just because the handler was recreated.
@@ -1884,7 +1926,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
       });
       return;
     }
-    setExpandedNodeUids((current) => {
+    updateExpandedNodeUids((current) => {
       const next = new Set(current);
       if (next.has(uid)) {
         next.delete(uid);
@@ -1893,7 +1935,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
       }
       return next;
     });
-  }, []);
+  }, [updateExpandedNodeUids]);
 
   // A drop into a collapsed folder is invisible, so open the DESTINATION and
   // scroll the moved row into view. Owned by the parent because only it holds
@@ -1913,7 +1955,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
     // Ensure-expanded, never a toggle: the drop awaits several IPC round trips,
     // so a decision made from the pre-drop render would collapse a destination
     // that something else opened while we were awaiting.
-    setExpandedNodeUids((current) => (current.has(destinationUid) ? current : new Set(current).add(destinationUid)));
+    updateExpandedNodeUids((current) => (current.has(destinationUid) ? current : new Set(current).add(destinationUid)));
     const revealPathname = normalizeItemPathname(movedPathname);
     // The reveal effect expands a revealed FOLDER on purpose (a folder hit in
     // global search should show its contents). Opt out for the moved item: a
@@ -1925,7 +1967,7 @@ const IndexedCollectionItems = ({ collectionUid, searchText, searchMatches = nul
       pathname: revealPathname,
       ensureVisible: true
     }));
-  }, [collectionUid, dispatch]);
+  }, [collectionUid, dispatch, updateExpandedNodeUids]);
 
   if (!index) {
     return null;

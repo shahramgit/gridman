@@ -253,6 +253,7 @@ class CodeEditor extends React.Component {
       );
 
       editor.setOption('lint', this.props.mode && editor.getValue().trim().length > 0 ? this.lintOptions : false);
+      editor.on('beforeChange', this._onBeforeChange);
       editor.on('change', this._onEdit);
 
       // Persist view state immediately when the user folds or unfolds — without
@@ -465,6 +466,7 @@ class CodeEditor extends React.Component {
         this.editor.off('dblclick', this._onDoubleClickCopy);
       }
       this.editor.off('change', this._onEdit);
+      this.editor.off('beforeChange', this._onBeforeChange);
 
       // Tear down the debounced fold-persistence listener. Cancel any pending
       // call so it can't fire after we've already snapshotted state above.
@@ -526,6 +528,17 @@ class CodeEditor extends React.Component {
 
     defineCodeMirrorBrunoVariablesMode(variables, mode, false, this.props.enableVariableHighlighting);
     this.editor.setOption('mode', 'brunovariables');
+  };
+
+  _onBeforeChange = (_editor, change) => {
+    if (change.origin !== 'paste' || !this.props.transformPaste || this.props.readOnly) return;
+    const text = change.text.join('\n');
+    const transformed = this.props.transformPaste(text);
+    if (transformed !== text) {
+      // Transform the paste itself so it remains a single undoable edit and
+      // CodeMirror places the cursor correctly without resetting the document.
+      change.update(change.from, change.to, transformed.split('\n'));
+    }
   };
 
   _onEdit = () => {

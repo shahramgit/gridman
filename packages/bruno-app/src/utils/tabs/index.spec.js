@@ -32,6 +32,15 @@ describe('doesTabMatchRequestNode', () => {
     expect(doesTabMatchRequestNode(tab, node)).toBe(false);
   });
 
+  it.each([
+    { type: 'response-example', uid: 'example', itemUid: 'req-uid', exampleUid: 'example' },
+    { type: 'response-example', uid: 'example', itemPathname: node.pathname },
+    { type: 'folder-settings', uid: 'req-uid', itemPathname: node.pathname },
+    { uid: 'example', itemUid: 'req-uid', exampleUid: 'example' }
+  ])('does not focus an example or settings tab instead of its request: %j', (tab) => {
+    expect(doesTabMatchRequestNode({ collectionUid: 'col', ...tab }, node)).toBe(false);
+  });
+
   it('does not match an unrelated request (different path and uid)', () => {
     const tab = { collectionUid: 'col', uid: 'x', itemUid: 'y', itemPathname: '/ws/col/api/other.bru' };
     expect(doesTabMatchRequestNode(tab, node)).toBe(false);

@@ -8,6 +8,7 @@ import { updateResponseExampleResponse } from 'providers/ReduxStore/slices/colle
 import CodeEditor from 'components/CodeEditor';
 import LargeResponseWarning from 'components/ResponsePane/LargeResponseWarning';
 import { getCodeMirrorModeBasedOnContentType } from 'utils/common/codemirror';
+import { decodeJsonUnicodeEscapes } from 'utils/common/jsonUnicode';
 import StyledWrapper from './StyledWrapper';
 
 // A saved example carries no dataBuffer and no requestSent, so the warning's
@@ -141,6 +142,13 @@ const ResponseExampleResponseContent = ({ editMode, item, collection, exampleUid
   // Nothing records an example's byte count, so measure the body's own bytes.
   const responseSize = useMemo(() => utf8ByteLength(responseContent), [responseContent]);
   const isLargeResponse = responseSize > 10 * 1024 * 1024; // 10 MB
+  const codeMirrorMode = getCodeMirrorMode();
+  const isJson = codeMirrorMode?.includes('json');
+  const displayedContent = useMemo(() => (
+    !editMode && isJson && (!isLargeResponse || showLargeResponse)
+      ? decodeJsonUnicodeEscapes(responseContent)
+      : responseContent
+  ), [responseContent, editMode, isJson, isLargeResponse, showLargeResponse]);
 
   return (
     <StyledWrapper className="w-full px-4">
@@ -174,11 +182,12 @@ const ResponseExampleResponseContent = ({ editMode, item, collection, exampleUid
             theme={displayedTheme}
             font={get(preferences, 'font.codeFont', 'default')}
             fontSize={get(preferences, 'font.codeFontSize')}
-            value={responseContent}
+            value={displayedContent}
+            transformPaste={editMode && isJson ? decodeJsonUnicodeEscapes : undefined}
             onEdit={onResponseEdit}
             onRun={() => {}}
             onSave={onSave}
-            mode={getCodeMirrorMode()}
+            mode={codeMirrorMode}
             enableVariableHighlighting={false}
             readOnly={!editMode}
           />

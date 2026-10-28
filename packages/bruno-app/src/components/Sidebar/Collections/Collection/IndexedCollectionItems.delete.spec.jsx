@@ -1,12 +1,14 @@
 import '@testing-library/jest-dom';
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { configureStore } from '@reduxjs/toolkit';
 import { ThemeProvider } from 'providers/Theme';
 import IndexedCollectionItems from './IndexedCollectionItems';
+import collectionsReducer, { collectionIndexNodeMoved, collectionUiStateHydrated } from 'providers/ReduxStore/slices/collections';
+import tabsReducer from 'providers/ReduxStore/slices/tabs';
 
 /**
  * DELETE ON A NESTED FOLDER.
@@ -58,9 +60,11 @@ jest.mock('react-virtuoso', () => ({
 }));
 
 const mockDeleteByPath = jest.fn(() => ({ type: 'noop/deleteCollectionItemByPath' }));
+const mockPersistExpandedFolders = jest.fn(() => ({ type: 'noop/persistExpandedFolders' }));
 jest.mock('providers/ReduxStore/slices/collections/actions', () => ({
   ...jest.requireActual('providers/ReduxStore/slices/collections/actions'),
   deleteCollectionItemByPath: (...args) => mockDeleteByPath(...args),
+  persistExpandedFolders: (...args) => mockPersistExpandedFolders(...args),
   closeTabs: () => ({ type: 'noop/closeTabs' })
 }));
 
@@ -107,9 +111,9 @@ const makeStore = () =>
     }
   });
 
-const renderTree = () =>
+const renderTree = (store = makeStore()) =>
   render(
-    <Provider store={makeStore()}>
+    <Provider store={store}>
       <ThemeProvider>
         <DndProvider backend={HTML5Backend}>
           <IndexedCollectionItems collectionUid={COLLECTION_UID} searchText="" searchMatches={null} />
@@ -117,6 +121,70 @@ const renderTree = () =>
       </ThemeProvider>
     </Provider>
   );
+
+const makeExpansionStore = (expandedFolders) => configureStore({
+  reducer: {
+    app: (state = { sidebarReveal: null, clipboard: { hasCopiedItems: false } }) => state,
+    collections: collectionsReducer,
+    tabs: tabsReducer
+  },
+  preloadedState: {
+    collections: {
+      ...collectionsReducer(undefined, { type: 'init' }),
+      collections: [{ uid: COLLECTION_UID, pathname: COLLECTION_PATHNAME, items: [] }],
+      collectionIndexes: { [COLLECTION_UID]: index },
+      collectionUiState: expandedFolders === undefined ? {} : { [COLLECTION_UID]: { expandedFolders } }
+    }
+  },
+  middleware: (getDefault) => getDefault({ serializableCheck: false, immutableCheck: false })
+});
+
+describe('remembered folder expansion', () => {
+  it('does not open old folders when the mount snapshot arrives after a user starts browsing', () => {
+    const store = makeExpansionStore();
+    renderTree(store);
+    fireEvent.click(screen.getByText('Parent'), { detail: 1 });
+    expect(screen.getByText('Child')).toBeInTheDocument();
+    expect(screen.queryByText('+ Add request')).not.toBeInTheDocument();
+
+    act(() => store.dispatch(collectionUiStateHydrated({
+      collectionUid: COLLECTION_UID,
+      uiState: { expandedFolders: ['Parent', 'Parent/Child'] }
+    })));
+
+    expect(screen.queryByText('+ Add request')).not.toBeInTheDocument();
+  });
+
+  it('keeps a manually closed folder closed when its collection remounts immediately', () => {
+    const store = makeExpansionStore(['Parent', 'Parent/Child']);
+    const tree = renderTree(store);
+    expect(screen.getByText('+ Add request')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Child'), { detail: 1 });
+    expect(screen.queryByText('+ Add request')).not.toBeInTheDocument();
+    tree.unmount();
+    expect(mockPersistExpandedFolders).toHaveBeenLastCalledWith({
+      collectionPathname: COLLECTION_PATHNAME,
+      expandedFolders: ['Parent']
+    });
+
+    renderTree(store);
+    expect(screen.getByText('Child')).toBeInTheDocument();
+    expect(screen.queryByText('+ Add request')).not.toBeInTheDocument();
+  });
+
+  it('keeps expanded folders open after a rename and collection remount', () => {
+    const store = makeExpansionStore(['Parent', 'Parent/Child']);
+    const tree = renderTree(store);
+    act(() => store.dispatch(collectionIndexNodeMoved({
+      collectionUid: COLLECTION_UID, sourcePathname: PARENT_PATH, targetPathname: `${COLLECTION_PATHNAME}/Renamed`
+    })));
+    expect(store.getState().collections.collectionUiState[COLLECTION_UID].expandedFolders)
+      .toEqual(['Renamed', 'Renamed/Child']);
+    tree.unmount();
+    renderTree(store);
+    expect(screen.getByText('+ Add request')).toBeInTheDocument();
+  });
+});
 
 beforeAll(() => {
   Element.prototype.scrollIntoView = jest.fn();
@@ -131,6 +199,7 @@ beforeAll(() => {
 beforeEach(() => {
   dispatched.length = 0;
   mockDeleteByPath.mockClear();
+  mockPersistExpandedFolders.mockClear();
 });
 
 describe('deleting a folder nested inside another folder', () => {

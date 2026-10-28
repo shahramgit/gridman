@@ -25,6 +25,11 @@ export const doesTabMatchRequestNode = (tab, { collectionUid, pathname, uid } = 
   if (!tab || tab.collectionUid !== collectionUid) {
     return false;
   }
+  // Examples share their parent's itemUid, but clicking the parent must focus
+  // a request editor. Older request tabs can omit type, so retain that fallback.
+  if (tab.exampleUid || (tab.type && !['request', 'http-request', 'graphql-request', 'grpc-request', 'ws-request'].includes(tab.type))) {
+    return false;
+  }
   if (tab.itemPathname && pathname && normalizeTabPath(tab.itemPathname) === normalizeTabPath(pathname)) {
     return true;
   }

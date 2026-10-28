@@ -5,12 +5,13 @@ import { Provider } from 'react-redux';
 import { ThemeProvider } from 'providers/Theme';
 import { configureStore } from '@reduxjs/toolkit';
 import ResponseExampleResponseContent from './index';
+import CodeEditor from 'components/CodeEditor';
 
 // CodeMirror cannot mount in jsdom, and the point of these tests is whether it
 // gets mounted at all.
-jest.mock('components/CodeEditor', () => ({ value }) => (
+jest.mock('components/CodeEditor', () => jest.fn(({ value }) => (
   <div data-testid="code-editor">{`chars:${value.length}`}</div>
-));
+)));
 
 beforeAll(() => {
   Object.defineProperty(window, 'matchMedia', {
@@ -61,6 +62,57 @@ const buildItem = (content) => ({
 });
 
 describe('ResponseExampleResponseContent', () => {
+  const editorProps = () => CodeEditor.mock.calls.at(-1)[0];
+  const escapedJson = String.raw`{"2":2,"1":1,"id":123456789012345678901,"message":"\u062F\u0631\u062E\u0648\u0627\u0633\u062A","literal":"\\u062F"}`;
+  const readableJson = String.raw`{"2":2,"1":1,"id":123456789012345678901,"message":"REQUEST","literal":"\\u062F"}`
+    .replace('REQUEST', '\u062f\u0631\u062e\u0648\u0627\u0633\u062a');
+
+  it('shows JSON Unicode escapes as readable text without changing keys, numbers or literal backslashes', () => {
+    const item = buildItem(escapedJson);
+    renderWithProviders(
+      <ResponseExampleResponseContent item={item} collection={mockCollection} exampleUid="example-1" editMode={false} />
+    );
+    expect(editorProps().value).toBe(readableJson);
+    expect(item.examples[0].response.body.content).toBe(escapedJson);
+  });
+
+  it('decodes pasted JSON in edit mode without rewriting an existing saved buffer on entry', () => {
+    renderWithProviders(
+      <ResponseExampleResponseContent item={buildItem(escapedJson)} collection={mockCollection} exampleUid="example-1" editMode />
+    );
+    expect(editorProps().value).toBe(escapedJson);
+    expect(editorProps().transformPaste(escapedJson)).toBe(readableJson);
+  });
+
+  it('keeps quotes, control escapes and surrogate pairs valid when decoding pasted JSON', () => {
+    renderWithProviders(
+      <ResponseExampleResponseContent item={buildItem('')} collection={mockCollection} exampleUid="example-1" editMode />
+    );
+    const source = String.raw`{"value":"\u0022\u000A\u005C\uD83D\uDE00",` + '"invalid":"\\uZZZZ"}';
+    const decoded = editorProps().transformPaste(source);
+    expect(decoded).toContain(String.raw`"value":"\"\n\\`);
+    expect(decoded).toContain('\u{1f600}');
+    expect(decoded).toContain('"invalid":"\\uZZZZ"');
+  });
+
+  it('does not decode Unicode-like text in a text example', () => {
+    const item = buildItem(escapedJson);
+    item.examples[0].response.body.type = 'text';
+    renderWithProviders(
+      <ResponseExampleResponseContent item={item} collection={mockCollection} exampleUid="example-1" editMode />
+    );
+    expect(editorProps().value).toBe(escapedJson);
+    expect(editorProps().transformPaste).toBeUndefined();
+  });
+
+  it('leaves an unfinished JSON string with many escaped quotes intact', () => {
+    renderWithProviders(
+      <ResponseExampleResponseContent item={buildItem('')} collection={mockCollection} exampleUid="example-1" editMode />
+    );
+    const unfinished = '"\\u062F' + '\\"'.repeat(3000);
+    expect(editorProps().transformPaste(unfinished)).toBe(unfinished);
+  });
+
   it('should render the editor for an example under the size limit', () => {
     const item = buildItem('{"ok":true}');
     renderWithProviders(

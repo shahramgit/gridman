@@ -1734,8 +1734,18 @@ export const collectionsSlice = createSlice({
       if (!collectionUid) {
         return;
       }
+      // Mount may finish after the indexed sidebar is already interactive.
+      // A disk snapshot must not overwrite this session's expansion choices.
+      if (state.collectionUiState[collectionUid]?.expandedFoldersUpdated) return;
       state.collectionUiState[collectionUid] = {
         expandedFolders: Array.isArray(uiState?.expandedFolders) ? uiState.expandedFolders : []
+      };
+    },
+    collectionExpandedFoldersChanged: (state, action) => {
+      const { collectionUid, expandedFolders } = action.payload;
+      state.collectionUiState[collectionUid] = {
+        expandedFolders,
+        expandedFoldersUpdated: true
       };
     },
     toggleCollection: (state, action) => {
@@ -4752,6 +4762,7 @@ export const {
   cancelMockResponseEditorEdit,
   removeMockResponseEditor,
   collectionUiStateHydrated,
+  collectionExpandedFoldersChanged,
   createCollection,
   updateCollectionMountStatus,
   updateCollectionLoadingState,
