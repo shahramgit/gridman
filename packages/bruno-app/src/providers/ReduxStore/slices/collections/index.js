@@ -2613,7 +2613,11 @@ export const collectionsSlice = createSlice({
               break;
             }
             case 'formUrlEncoded': {
-              item.draft.request.body.formUrlEncoded = action.payload.content;
+              // Pasted cURL fields have no IDs; table edits, deletes and reorders require distinct ones.
+              item.draft.request.body.formUrlEncoded = map(action.payload.content, (param) => ({
+                ...param,
+                uid: param.uid || uuid()
+              }));
               break;
             }
             case 'multipartForm': {

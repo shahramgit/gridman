@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { stringifyRequest } from '@usebruno/filestore';
 import { test as base, expect, closeElectronApp } from '../../playwright';
+import { selectRequestPaneTab } from '../utils/page';
 
 const escapedResponse = String.raw`{"2":2,"1":1,"id":123456789012345678901,"userMessage":"\u062F\u0631\u062E\u0648\u0627\u0633\u062A \u062B\u0628\u062A \u06AF\u0631\u062F\u06CC\u062F.","literal":"\\u062F"}`;
 const readableMessage = '\u062f\u0631\u062e\u0648\u0627\u0633\u062a \u062b\u0628\u062a \u06af\u0631\u062f\u06cc\u062f.';
@@ -50,15 +51,21 @@ const test = base.extend<{
       collections: [{ pathname: collectionPath, expandedFolders: ['Parent', 'Parent/Child'] }]
     }));
 
-    const focusSamples: string[] = [];
+    const focusSamples: number[] = [];
     const sampleFocus = () => {
       if (process.platform !== 'darwin') return;
       const front = execFileSync('/usr/bin/lsappinfo', ['front'], { encoding: 'utf8' }).trim();
-      focusSamples.push(execFileSync('/usr/bin/lsappinfo', ['info', '-only', 'name', front], { encoding: 'utf8' }));
+      const info = execFileSync('/usr/bin/lsappinfo', ['info', '-only', 'pid', front], { encoding: 'utf8' });
+      let pid = Number(info.match(/pid\s*=\s*(\d+)/)?.[1]);
+      if (!pid) throw new Error(`No foreground PID in LaunchServices response: ${info}`);
+      // LaunchServices can retain the name/PID of an Electron process that already exited.
+      try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') pid = 0; }
+      focusSamples.push(pid);
     };
     sampleFocus();
     const sampler = setInterval(sampleFocus, 3000);
     let app: ElectronApplication | undefined;
+    let appPid: number | undefined;
     let baselineLanding: ReturnType<typeof createServer> | undefined;
     try {
       const dotEnv: Record<string, string> = {};
@@ -72,6 +79,7 @@ const test = base.extend<{
         dotEnv.BRUNO_DEV_PORT = String(address.port);
       }
       app = await launchElectronApp({ userDataPath, dotEnv });
+      appPid = app.process().pid;
       expect(await app.evaluate(({ app }) => app.getPath('userData'))).toBe(userDataPath);
       if (delayCollectionMount) {
         await expect.poll(() => app!.evaluate(({ ipcMain }) => (ipcMain as any)._invokeHandlers.has('renderer:mount-collection'))).toBe(true);
@@ -101,7 +109,7 @@ const test = base.extend<{
       sampleFocus();
       if (process.platform === 'darwin') {
         expect(focusSamples.length).toBeGreaterThan(1);
-        expect(focusSamples.some((name) => /Electron|Gridman/i.test(name))).toBe(false);
+        expect(focusSamples).not.toContain(appPid);
       }
     }
   }
@@ -110,6 +118,54 @@ const test = base.extend<{
 const collectionChevron = (page: Page) => page.getByTestId('sidebar-collection-row').locator('svg.chevron-icon');
 const row = (page: Page, name: string) => page.getByTestId('sidebar-collection-item-row')
   .filter({ has: page.locator('.item-name', { hasText: new RegExp(`^${name}$`) }) });
+
+test('editing a cURL-imported form field leaves the other rows intact', async ({ feedback }) => {
+  const { page, requestFile } = feedback;
+  await collectionChevron(page).click();
+  await row(page, 'Feedback Request').locator('.item-name').dblclick();
+  const urlEditor = page.locator('#request-url .CodeMirror');
+  await expect(urlEditor).toBeVisible();
+  await urlEditor.evaluate((element, text) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', text);
+    (element as any).CodeMirror.getInputField().dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true })
+    );
+  }, `curl -X POST "https://api.example.test/v1/utils/oauth/token" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "grant_type=client_credentials" \
+    -d "client_id=sonda" \
+    -d "client_secret=probe-secret"`);
+  await selectRequestPaneTab(page, 'Body');
+  const table = page.getByTestId('editable-table');
+  const valueEditors = table.getByTestId('column-value').locator('.CodeMirror');
+  const values = () => valueEditors.evaluateAll((elements) => elements.map((el) => (el as any).CodeMirror.getValue()));
+  await expect.poll(values).toEqual(['client_credentials', 'sonda', 'probe-secret', '']);
+
+  // Match the recording: delete the final character of the last field.
+  await valueEditors.nth(2).evaluate((element) => {
+    const editor = (element as any).CodeMirror;
+    editor.focus();
+    editor.setCursor(0, editor.getValue().length);
+  });
+  await page.keyboard.press('Backspace');
+  await expect.poll(values).toEqual(['client_credentials', 'sonda', 'probe-secre', '']);
+  const checkboxes = table.getByTestId('column-checkbox');
+  await checkboxes.nth(2).uncheck();
+  await expect(checkboxes.nth(0)).toBeChecked();
+  await expect(checkboxes.nth(1)).toBeChecked();
+  await expect(checkboxes.nth(2)).not.toBeChecked();
+  await page.locator('[title="Save Request"]').click();
+  await expect.poll(() => fs.readFileSync(requestFile, 'utf8')).toMatch(/~client_secret: probe-secre\r?\n/);
+  const saved = fs.readFileSync(requestFile, 'utf8');
+  expect(saved).toContain('grant_type: client_credentials');
+  expect(saved).toContain('client_id: sonda');
+
+  await table.getByTestId('column-delete').nth(2).click();
+  await expect.poll(values).toEqual(['client_credentials', 'sonda', '']);
+  await page.locator('[title="Save Request"]').click();
+  await expect.poll(() => fs.readFileSync(requestFile, 'utf8')).not.toContain('client_secret');
+});
 
 test.describe('delayed mount', () => {
   test.use({ delayCollectionMount: true });
